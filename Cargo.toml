@@ -1,0 +1,32 @@
+[package]
+name = "rukt"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tonic = "0.10"
+prost = "0.12"
+tokio = { version = "1.0", features = ["macros", "rt-multi-thread", "time", "sync"] }
+rocksdb = "0.21"
+sha2 = "0.10"
+hmac = "0.12"
+ed25519-dalek = { version = "2.0", features = ["rand_core", "digest"] }
+curve25519-dalek = { version = "4.1", features = ["digest", "rand_core"] }
+p256 = { version = "0.13", features = ["ecdsa", "arithmetic", "sha256", "std"] }
+signature = "2.0"
+rand = "0.8"
+hex = "0.4"
+thiserror = "1.0"
+anyhow = "1.0"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+bytes = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+futures = "0.3"
+aes = "0.8"
+
+[build-dependencies]
+tonic-build = "0.10"
+
+[dev-dependencies]
+tempfile = "3.8"

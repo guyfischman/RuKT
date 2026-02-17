@@ -1,0 +1,43 @@
+// Start proto/key_transparency.proto
+syntax = "proto3";
+package kt;
+
+option go_package = "github.com/signalapp/keytransparency/cmd/kt/pb";
+import "google/protobuf/empty.proto";
+import "transparency.proto";
+
+message AuditRequest {
+  uint64 start = 1;
+  uint64 limit = 2;
+}
+
+message AuditResponse {
+  repeated transparency.AuditorUpdate updates = 1;
+  bool more = 2;
+}
+
+message TreeSizeResponse {
+  uint64 tree_size = 1;
+}
+
+service KeyTransparencyService {
+  // Auditor endpoints
+  rpc TreeSize(google.protobuf.Empty) returns (TreeSizeResponse) {}
+  rpc Audit(AuditRequest) returns (AuditResponse) {}
+  rpc SetAuditorHead(transparency.AuditorTreeHead) returns (google.protobuf.Empty) {}
+
+  // User endpoints
+  rpc Search(transparency.TreeSearchRequest) returns (transparency.TreeSearchResponse) {}
+  rpc Update(transparency.SignedUpdateRequest) returns (transparency.UpdateResponse) {}
+  rpc Monitor(transparency.MonitorRequest) returns (transparency.MonitorResponse) {}
+  
+  // Draft-03 Section 12.4
+  rpc GetCredential(transparency.GetCredentialRequest) returns (transparency.Credential) {}
+}
+
+service KeyTransparencyAuditorService {
+  rpc TreeSize(google.protobuf.Empty) returns (TreeSizeResponse) {}
+  rpc Audit(AuditRequest) returns (AuditResponse) {}
+  rpc SetAuditorHead(transparency.AuditorTreeHead) returns (google.protobuf.Empty) {}
+}
+// End proto/key_transparency.proto

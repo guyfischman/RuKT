@@ -1,0 +1,185 @@
+// Start proto/transparency.proto
+syntax = "proto3";
+package transparency;
+
+// --- Draft-03 Section 11.2 Prefix Tree Proofs ---
+
+message PrefixLeaf {
+    bytes vrf_output = 1;
+    bytes commitment = 2;
+}
+
+message PrefixSearchResult {
+    // 1=inclusion, 2=nonInclusionLeaf, 3=nonInclusionParent
+    uint32 result_type = 1; 
+    optional PrefixLeaf leaf = 2;
+    uint32 depth = 3;
+}
+
+message PrefixProof {
+    repeated PrefixSearchResult results = 1;
+    repeated bytes elements = 2;
+}
+
+// --- Draft-03 Section 11.1 Log Tree Proofs ---
+
+message InclusionProof {
+    repeated bytes elements = 1;
+}
+
+// --- Draft-03 Section 11.3 Combined Tree Proof ---
+
+message CombinedTreeProof {
+    repeated uint64 timestamps = 1;
+    repeated PrefixProof prefix_proofs = 2;
+    repeated bytes prefix_roots = 3;
+    InclusionProof inclusion = 4;
+}
+
+// --- Draft-03 Section 12.1 User Operations ---
+
+message BinaryLadderStep {
+    bytes proof = 1; // VRF proof
+    optional bytes commitment = 2;
+}
+
+message AuditorTreeHead {
+  uint64 tree_size = 1;
+  int64 timestamp = 2;
+  bytes signature = 3;
+}
+
+message TreeHead {
+    uint64 tree_size = 1;
+    int64 timestamp = 2;
+    repeated Signature signatures = 3;
+}
+
+message Signature {
+  bytes auditor_public_key = 1;
+  bytes signature = 2;
+}
+
+message FullAuditorTreeHead {
+    AuditorTreeHead tree_head = 1;
+    optional bytes root_value = 2;
+    repeated bytes consistency = 3;
+    bytes public_key = 4;
+}
+
+// Draft-03 Section 10.4 Full Tree Head Verification
+enum FullTreeHeadType {
+    FULL_TREE_HEAD_TYPE_RESERVED = 0;
+    FULL_TREE_HEAD_TYPE_SAME = 1;
+    FULL_TREE_HEAD_TYPE_UPDATED = 2;
+}
+
+message FullTreeHead {
+    FullTreeHeadType head_type = 1;
+    optional TreeHead tree_head = 2;
+    repeated bytes last = 3;
+    repeated bytes distinguished = 4;
+    repeated FullAuditorTreeHead full_auditor_tree_heads = 5;
+}
+
+message UpdateValue {
+    bytes value = 1;
+}
+
+message Consistency {
+    optional uint64 last = 1;
+    optional uint64 distinguished = 2;
+}
+
+message TreeSearchRequest {
+    bytes search_key = 1;
+    Consistency consistency = 2;
+    optional uint32 version = 3;
+}
+
+message TreeSearchResponse {
+    FullTreeHead tree_head = 1;
+    repeated BinaryLadderStep binary_ladder = 3;
+    CombinedTreeProof search = 4;
+    bytes opening = 5;
+    UpdateValue value = 6;
+}
+
+message UpdateRequest {
+    bytes search_key = 1;
+    bytes value = 2;
+    Consistency consistency = 3;
+    bytes expected_pre_update_value = 4;
+    bool return_update_response = 5;
+}
+
+message SignedUpdateRequest {
+    UpdateRequest request = 1;
+    bytes signature = 2;
+}
+
+message UpdateResponse {
+    FullTreeHead tree_head = 1;
+    repeated BinaryLadderStep binary_ladder = 3;
+    CombinedTreeProof search = 4;
+    bytes opening = 5;
+}
+
+message MonitorMapEntry {
+    uint64 position = 1;
+    uint32 version = 2;
+}
+
+message MonitorLabel {
+    bytes label = 1;
+    repeated MonitorMapEntry entries = 2;
+    optional uint64 rightmost = 3;
+}
+
+message MonitorRequest {
+    optional uint64 last = 1;
+    repeated MonitorLabel labels = 2;
+    Consistency consistency = 3;
+}
+
+message MonitorLabelVersions {
+    repeated uint32 versions = 1;
+}
+
+message MonitorResponse {
+    FullTreeHead tree_head = 1;
+    repeated MonitorLabelVersions label_versions = 2;
+    CombinedTreeProof monitor = 3;
+}
+
+enum CredentialType {
+    CREDENTIAL_TYPE_RESERVED = 0;
+    CREDENTIAL_TYPE_STANDARD = 1;
+    CREDENTIAL_TYPE_PROVISIONAL = 2;
+}
+
+message Credential {
+    CredentialType credential_type = 1;
+    uint32 version = 2;
+    bytes opening = 3;
+    UpdateValue value = 4;
+    repeated BinaryLadderStep binary_ladder = 5;
+    uint64 tree_size = 6;
+    PrefixProof distinguished = 7;
+    FullTreeHead full_tree_head = 8;
+    CombinedTreeProof search = 9;
+}
+
+message GetCredentialRequest {
+    bytes search_key = 1;
+}
+
+// --- Draft-03 Section 13.2 Auditing ---
+
+message AuditorUpdate {
+    uint64 timestamp = 1;
+    repeated PrefixLeaf added = 2;
+    repeated PrefixLeaf removed = 3;
+    PrefixProof proof = 4;
+}
+// End proto/transparency.proto

@@ -1,0 +1,4 @@
+.catignore
+target/
+kt_data/
+out.txt

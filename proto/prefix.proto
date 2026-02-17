@@ -1,0 +1,21 @@
+syntax = "proto3";
+package prefix_tree; // Package name for internal storage types
+
+message ParentNode {
+    bytes hash = 1;
+    optional uint64 ptr = 2;
+    optional uint64 firstUpdatePosition = 3;
+}
+
+message LeafNode {
+    uint32 ctr = 1;
+    bytes commitment = 2;
+}
+
+message LogEntry {
+    bytes index = 1;
+    repeated ParentNode copath = 2;
+    uint64 firstUpdatePosition = 3;
+    optional LeafNode leaf = 4;
+    bytes precomputed32 = 6;
+}
