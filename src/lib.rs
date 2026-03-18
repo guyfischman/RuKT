@@ -4,6 +4,7 @@ pub mod service;
 pub mod crypto;
 pub mod batcher;
 pub mod client;
+pub mod bulk;
 
 pub mod proto {
     pub mod transparency {

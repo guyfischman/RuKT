@@ -9,7 +9,7 @@ use rand::rngs::OsRng;
 use self::tls::{TlsEncode, Opaqueu8};
 
 // Re-export specific items from submodules to keep cleaner namespaces
-pub use self::vrf::{ecvrf_prove, ecvrf_verify, get_public_key, VrfConfig};
+pub use self::vrf::{ecvrf_prove, ecvrf_verify, get_public_key, expand_vrf_secret, VrfContext};
 pub use self::hash::{generate_random_opening, commit, log_leaf_value, log_parent_value}; 
 pub use self::signing::{
     generate_sig_keypair, generate_p256_keypair, 
@@ -33,6 +33,7 @@ pub struct PrivateConfig {
     pub sig_key: ServiceSigningKey,
     pub vrf_key: Vec<u8>, 
     pub vrf_public_key: Vec<u8>,
+    pub vrf_ctx: VrfContext,
     pub prefix_aes_key: Vec<u8>,
     pub auditor_keys: HashMap<Vec<u8>, ServiceVerifyingKey>,
     
@@ -88,7 +89,12 @@ impl PrivateConfig {
             _ => return Err(anyhow!("Unsupported cipher suite")),
         }
 
-        let vrf_pk = vrf::get_public_key(cipher_suite, &vrf_key).context("Failed to derive VRF public key")?;
+        let vrf_ctx = expand_vrf_secret(cipher_suite, &vrf_key).context("Failed to expand VRF secret")?;
+        
+        let vrf_pk = match &vrf_ctx {
+            VrfContext::Ed25519 { y_bytes, .. } => y_bytes.to_vec(),
+            VrfContext::P256 { y_bytes, .. } => y_bytes.clone(),
+        };
         
         Ok(Self {
             cipher_suite,
@@ -96,6 +102,7 @@ impl PrivateConfig {
             sig_key,
             vrf_key,
             vrf_public_key: vrf_pk,
+            vrf_ctx,
             prefix_aes_key: vec![0u8; 32], 
             auditor_keys,
             max_ahead,
@@ -109,18 +116,13 @@ impl PrivateConfig {
 
     pub fn vrf_prove(&self, label: &[u8], version: u32) -> Result<([u8; 32], Vec<u8>)> {
         let input = construct_vrf_input(label, version)?;
-        let vrf_conf = VrfConfig {
-            suite_id: self.cipher_suite,
-            secret_key: &self.vrf_key,
-        };
-        vrf::ecvrf_prove(&vrf_conf, &input)
+        vrf::ecvrf_prove(&self.vrf_ctx, &input)
     }
 }
 
 pub fn generate_vrf_keypair(suite: u16) -> (Vec<u8>, Vec<u8>) {
     match suite {
         CIPHER_SUITE_KT_128_SHA256_P256 => {
-            // Explicitly use p256::SecretKey
             let sk = p256::SecretKey::random(&mut OsRng);
             let pk = sk.public_key();
             let sec_bytes = sk.to_bytes().to_vec();

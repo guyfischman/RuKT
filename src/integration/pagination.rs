@@ -21,7 +21,7 @@ async fn test_pagination_full_lifecycle() -> Result<()> {
     // - Strict pagination: 2 entries per response.
     // - RMW = 0: Every log entry is "Distinguished", forcing maximum recursion.
     {
-        let mut tree = service.tree.lock().await;
+        let mut tree = service.tree.write().await;
         tree.config.max_response_entries = 2;
         tree.config.reasonable_monitoring_window = 0;
     }

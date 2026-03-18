@@ -1,3 +1,4 @@
+// Start src/service.rs
 use crate::proto::kt::key_transparency_service_server::KeyTransparencyService;
 use crate::proto::kt::{AuditRequest, AuditResponse, TreeSizeResponse};
 use crate::proto::transparency::{
@@ -21,7 +22,7 @@ use crate::batcher::Batcher;
 use std::sync::Arc;
 use std::collections::HashMap;
 use tonic::{Request, Response, Status};
-use tokio::sync::Mutex;
+use tokio::sync::RwLock; // CHANGED: Replaced Mutex with RwLock
 use anyhow::{Result, Context};
 
 #[derive(Clone)]
@@ -30,7 +31,7 @@ pub struct KeyTransparencyImpl {
     pub config: PrivateConfig,
     pub auditor_keys: Arc<HashMap<Vec<u8>, ServiceVerifyingKey>>,
     pub batcher: Arc<Batcher>,
-    pub tree: Arc<Mutex<Tree>>,
+    pub tree: Arc<RwLock<Tree>>, // CHANGED: Now using RwLock for high-concurrency reads
 }
 
 impl KeyTransparencyImpl {
@@ -74,7 +75,7 @@ impl KeyTransparencyImpl {
         ).context("Failed to initialize cryptographic configuration")?;
 
         let tree = Tree::new(db.clone(), &config).await?;
-        let tree_arc = Arc::new(Mutex::new(tree));
+        let tree_arc = Arc::new(RwLock::new(tree)); // CHANGED: Instantiating RwLock
         
         let batcher = Arc::new(Batcher::new(tree_arc.clone()));
 
@@ -91,7 +92,7 @@ impl KeyTransparencyImpl {
 #[tonic::async_trait]
 impl KeyTransparencyService for KeyTransparencyImpl {
     async fn tree_size(&self, _request: Request<()>) -> Result<Response<TreeSizeResponse>, Status> {
-        let tree_guard = self.tree.lock().await;
+        let tree_guard = self.tree.read().await; // CHANGED: Read lock
         let size = tree_guard.latest.as_ref().map(|th| th.tree_size).unwrap_or(0);
         
         Ok(Response::new(TreeSizeResponse { tree_size: size }))
@@ -99,7 +100,7 @@ impl KeyTransparencyService for KeyTransparencyImpl {
 
     async fn audit(&self, request: Request<AuditRequest>) -> Result<Response<AuditResponse>, Status> {
         let req = request.into_inner();
-        let tree_guard = self.tree.lock().await;
+        let tree_guard = self.tree.read().await; // CHANGED: Read lock
 
         let (updates, more) = tree_guard.audit(req.start, req.limit).await
             .map_err(map_anyhow_to_status)?;
@@ -112,7 +113,7 @@ impl KeyTransparencyService for KeyTransparencyImpl {
         request: Request<AuditorTreeHead>,
     ) -> Result<Response<()>, Status> {
         let head = request.into_inner();
-        let mut tree_guard = self.tree.lock().await;
+        let mut tree_guard = self.tree.write().await; // CHANGED: Write lock (Requires exclusive access)
 
         tree_guard.set_auditor_head(head, &self.auditor_keys).await
             .map_err(map_anyhow_to_status)?;
@@ -122,7 +123,7 @@ impl KeyTransparencyService for KeyTransparencyImpl {
 
     async fn search(&self, request: Request<TreeSearchRequest>) -> Result<Response<TreeSearchResponse>, Status> {
         let req = request.into_inner();
-        let tree_guard = self.tree.lock().await;
+        let tree_guard = self.tree.read().await; // CHANGED: Read lock
             
         let resp = tree_guard.search(&req).await
             .map_err(map_anyhow_to_status)?;
@@ -132,6 +133,7 @@ impl KeyTransparencyService for KeyTransparencyImpl {
 
     async fn update(&self, request: Request<SignedUpdateRequest>) -> Result<Response<UpdateResponse>, Status> {
         let req = request.into_inner();
+        // The batcher handles taking the write lock internally when the batch is ready
         let resp = self.batcher.submit(req).await
             .map_err(map_anyhow_to_status)?;
             
@@ -140,7 +142,7 @@ impl KeyTransparencyService for KeyTransparencyImpl {
 
     async fn monitor(&self, request: Request<MonitorRequest>) -> Result<Response<MonitorResponse>, Status> {
         let req = request.into_inner();
-        let tree_guard = self.tree.lock().await;
+        let tree_guard = self.tree.read().await; // CHANGED: Read lock
             
         let resp = tree_guard.monitor(&req).await
             .map_err(map_anyhow_to_status)?;
@@ -150,7 +152,7 @@ impl KeyTransparencyService for KeyTransparencyImpl {
     
     async fn get_credential(&self, request: Request<GetCredentialRequest>) -> Result<Response<Credential>, Status> {
         let req = request.into_inner();
-        let tree_guard = self.tree.lock().await;
+        let tree_guard = self.tree.read().await; // CHANGED: Read lock
         
         let cred = tree_guard.get_credential(&req).await
             .map_err(map_anyhow_to_status)?;
@@ -158,3 +160,4 @@ impl KeyTransparencyService for KeyTransparencyImpl {
         Ok(Response::new(cred))
     }
 }
+// End src/service.rs

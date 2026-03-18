@@ -40,7 +40,7 @@ async fn test_batcher_logic() -> Result<()> {
         let _ = h.await??;
     }
 
-    let size = service.tree.lock().await.latest.as_ref().unwrap().tree_size;
+    let size = service.tree.write().await.latest.as_ref().unwrap().tree_size;
     
     assert!(size >= 1);
     assert!(size < 10);

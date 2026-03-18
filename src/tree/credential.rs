@@ -6,7 +6,7 @@ use crate::proto::transparency::{
     PrefixProof 
 };
 use crate::tree::log_math;
-use crate::tree::binary_ladder::{greatest_version_binary_ladder};
+use crate::tree::binary_ladder::greatest_version_binary_ladder;
 use anyhow::{Result, anyhow};
 use futures::future::BoxFuture; 
 
@@ -31,7 +31,7 @@ impl Tree {
         let mut standard_node = None;
 
         for &node_idx in distinguished_nodes.iter().rev() {
-            let log_ptr = self.log.get_prefix_ptr(log_math::rightmost_leaf(node_idx))?;
+            let log_ptr = self.log.get_prefix_ptr(node_idx)?;
             if log_ptr >= target_ptr {
                 standard_node = Some(node_idx);
                 break;
@@ -45,7 +45,7 @@ impl Tree {
 
         if let Some(dist_node) = standard_node {
             // STANDARD CREDENTIAL
-            let snapshot_log_idx = log_math::rightmost_leaf(dist_node);
+            let snapshot_log_idx = dist_node;
             let n = self.get_max_version_at(&label_history, snapshot_log_idx);
             
             let versions = greatest_version_binary_ladder(target_ver, n, true, &[], &[], &[]);
@@ -69,7 +69,7 @@ impl Tree {
                 value: val_struct,
                 binary_ladder: steps,
                 
-                tree_size: log_math::rightmost_leaf(dist_node) + 1, 
+                tree_size, 
                 distinguished: Some(prefix_proof),
                 
                 full_tree_head: None,
@@ -90,7 +90,7 @@ impl Tree {
                 let ts = self.log.get_timestamp(node)?;
                 builder.add_node(node, ts);
 
-                let snapshot_idx = log_math::rightmost_leaf(node);
+                let snapshot_idx = node;
                 let n = self.get_max_version_at(&label_history, snapshot_idx);
 
                 let versions = greatest_version_binary_ladder(target_ver, n, false, &[], &[], &[]);

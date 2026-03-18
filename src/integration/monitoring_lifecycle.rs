@@ -23,7 +23,7 @@ async fn test_contact_monitoring_conformant() -> Result<()> {
     
     // Set RMW to 0 to make every node distinguished (maximum verification path)
     {
-        let mut tree = service.tree.lock().await;
+        let mut tree = service.tree.write().await;
         tree.config.reasonable_monitoring_window = 0;
     }
 
@@ -104,7 +104,7 @@ async fn test_owner_monitoring_conformant() -> Result<()> {
     
     // Normal RMW to test skipping
     {
-        let mut tree = service.tree.lock().await;
+        let mut tree = service.tree.write().await;
         tree.config.reasonable_monitoring_window = 1000 * 60; // 1 minute
     }
 
@@ -158,6 +158,63 @@ async fn test_owner_monitoring_conformant() -> Result<()> {
     let proof = resp.monitor.unwrap();
     assert!(proof.inclusion.is_some());
     assert!(!proof.prefix_proofs.is_empty());
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_contact_monitoring_ibst_path_fix() -> Result<()> {
+    let dir = tempdir()?;
+    let db = Arc::new(RocksDbStore::new(dir.path().to_str().unwrap())?);
+    let (signer, _) = crypto::generate_sig_keypair();
+    let (vrf_key, _) = crypto::generate_vrf_keypair(CIPHER_SUITE_KT_128_SHA256_ED25519);
+    
+    let service = KeyTransparencyImpl::new(db, signer, vrf_key, HashMap::new(), None).await?;
+    
+    // We intentionally leave Reasonable Monitoring Window at default (86400000 ms) 
+    // to force the traversal loop to climb the IBST tree.
+
+    // 1. Build a tree of 50 updates (mimicking the benchmark environment)
+    let target_user = b"bug_test_user".to_vec();
+    
+    for i in 0..50 {
+        let user = if i == 25 { target_user.clone() } else { format!("user_{}", i).into_bytes() };
+        
+        service.update(tonic::Request::new(SignedUpdateRequest {
+            request: Some(UpdateRequest {
+                search_key: user,
+                value: format!("val_{}", i).into_bytes(),
+                consistency: None,
+                expected_pre_update_value: vec![],
+                return_update_response: false,
+            }),
+            signature: vec![],
+        })).await?;
+    }
+
+    // 2. Perform Contact Monitoring for the user inserted at position 25
+    let req = MonitorRequest {
+        last: Some(50), 
+        labels: vec![MonitorLabel {
+            label: target_user.clone(),
+            entries: vec![MonitorMapEntry {
+                position: 25,
+                version: 0,
+            }],
+            rightmost: None, // Contact mode
+        }],
+        consistency: None,
+    };
+
+    // Before the fix, this panicked with "Timestamp not found for log index XXX".
+    // After the fix, it should succeed.
+    let resp = service.monitor(tonic::Request::new(req)).await;
+    
+    assert!(resp.is_ok(), "Monitor request failed: {:?}", resp.err());
+    
+    let inner_resp = resp.unwrap().into_inner();
+    assert!(inner_resp.monitor.is_some());
+    assert!(!inner_resp.monitor.unwrap().timestamps.is_empty());
 
     Ok(())
 }

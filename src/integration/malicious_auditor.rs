@@ -44,7 +44,7 @@ async fn test_malicious_auditor_logic() -> Result<()> {
     }
 
     // Current Server State: TreeSize = 2
-    let tree_guard = service.tree.lock().await;
+    let tree_guard = service.tree.write().await;
     let current_root = tree_guard.log.get_root(2)?;
     let current_ts = tree_guard.latest.as_ref().unwrap().timestamp as u64;
     drop(tree_guard); // Drop lock to allow service calls
@@ -107,7 +107,7 @@ async fn test_malicious_auditor_logic() -> Result<()> {
     // "Actually, the tree size is 1".
     
     let root_1 = {
-        let guard = service.tree.lock().await;
+        let guard = service.tree.write().await;
         guard.log.get_root(1)?
     };
 
@@ -134,7 +134,7 @@ async fn test_malicious_auditor_logic() -> Result<()> {
     assert!(err_msg.contains("regression"), "Error message should mention regression/rewind. Got: {}", err_msg);
 
     // Verify the state remains at 2
-    let tree_guard = service.tree.lock().await;
+    let tree_guard = service.tree.write().await;
     let stored_ath = tree_guard.auditors.get(&hex::encode(&auditor_pk_bytes)).unwrap();
     
     assert_eq!(stored_ath.tree_size, 2, "Auditor state should verify remain at 2");

@@ -1,7 +1,7 @@
 [package]
 name = "rukt"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 
 [dependencies]
 tonic = "0.10"
@@ -24,9 +24,19 @@ bytes = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 futures = "0.3"
 aes = "0.8"
+dashmap = "5.5"
+rayon = "1.8"
 
 [build-dependencies]
 tonic-build = "0.10"
 
 [dev-dependencies]
 tempfile = "3.8"
+criterion = { version = "0.5", features = ["async_tokio"] }
+fs_extra = "1.3"
+num_cpus = "1.16"
+prost = "0.12"
+
+[[bench]]
+name = "kt_benchmarks"
+harness = false

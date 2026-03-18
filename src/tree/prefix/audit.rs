@@ -12,8 +12,10 @@ impl PrefixTree {
         let mut seeds = Vec::new();
         let mut prev_seeds = Vec::new();
 
+        // Note: For bulk auditing, we currently hit RocksDB directly for throughput on cold data.
+        // If auditing hot data, we could route this through the cache, but direct DB batching 
+        // is often preferred for linear scans.
         let ids: Vec<u64> = (start..end).collect();
-        // Optimize retrieval by batch fetching from RocksDB
         let raw_batch = self.store.batch_get_prefix(&ids)?;
         
         let mut map = HashMap::new();
@@ -31,7 +33,6 @@ impl PrefixTree {
             let mut prev_seed = vec![];
             
             if id > 0 {
-                // Determine if we need the previous seed for audit proofs
                 let needs_prev = (entry.leaf.is_none() && !entry.copath.is_empty()) || 
                                  (entry.leaf.as_ref().map(|l| l.ctr == 0).unwrap_or(false));
                 
@@ -40,11 +41,9 @@ impl PrefixTree {
                     let len = std::cmp::min(entry.index.len(), 32);
                     search_idx[0..len].copy_from_slice(&entry.index[0..len]);
 
-                    // Look back in the tree to find where this key (or its prefix) was last modified/diverged
                     let res = self.search_for_prev_seed(id - 1, &search_idx).await?;
                     prev_seed = compute_seed(&self.aes_key, res);
                 } else if entry.leaf.is_none() && entry.copath.is_empty() {
-                    // Start of a new epoch or tree
                     prev_seed = compute_seed(&self.aes_key, id - 1);
                 }
             }
@@ -63,22 +62,13 @@ impl PrefixTree {
         let overlay = HashMap::new();
 
         loop {
-            let raw_entry = self.get_entry_bytes(ptr, &overlay)?;
-            let entry = LogEntry::decode(&raw_entry[..])?;
-            let cached = CachedLogEntry::new(entry, self.aes_key.clone());
+            // FIXED: Returns Arc<CachedLogEntry>
+            let entry = self.get_entry(ptr, &overlay)?;
 
-            match self.step(index, ptr, &mut copath, &cached) {
-                StepResult::Found(_) => {
-                    // Found the exact key in the past
-                    return Ok(0); // 0 acts as a sentinel here for "found exact match", logic handled in caller/hasher usually
-                },
-                StepResult::Continue(next_ptr) => {
-                    ptr = next_ptr;
-                },
-                StepResult::Failed(_, pos) => {
-                    // Stopped at a diversion or missing node, return that position
-                    return Ok(pos);
-                }
+            match self.step(index, ptr, &mut copath, &entry) {
+                StepResult::Found(_) => { return Ok(0); },
+                StepResult::Continue(next_ptr) => { ptr = next_ptr; },
+                StepResult::Failed(_, pos) => { return Ok(pos); }
             }
         }
     }

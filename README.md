@@ -8,9 +8,12 @@ This server implements a verifiable, append-only log that maps user identifiers 
 
 *   **Protocol Compliance:** Full implementation of Draft-03, including Log Tree, Prefix Tree, and Combined Tree proofs.
 *   **Crypto Suites:** Support for `KT_128_SHA256_ED25519` (Ed25519 + ECVRF-EDWARDS25519-SHA512-TAI) and P-256.
-*   **Storage:** Persistent storage using **RocksDB**.
+*   **Storage:** Persistent storage using **RocksDB** with tuned write throughput (large memtables, parallel background jobs, batched writes).
 *   **Privacy:** Randomized VRF proofs to prevent traffic correlation and "deletable openings" for Right-to-be-Forgotten compliance.
 *   **gRPC API:** High-performance gRPC interface via `tonic`.
+*   **Concurrent Batch Processing:** The batcher pipelines work into four phases — sequential versioning, parallel VRF/commitment cryptography (`spawn_blocking`), sequential Merkle appends, and parallel proof generation — using an `RwLock` to allow concurrent reads during proof assembly.
+*   **Prefix Tree Caching:** A `DashMap`-based in-memory node cache eliminates repeated RocksDB reads and protobuf deserialization on hot prefix tree nodes.
+*   **Bulk Population:** Utilities in `src/bulk.rs` for building large trees efficiently via SST file ingestion and RocksDB checkpointing, with parallelized cryptography via `rayon`.
 
 ## Prerequisites
 
@@ -114,3 +117,13 @@ grpcurl -plaintext -emit-defaults \
     -proto key_transparency.proto \
     0.0.0.0:8080 kt.KeyTransparencyService/TreeSize
 ```
+
+## Benchmarks
+
+Criterion benchmarks live in `benches/kt_benchmarks.rs`. Run them with:
+
+```bash
+cargo bench
+```
+
+The benchmark suite uses `src/bulk.rs` to rapidly populate large trees (bypassing the gRPC/batcher path) and then measures operations like search, monitor, and update at scale. RocksDB checkpointing is used to snapshot a populated tree so each benchmark iteration starts from identical state.

@@ -17,24 +17,38 @@ use p256::{
 
 use super::{CIPHER_SUITE_KT_128_SHA256_ED25519, CIPHER_SUITE_KT_128_SHA256_P256};
 
-pub struct VrfConfig<'a> {
-    pub suite_id: u16,
-    pub secret_key: &'a [u8],
+#[derive(Clone)]
+pub enum VrfContext {
+    Ed25519 {
+        x: Scalar,
+        y_bytes: [u8; 32],
+    },
+    P256 {
+        x: P256Scalar,
+        y_bytes: Vec<u8>,
+    }
 }
 
-pub fn get_public_key(suite_id: u16, secret: &[u8]) -> Result<Vec<u8>> {
+pub fn expand_vrf_secret(suite_id: u16, secret: &[u8]) -> Result<VrfContext> {
     match suite_id {
-        CIPHER_SUITE_KT_128_SHA256_ED25519 => get_public_key_ed25519(secret),
-        CIPHER_SUITE_KT_128_SHA256_P256 => get_public_key_p256(secret),
+        CIPHER_SUITE_KT_128_SHA256_ED25519 => expand_vrf_secret_ed25519(secret),
+        CIPHER_SUITE_KT_128_SHA256_P256 => expand_vrf_secret_p256(secret),
         _ => Err(anyhow!("Unsupported cipher suite")),
     }
 }
 
-pub fn ecvrf_prove(config: &VrfConfig, alpha: &[u8]) -> Result<([u8; 32], Vec<u8>)> {
-    match config.suite_id {
-        CIPHER_SUITE_KT_128_SHA256_ED25519 => ecvrf_prove_ed25519(config.secret_key, alpha),
-        CIPHER_SUITE_KT_128_SHA256_P256 => ecvrf_prove_p256(config.secret_key, alpha),
-        _ => Err(anyhow!("Unsupported cipher suite")),
+pub fn get_public_key(suite_id: u16, secret: &[u8]) -> Result<Vec<u8>> {
+    let ctx = expand_vrf_secret(suite_id, secret)?;
+    match ctx {
+        VrfContext::Ed25519 { y_bytes, .. } => Ok(y_bytes.to_vec()),
+        VrfContext::P256 { y_bytes, .. } => Ok(y_bytes),
+    }
+}
+
+pub fn ecvrf_prove(ctx: &VrfContext, alpha: &[u8]) -> Result<([u8; 32], Vec<u8>)> {
+    match ctx {
+        VrfContext::Ed25519 { x, y_bytes } => ecvrf_prove_ed25519(x, y_bytes, alpha),
+        VrfContext::P256 { x, y_bytes } => ecvrf_prove_p256(x, y_bytes, alpha),
     }
 }
 
@@ -48,7 +62,7 @@ pub fn ecvrf_verify(suite_id: u16, pub_key: &[u8], alpha: &[u8], proof: &[u8]) -
 
 // --- ED25519 Implementation ---
 
-fn get_public_key_ed25519(seed: &[u8]) -> Result<Vec<u8>> {
+fn expand_vrf_secret_ed25519(seed: &[u8]) -> Result<VrfContext> {
     if seed.len() != 32 { return Err(anyhow!("Invalid Ed25519 seed length")); }
     
     let mut h = Sha512::new();
@@ -66,25 +80,13 @@ fn get_public_key_ed25519(seed: &[u8]) -> Result<Vec<u8>> {
     let x = Scalar::from_bytes_mod_order_wide(&wide_scalar);
 
     let y_point: EdwardsPoint = &x * ED25519_BASEPOINT_TABLE;
-    Ok(y_point.compress().to_bytes().to_vec())
-}
-
-fn ecvrf_prove_ed25519(seed: &[u8], alpha: &[u8]) -> Result<([u8; 32], Vec<u8>)> {
-    let mut h = Sha512::new();
-    h.update(seed);
-    let hashed_sk = h.finalize();
-    let mut scalar_bytes = [0u8; 32];
-    scalar_bytes.copy_from_slice(&hashed_sk[..32]);
-    scalar_bytes[0] &= 248;
-    scalar_bytes[31] &= 127;
-    scalar_bytes[31] |= 64;
-    let mut wide_scalar = [0u8; 64];
-    wide_scalar[0..32].copy_from_slice(&scalar_bytes);
-    let x = Scalar::from_bytes_mod_order_wide(&wide_scalar);
-    let y_point: EdwardsPoint = &x * ED25519_BASEPOINT_TABLE;
     let y_bytes = y_point.compress().to_bytes();
 
-    let h_point = encode_to_curve_ed25519(&y_bytes, alpha);
+    Ok(VrfContext::Ed25519 { x, y_bytes })
+}
+
+fn ecvrf_prove_ed25519(x: &Scalar, y_bytes: &[u8; 32], alpha: &[u8]) -> Result<([u8; 32], Vec<u8>)> {
+    let h_point = encode_to_curve_ed25519(y_bytes, alpha);
     let h_bytes = h_point.compress().to_bytes();
 
     let gamma = x * h_point;
@@ -100,7 +102,7 @@ fn ecvrf_prove_ed25519(seed: &[u8], alpha: &[u8]) -> Result<([u8; 32], Vec<u8>)>
     let v_point = nonce_scalar * h_point;
     let v_bytes = v_point.compress().to_bytes();
 
-    let c_scalar = challenge_ed25519(&y_bytes, &h_bytes, &gamma_bytes, &u_bytes, &v_bytes);
+    let c_scalar = challenge_ed25519(y_bytes, &h_bytes, &gamma_bytes, &u_bytes, &v_bytes);
     let c_bytes_16 = &c_scalar.to_bytes()[0..16];
 
     let s_scalar = nonce_scalar + (c_scalar * x);
@@ -199,30 +201,22 @@ fn proof_to_hash_ed25519(gamma: &EdwardsPoint) -> [u8; 32] {
 
 // --- P-256 Implementation ---
 
-fn get_public_key_p256(secret: &[u8]) -> Result<Vec<u8>> {
-    if secret.len() != 32 { return Err(anyhow!("Invalid P-256 scalar length")); }
-    let mut arr = [0u8; 32];
-    arr.copy_from_slice(secret);
-    
-    let sk_scalar: P256Scalar = Option::from(P256Scalar::from_repr(arr.into()))
-        .ok_or_else(|| anyhow!("Invalid P-256 scalar"))?;
-    
-    let pk_point = ProjectivePoint::GENERATOR * sk_scalar;
-    Ok(pk_point.to_encoded_point(true).as_bytes().to_vec())
-}
-
-fn ecvrf_prove_p256(secret: &[u8], alpha: &[u8]) -> Result<([u8; 32], Vec<u8>)> {
+fn expand_vrf_secret_p256(secret: &[u8]) -> Result<VrfContext> {
     if secret.len() != 32 { return Err(anyhow!("Invalid P-256 scalar length")); }
     let mut arr = [0u8; 32];
     arr.copy_from_slice(secret);
     
     let x: P256Scalar = Option::from(P256Scalar::from_repr(arr.into()))
-        .ok_or_else(|| anyhow!("Invalid scalar"))?;
-        
+        .ok_or_else(|| anyhow!("Invalid P-256 scalar"))?;
+    
     let y_point = ProjectivePoint::GENERATOR * x;
     let y_bytes = y_point.to_encoded_point(true).as_bytes().to_vec();
 
-    let h_point = encode_to_curve_p256(&y_bytes, alpha);
+    Ok(VrfContext::P256 { x, y_bytes })
+}
+
+fn ecvrf_prove_p256(x: &P256Scalar, y_bytes: &[u8], alpha: &[u8]) -> Result<([u8; 32], Vec<u8>)> {
+    let h_point = encode_to_curve_p256(y_bytes, alpha);
     let h_bytes = h_point.to_encoded_point(true).as_bytes().to_vec();
 
     let gamma = h_point * x;
@@ -236,7 +230,7 @@ fn ecvrf_prove_p256(secret: &[u8], alpha: &[u8]) -> Result<([u8; 32], Vec<u8>)> 
     let v_point = h_point * k;
     let v_bytes = v_point.to_encoded_point(true).as_bytes().to_vec();
 
-    let c_scalar = challenge_p256(&y_bytes, &h_bytes, &gamma_bytes, &u_bytes, &v_bytes);
+    let c_scalar = challenge_p256(y_bytes, &h_bytes, &gamma_bytes, &u_bytes, &v_bytes);
     let c_bytes_full = c_scalar.to_bytes();
     let c_bytes_16 = &c_bytes_full[0..16];
 

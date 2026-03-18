@@ -102,7 +102,7 @@ async fn test_multi_label_batching_collisions() -> Result<()> {
     // Check that we didn't create 10 separate log entries (batches should work)
     // Note: Exact tree size depends on race conditions and batch timeout, 
     // but it should ideally be less than the number of updates.
-    let current_tree_size = service.tree.lock().await.latest.as_ref().unwrap().tree_size;
+    let current_tree_size = service.tree.write().await.latest.as_ref().unwrap().tree_size;
     println!("Total updates: {}, Final Tree Size: {}", num_concurrent_updates, current_tree_size);
     
     // 6. Verify Greatest Version

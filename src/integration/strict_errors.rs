@@ -18,7 +18,7 @@ async fn test_strict_errors() -> Result<()> {
     
     let mut service = KeyTransparencyImpl::new(db.clone(), signer, vrf_key, HashMap::new(), None).await?;
     {
-         let mut tree = service.tree.lock().await;
+         let mut tree = service.tree.write().await;
          tree.config.maximum_lifetime = Some(10_000); 
     }
 

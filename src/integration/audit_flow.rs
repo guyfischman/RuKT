@@ -63,11 +63,11 @@ async fn test_audit_flow_with_signatures() -> Result<()> {
     // 3. Auditor Signs the Head
     let tree_size = 2;
     let root_hash = {
-        let guard = service.tree.lock().await;
+        let guard = service.tree.write().await;
         guard.log.get_root(tree_size)?
     };
     let timestamp = {
-        let guard = service.tree.lock().await;
+        let guard = service.tree.write().await;
         guard.latest.as_ref().unwrap().timestamp as u64
     };
 

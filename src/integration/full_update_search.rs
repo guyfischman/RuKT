@@ -34,7 +34,7 @@ async fn test_full_update_search_and_consistency() -> Result<()> {
     let _ = service.update(req_a).await?;
     
     let root_1 = {
-        let guard = service.tree.lock().await;
+        let guard = service.tree.write().await;
         guard.log.get_root(1)?
     };
 
@@ -53,12 +53,12 @@ async fn test_full_update_search_and_consistency() -> Result<()> {
     let _ = service.update(req_b).await?;
     
     let root_2 = {
-        let guard = service.tree.lock().await;
+        let guard = service.tree.write().await;
         guard.log.get_root(2)?
     };
 
     let proof = {
-        let guard = service.tree.lock().await;
+        let guard = service.tree.write().await;
         guard.prove_consistency(1, 2)?
     };
     

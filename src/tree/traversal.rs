@@ -186,7 +186,7 @@ impl Tree {
 
             for entry in &label_req.entries {
                 let mut path = vec![entry.position];
-                path.extend(log_math::direct_path(entry.position, tree_size));
+                path.extend(log_math::ibst_direct_path(entry.position, tree_size));
                 path.retain(|&idx| idx >= entry.position);
                 path.sort();
 

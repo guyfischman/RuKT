@@ -1,4 +1,4 @@
-// Start src/tree/prefix/read.rs
+// src/tree/prefix/read.rs
 use crate::proto::prefix_tree::{LogEntry, ParentNode};
 use crate::tree::prefix::{StepResult, PrefixTree};
 use super::entry::CachedLogEntry;
@@ -6,6 +6,8 @@ use super::hasher;
 use anyhow::{Result, anyhow};
 use std::collections::HashMap;
 use prost::Message;
+use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
 #[derive(Clone)]
 pub struct SearchResult {
@@ -19,19 +21,39 @@ pub struct SearchResult {
 pub struct ProofResult {
     pub inclusion_proof: Vec<Vec<u8>>,
     pub commitment: Option<Vec<u8>>, 
-    pub result_type: u32, // 1=Inclusion, 2=NonInclusionLeaf, 3=NonInclusionParent
-    pub leaf_vrf_output: Option<Vec<u8>>, // For NonInclusionLeaf
-    pub leaf_commitment: Option<Vec<u8>>, // For NonInclusionLeaf
+    pub result_type: u32, 
+    pub leaf_vrf_output: Option<Vec<u8>>, 
+    pub leaf_commitment: Option<Vec<u8>>, 
     pub depth: u32,
 }
 
 impl PrefixTree {
-    pub(crate) fn get_entry_bytes(&self, ptr: u64, overlay: &HashMap<u64, Vec<u8>>) -> Result<Vec<u8>> {
+    // CHANGED: Return Arc<CachedLogEntry>
+    pub(crate) fn get_entry(&self, ptr: u64, overlay: &HashMap<u64, Vec<u8>>) -> Result<Arc<CachedLogEntry>> {
+        // 1. Overlay (Construct fresh cache entry, don't store in global cache yet)
         if let Some(val) = overlay.get(&ptr) {
-            Ok(val.clone())
-        } else {
-            self.store.get_prefix(ptr)?.ok_or_else(|| anyhow!("Missing prefix entry {}", ptr))
+            let entry = LogEntry::decode(&val[..])?;
+            let cached = CachedLogEntry::new(Arc::new(entry), &self.aes_key);
+            return Ok(Arc::new(cached));
         }
+        
+        // 2. DashMap (Fast Path)
+        if let Some(entry) = self.node_cache.get(&ptr) {
+            self.hits.fetch_add(1, Ordering::Relaxed);
+            return Ok(entry.clone());
+        }
+        
+        self.misses.fetch_add(1, Ordering::Relaxed);
+
+        // 3. RocksDB
+        let bytes = self.store.get_prefix(ptr)?.ok_or_else(|| anyhow!("Missing prefix entry {}", ptr))?;
+        let entry = Arc::new(LogEntry::decode(&bytes[..])?);
+        
+        // 4. Populate Cache
+        let cached = Arc::new(CachedLogEntry::new(entry, &self.aes_key));
+        self.node_cache.insert(ptr, cached.clone());
+        
+        Ok(cached)
     }
 
     pub(crate) fn step(
@@ -39,15 +61,18 @@ impl PrefixTree {
         target_index: &[u8], 
         current_ptr: u64, 
         current_copath: &mut Vec<ParentNode>, 
-        cached_entry: &CachedLogEntry
+        cached_entry: &Arc<CachedLogEntry> // Take Arc
     ) -> StepResult {
+        self.debug_steps.fetch_add(1, Ordering::Relaxed);
+
         let entry = &cached_entry.inner;
 
         if entry.leaf.is_some() && entry.index == target_index {
             let merged_copath = super::entry::combine_copaths(current_copath.clone(), entry.copath.clone());
-            let mut result_entry = entry.clone();
-            result_entry.copath = merged_copath;
-            return StepResult::Found(CachedLogEntry::new(result_entry, self.aes_key.clone()));
+            let mut result_entry_struct = (**entry).clone(); 
+            result_entry_struct.copath = merged_copath;
+            // Create a new Cached wrapper for the result (this is rare, only on match)
+            return StepResult::Found(Arc::new(CachedLogEntry::new(Arc::new(result_entry_struct), &self.aes_key)));
         }
 
         loop {
@@ -58,7 +83,7 @@ impl PrefixTree {
                 if hasher::get_bit(&entry.index, depth) == hasher::get_bit(target_index, depth) {
                     current_copath.push(parent.clone());
                 } else {
-                    let hash = cached_entry.rollup(depth + 1);
+                    let hash = cached_entry.rollup(depth + 1, Some(&self.debug_hash_ops));
                     let node = ParentNode {
                         hash, 
                         ptr: Some(current_ptr), 
@@ -84,7 +109,7 @@ impl PrefixTree {
                         first_update_position: Some(entry.first_update_position)
                     });
                 } else {
-                    let hash = cached_entry.rollup(depth + 1);
+                    let hash = cached_entry.rollup(depth + 1, Some(&self.debug_hash_ops));
                     current_copath.push(ParentNode {
                         hash,
                         ptr: Some(current_ptr),
@@ -96,17 +121,17 @@ impl PrefixTree {
         }
     }
 
+    // ... search / search_for_proof ...
+    // NOTE: Just remove `CachedLogEntry::new` calls inside loops in `search` and `search_for_proof`
+    // `let entry = self.get_entry(...)` now returns exactly what `step` needs.
     pub async fn search(&self, ptr: u64, index: &[u8]) -> Result<Option<SearchResult>> {
         let mut curr = ptr;
         let mut copath = Vec::new();
         let overlay = HashMap::new(); 
 
         loop {
-            let raw_entry = self.get_entry_bytes(curr, &overlay)?;
-            let entry = LogEntry::decode(&raw_entry[..])?;
-            let cached = CachedLogEntry::new(entry, self.aes_key.clone());
-
-            match self.step(index, curr, &mut copath, &cached) {
+            let entry = self.get_entry(curr, &overlay)?;
+            match self.step(index, curr, &mut copath, &entry) {
                 StepResult::Found(final_entry) => {
                     let leaf = final_entry.inner.leaf.as_ref().unwrap();
                     let depth = final_entry.inner.copath.len() as u32;
@@ -118,12 +143,8 @@ impl PrefixTree {
                         depth,
                     }));
                 },
-                StepResult::Continue(next_ptr) => {
-                    curr = next_ptr;
-                },
-                StepResult::Failed(_copath, _) => {
-                    return Ok(None);
-                }
+                StepResult::Continue(next_ptr) => { curr = next_ptr; },
+                StepResult::Failed(_, _) => { return Ok(None); }
             }
         }
     }
@@ -131,43 +152,32 @@ impl PrefixTree {
     pub async fn search_for_proof(&self, ptr: u64, index: &[u8], overlay: &HashMap<u64, Vec<u8>>) -> Result<ProofResult> {
         let mut curr = ptr;
         let mut copath = Vec::new();
-        
         loop {
-            let raw_entry = self.get_entry_bytes(curr, overlay)?;
-            let entry = LogEntry::decode(&raw_entry[..])?;
-            let cached = CachedLogEntry::new(entry, self.aes_key.clone());
-
-            match self.step(index, curr, &mut copath, &cached) {
+            let entry = self.get_entry(curr, overlay)?;
+            match self.step(index, curr, &mut copath, &entry) {
                 StepResult::Found(final_entry) => {
                     let leaf = final_entry.inner.leaf.as_ref().unwrap();
                     return Ok(ProofResult {
                         inclusion_proof: final_entry.inner.copath.iter().map(|n| n.hash.clone()).collect(),
                         commitment: Some(leaf.commitment.clone()),
-                        result_type: 1, // Inclusion
+                        result_type: 1, 
                         leaf_vrf_output: None,
                         leaf_commitment: None,
                         depth: final_entry.inner.copath.len() as u32,
                     });
                 },
-                StepResult::Continue(next_ptr) => {
-                    curr = next_ptr;
-                },
+                StepResult::Continue(next_ptr) => { curr = next_ptr; },
                 StepResult::Failed(failed_copath, _) => {
-                    // Check if we failed at a leaf node (Type 2) or parent (Type 3)
                     let result_type;
                     let mut l_vrf = None;
                     let mut l_comm = None;
-
-                    if let Some(l) = &cached.inner.leaf {
-                        // If we are at a leaf but it didn't match `index`, it's NonInclusionLeaf
+                    if let Some(l) = &entry.inner.leaf {
                         result_type = 2;
-                        l_vrf = Some(cached.inner.index.clone());
+                        l_vrf = Some(entry.inner.index.clone());
                         l_comm = Some(l.commitment.clone());
                     } else {
-                        // Internal node
                         result_type = 3;
                     }
-
                     return Ok(ProofResult {
                         inclusion_proof: failed_copath.iter().map(|n| n.hash.clone()).collect(),
                         commitment: None,
@@ -180,12 +190,11 @@ impl PrefixTree {
             }
         }
     }
-
+    
     pub async fn multi_search(&self, ptr: u64, keys: &[Vec<u8>]) -> Result<Vec<Option<SearchResult>>> {
         let mut results = Vec::new();
-        for k in keys {
-            results.push(self.search(ptr, k).await?);
-        }
+        for k in keys { results.push(self.search(ptr, k).await?); }
         Ok(results)
     }
 }
+// End src/tree/prefix/read.rs
