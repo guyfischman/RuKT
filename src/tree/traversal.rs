@@ -2,7 +2,7 @@ use super::Tree;
 use crate::proto::transparency::{CombinedTreeProof, MonitorMapEntry, BinaryLadderStep, UpdateValue};
 use crate::tree::walker::TraversalSession;
 use crate::tree::log_math;
-use crate::tree::binary_ladder::{fixed_version_binary_ladder, greatest_version_binary_ladder, monitor_binary_ladder};
+use crate::tree::binary_ladder::{search_binary_ladder, monitoring_binary_ladder};
 use crate::tree::errors::KtError;
 use anyhow::{Result, anyhow};
 use std::collections::HashSet;
@@ -92,7 +92,7 @@ impl Tree {
                 return Err(anyhow::Error::new(KtError::Expired));
             }
 
-            let versions = fixed_version_binary_ladder(target_ver, n, &[], &[]);
+            let versions = search_binary_ladder(target_ver, n, &[], &[]);
             let found_target = n == target_ver;
             let extract = if found_target { Some(target_ver) } else { None };
             
@@ -155,7 +155,7 @@ impl Tree {
             if n > known_max { known_max = n; }
 
             let extract = if node == *frontier.last().unwrap() { Some(known_max) } else { None };
-            let versions = greatest_version_binary_ladder(known_max, n, false, &[], &[], &[]);
+            let versions = search_binary_ladder(known_max, n, &[], &[]);
             
             session.visit(node, &versions, extract, tree_size).await?;
         }
@@ -185,7 +185,7 @@ impl Tree {
             path.sort();
 
             for &log_id in &path {
-                let ladder = monitor_binary_ladder(entry.version, &[]);
+                let ladder = monitoring_binary_ladder(entry.version, &[]);
                 session.visit(log_id, &ladder, None, tree_size).await?;
                 if distinguished_set.contains(&log_id) { break; }
             }
@@ -213,7 +213,7 @@ impl Tree {
         let mut versions = Vec::new();
         for (node_idx, ver) in nodes {
             versions.push(ver);
-            let ladder = greatest_version_binary_ladder(ver, ver, true, &[], &[], &[]);
+            let ladder = search_binary_ladder(ver, ver, &[], &[]);
             session.visit(node_idx, &ladder, None, tree_size).await?;
         }
         Ok(versions)

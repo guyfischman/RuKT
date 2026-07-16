@@ -65,22 +65,20 @@ pub fn base_binary_ladder(n: u32) -> Vec<u32> {
     out
 }
 
-/// Returns the set of versions that would be looked up in a binary ladder for a
-/// fixed-version search where the target version is t and the greatest version of
-/// the label that exists in a given version of the prefix tree is n.
-pub fn fixed_version_binary_ladder(
+/// Appendix B `search_binary_ladder`: target version t, greatest version existing
+/// in the given prefix tree n.
+pub fn search_binary_ladder(
     t: u32,
     n: u32,
     left_inclusion: &[u32],
     right_non_inclusion: &[u32],
 ) -> Vec<u32> {
     let out = base_binary_ladder(n);
-    
-    // Find end index: first index where would_end(v) is true
+
+    // (Proof of inclusion for a version greater than t) OR
+    // (Proof of non-inclusion for a version less than or equal to t)
     let end = out.iter().position(|&v| {
-        // (Proof of inclusion for a version greater than or equal to t) OR
-        // (Proof of non-inclusion for a version less than or equal to t)
-        (v <= n && v >= t) || (v > n && v <= t)
+        (v <= n && v > t) || (v > n && v <= t)
     }).map(|i| i + 1).unwrap_or(out.len());
 
     out.into_iter()
@@ -89,47 +87,14 @@ pub fn fixed_version_binary_ladder(
         .collect()
 }
 
-/// Returns the set of versions that would be looked up in a binary ladder for a
-/// monitoring query where the monitored version of the label is t.
-pub fn monitor_binary_ladder(
+/// Appendix B `monitoring_binary_ladder`: monitored version of the label is t.
+pub fn monitoring_binary_ladder(
     t: u32,
     left_inclusion: &[u32],
 ) -> Vec<u32> {
     let out = base_binary_ladder(t);
     out.into_iter()
         .filter(|&v| v <= t && !left_inclusion.contains(&v))
-        .collect()
-}
-
-/// Returns the set of versions that would be looked up in a binary ladder for a
-/// greatest-version search where the greatest version of a label that exists
-/// globally is t but the greatest version of the label in a given version of the
-/// prefix tree is n.
-pub fn greatest_version_binary_ladder(
-    t: u32,
-    n: u32,
-    distinguished: bool,
-    left_inclusion: &[u32],
-    right_non_inclusion: &[u32],
-    same_entry: &[u32],
-) -> Vec<u32> {
-    let out = base_binary_ladder(t);
-    
-    // Find end index
-    let end = out.iter().position(|&v| {
-        // Proof of non-inclusion for a version less than or equal to t
-         v > n && v <= t
-    }).map(|i| i + 1).unwrap_or(out.len());
-
-    out.into_iter()
-        .take(end)
-        .filter(|&v| {
-            if distinguished {
-                !same_entry.contains(&v)
-            } else {
-                !left_inclusion.contains(&v) && !right_non_inclusion.contains(&v)
-            }
-        })
         .collect()
 }
 
@@ -153,6 +118,27 @@ mod tests {
     fn test_base_binary_ladder_6() {
         let res = base_binary_ladder(6);
         assert_eq!(res, vec![0, 1, 3, 7, 5, 6]);
+    }
+
+    #[test]
+    fn test_search_binary_ladder_continues_past_equal_target() {
+        // §6.2: the ladder ends at the first inclusion proof for a version
+        // strictly greater than the target, not merely equal to it
+        assert_eq!(search_binary_ladder(1, 1, &[], &[]), vec![0, 1, 3, 2]);
+        assert_eq!(search_binary_ladder(2, 6, &[], &[]), vec![0, 1, 3]);
+        assert_eq!(search_binary_ladder(7, 3, &[], &[]), vec![0, 1, 3, 7]);
+    }
+
+    #[test]
+    fn test_search_binary_ladder_dedup() {
+        assert_eq!(search_binary_ladder(1, 1, &[0], &[]), vec![1, 3, 2]);
+        assert_eq!(search_binary_ladder(1, 1, &[], &[3]), vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn test_monitoring_binary_ladder() {
+        assert_eq!(monitoring_binary_ladder(6, &[]), vec![0, 1, 3, 5, 6]);
+        assert_eq!(monitoring_binary_ladder(6, &[0, 1]), vec![3, 5, 6]);
     }
 
     #[test]

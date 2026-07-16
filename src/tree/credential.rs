@@ -6,7 +6,7 @@ use crate::proto::transparency::{
     PrefixProof 
 };
 use crate::tree::log_math;
-use crate::tree::binary_ladder::greatest_version_binary_ladder;
+use crate::tree::binary_ladder::search_binary_ladder;
 use anyhow::{Result, anyhow};
 use futures::future::BoxFuture; 
 
@@ -48,7 +48,7 @@ impl Tree {
             let snapshot_log_idx = dist_node;
             let n = self.get_max_version_at(&label_history, snapshot_log_idx);
 
-            let versions = greatest_version_binary_ladder(target_ver, n, true, &[], &[], &[]);
+            let versions = search_binary_ladder(target_ver, n, &[], &[]);
             let prefix_ptr = self.log.get_prefix_ptr(dist_node)?;
             let (prefix_proof, ladder_results) = self.generate_ladder_proof(prefix_ptr, tree_size, &req.label, &versions).await?;
 
@@ -94,7 +94,7 @@ impl Tree {
                 let snapshot_idx = node;
                 let n = self.get_max_version_at(&label_history, snapshot_idx);
 
-                let versions = greatest_version_binary_ladder(target_ver, n, false, &[], &[], &[]);
+                let versions = search_binary_ladder(target_ver, n, &[], &[]);
                 let prefix_ptr = self.log.get_prefix_ptr(node)?;
                 let (proof_struct, results) = self.generate_ladder_proof(prefix_ptr, tree_size, &req.label, &versions).await?;
 
