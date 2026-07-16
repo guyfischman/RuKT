@@ -83,3 +83,55 @@ async fn test_audit_flow_with_signatures() -> Result<()> {
 
     Ok(())
 }
+
+#[tokio::test]
+async fn test_auditor_verifies_multi_leaf_batches() -> Result<()> {
+    let dir = tempdir()?;
+    let db = Arc::new(RocksDbStore::new(dir.path().to_str().unwrap())?);
+
+    let (server_signer, _) = crypto::generate_sig_keypair();
+    let (vrf_key, _) = crypto::generate_vrf_keypair(crypto::CIPHER_SUITE_KT_128_SHA256_ED25519);
+
+    let service = KeyTransparencyImpl::new(db, server_signer, vrf_key, HashMap::new(), None).await?;
+
+    // one log entry with many added leaves, then another
+    let values: Vec<LabelValue> = (0..8)
+        .map(|i| LabelValue { value: format!("v{}", i).into_bytes() })
+        .collect();
+    service.update(tonic::Request::new(UpdateRequest {
+        last: None,
+        label: b"batch_label".to_vec(),
+        greatest_version: None,
+        values,
+    })).await?;
+    service.update(tonic::Request::new(UpdateRequest {
+        last: None,
+        label: b"solo_label".to_vec(),
+        greatest_version: None,
+        values: vec![LabelValue { value: b"x".to_vec() }],
+    })).await?;
+
+    let updates = service.audit(tonic::Request::new(AuditRequest { start: 0, limit: 10 }))
+        .await?.into_inner().updates;
+    assert_eq!(updates.len(), 2);
+    assert_eq!(updates[0].added.len(), 8);
+    assert!(updates[0].added.windows(2).all(|w| w[0].vrf_output < w[1].vrf_output));
+
+    // §15.2 steps 6-7 across both entries, checked against the operator's roots
+    use crate::client::verifier::PrefixTransitioner;
+    let mut prefix_root = vec![0u8; 32];
+    for update in &updates {
+        prefix_root = PrefixTransitioner::verify_and_transition(
+            &prefix_root,
+            &update.added,
+            &update.removed,
+            update.proof.as_ref().unwrap(),
+        )?;
+    }
+
+    let guard = service.tree.read().await;
+    let served_root = guard.log.get_prefix_root(1)?;
+    assert_eq!(prefix_root, served_root, "Auditor-computed prefix root must match the operator's");
+
+    Ok(())
+}

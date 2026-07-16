@@ -46,12 +46,43 @@ impl KtAuditor {
         }
 
         for update in resp.updates {
+            // §15.2 step 1
             if update.timestamp < self.last_timestamp {
                 return Err(anyhow!("Time regression detected"));
             }
-            
+
+            // §15.2 step 2
+            for list in [&update.added, &update.removed] {
+                for pair in list.windows(2) {
+                    if pair[0].vrf_output >= pair[1].vrf_output {
+                        return Err(anyhow!("Audit leaves are not sorted ascending without duplicates"));
+                    }
+                }
+            }
+
             let proof = update.proof.ok_or(anyhow!("Missing prefix proof"))?;
-            
+            if proof.results.len() != update.added.len() + update.removed.len() {
+                return Err(anyhow!("Audit proof result count mismatch"));
+            }
+
+            // §15.2 steps 3-4
+            let removed_keys: std::collections::HashSet<&[u8]> =
+                update.removed.iter().map(|l| l.vrf_output.as_slice()).collect();
+            for (i, leaf) in update.added.iter().enumerate() {
+                if !removed_keys.contains(leaf.vrf_output.as_slice())
+                    && proof.results[i].result_type == 1
+                {
+                    return Err(anyhow!("Added leaf has an inclusion result but is not being removed"));
+                }
+            }
+            for (i, _) in update.removed.iter().enumerate() {
+                if proof.results[update.added.len() + i].result_type != 1 {
+                    return Err(anyhow!("Removed leaf lacks an inclusion result"));
+                }
+            }
+            // TODO: step 5 (removed leaves published in a distinguished entry) once removals are used
+
+            // §15.2 steps 6-7
             let new_prefix_root = PrefixTransitioner::verify_and_transition(
                 &self.prefix_root,
                 &update.added,

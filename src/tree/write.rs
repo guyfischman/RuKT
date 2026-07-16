@@ -62,63 +62,73 @@ impl Tree {
         // ==========================================
         let t_search = Instant::now();
         
-        let mut audit_futures = Vec::new();
-        let prefix_arc = self.prefix.clone(); // Clone the cheap handle
+        // §15.2: added is sorted ascending by vrf_output, with one search result
+        // per added key (in order) followed by one per removed key
+        let mut audit_keys: Vec<(Vec<u8>, Vec<u8>)> = valid_updates.iter()
+            .map(|(_, update, _)| (update.index.to_vec(), update.commitment.clone()))
+            .collect();
+        audit_keys.sort_by(|a, b| a.0.cmp(&b.0));
 
-        // Parallelize!
         for (_, update, _) in &valid_updates {
+            prefix_entries.push((update.index.to_vec(), update.commitment.clone()));
+        }
+
+        let mut audit_futures = Vec::new();
+        let prefix_arc = self.prefix.clone();
+
+        for (idx, comm) in &audit_keys {
             if let Some(ptr) = current_log_ptr {
                 let p_tree = prefix_arc.clone();
-                let idx = update.index.clone();
-                let comm = update.commitment.clone();
-                
-                // Spawn onto thread pool
+                let idx = idx.clone();
+                let comm = comm.clone();
                 audit_futures.push(tokio::spawn(async move {
-                    let overlay = HashMap::new(); // Empty overlay for reads (safe for audit proofs)
+                    let overlay = HashMap::new();
                     let proof_res = p_tree.search_for_proof(ptr, &idx, &overlay).await?;
                     Ok::<_, anyhow::Error>((proof_res, idx, comm))
                 }));
+            } else {
+                // genesis: every search in the empty previous tree is a non-inclusion
+                audit_search_results.push(PrefixSearchResult {
+                    result_type: 3,
+                    leaf: None,
+                    depth: 0,
+                });
+                added_leaves.push(PrefixLeaf { vrf_output: idx.clone(), commitment: comm.clone() });
             }
         }
 
-        // Collect results from threads
         let results = futures::future::join_all(audit_futures).await;
+        let mut removed_results: Vec<(PrefixSearchResult, Vec<Vec<u8>>)> = Vec::new();
 
         for res in results {
-            let (proof_res, idx_bytes, update_comm) = res??; // Unwrap JoinError and Result
-            
-            if let Some(old_c) = &proof_res.commitment {
-                removed_leaves.push(PrefixLeaf { vrf_output: idx_bytes.to_vec(), commitment: old_c.clone() });
-            }
-            
+            let (proof_res, idx_bytes, update_comm) = res??;
+
             let leaf = if proof_res.result_type == 2 {
                 Some(PrefixLeaf {
                     vrf_output: proof_res.leaf_vrf_output.unwrap_or_default(),
                     commitment: proof_res.leaf_commitment.unwrap_or_default(),
                 })
             } else { None };
-            
-            audit_search_results.push(PrefixSearchResult {
+            let result = PrefixSearchResult {
                 result_type: proof_res.result_type,
                 leaf,
                 depth: proof_res.depth,
-            });
+            };
 
-            if combined_audit_proof_elements.is_empty() {
-                combined_audit_proof_elements = proof_res.inclusion_proof;
+            if let Some(old_c) = &proof_res.commitment {
+                removed_leaves.push(PrefixLeaf { vrf_output: idx_bytes.clone(), commitment: old_c.clone() });
+                removed_results.push((result.clone(), proof_res.inclusion_proof.clone()));
             }
-            
-            // Re-populate prefix_entries and added_leaves which we skipped in the loop
-            prefix_entries.push((idx_bytes.to_vec(), update_comm.clone()));
-            added_leaves.push(PrefixLeaf { vrf_output: idx_bytes.to_vec(), commitment: update_comm.clone() });
+
+            audit_search_results.push(result);
+            combined_audit_proof_elements.extend(proof_res.inclusion_proof);
+
+            added_leaves.push(PrefixLeaf { vrf_output: idx_bytes, commitment: update_comm });
         }
-        
-        // If current_log_ptr was None (Genesis), we still need to populate entries
-        if current_log_ptr.is_none() {
-            for (_, update, _) in &valid_updates {
-                prefix_entries.push((update.index.to_vec(), update.commitment.clone()));
-                added_leaves.push(PrefixLeaf { vrf_output: update.index.to_vec(), commitment: update.commitment.clone() });
-            }
+
+        for (result, elements) in removed_results {
+            audit_search_results.push(result);
+            combined_audit_proof_elements.extend(elements);
         }
 
         let dur_search = t_search.elapsed();

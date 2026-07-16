@@ -318,99 +318,191 @@ impl CommitmentVerifier {
 }
 
 // --- PREFIX TRANSITIONER ---
+
+/// Sparse view of the 256-level prefix tree assembled from batch proof paths.
+/// Node keys are (level, path bits masked below level).
+struct PartialPrefixTree {
+    nodes: std::collections::HashMap<(u16, [u8; 32]), Vec<u8>>,
+}
+
+impl PartialPrefixTree {
+    fn new() -> Self {
+        Self { nodes: std::collections::HashMap::new() }
+    }
+
+    fn masked(key: &[u8], level: usize) -> [u8; 32] {
+        let mut out = [0u8; 32];
+        let full = level / 8;
+        out[..full].copy_from_slice(&key[..full]);
+        if full < 32 && level % 8 != 0 {
+            out[full] = key[full] & (0xffu8 << (8 - (level % 8)));
+        }
+        out
+    }
+
+    fn with_bit(mut path: [u8; 32], level: usize, bit: u8) -> [u8; 32] {
+        if bit == 1 {
+            path[level / 8] |= 1 << (7 - (level % 8));
+        }
+        path
+    }
+
+    fn insert(&mut self, level: usize, path: [u8; 32], value: Vec<u8>) -> Result<()> {
+        match self.nodes.get(&(level as u16, path)) {
+            Some(prev) if prev != &value => Err(anyhow!(
+                "Batch proof paths disagree at level {}", level
+            )),
+            _ => {
+                self.nodes.insert((level as u16, path), value);
+                Ok(())
+            }
+        }
+    }
+
+    fn remove_leaf(&mut self, key: &[u8]) {
+        self.nodes.remove(&(256, Self::masked(key, 256)));
+    }
+
+    fn set_leaf(&mut self, key: &[u8], value: Vec<u8>) {
+        self.nodes.insert((256, Self::masked(key, 256)), value);
+    }
+
+    fn has_descendant(&self, level: usize, path: &[u8; 32]) -> bool {
+        self.nodes.keys().any(|(lv, p)| {
+            (*lv as usize) > level && Self::masked(p, level) == *path
+        })
+    }
+
+    fn resolve(&self, level: usize, path: [u8; 32]) -> Vec<u8> {
+        use crate::tree::prefix::hasher::{parent_hash, ZERO_VALUE};
+        if let Some(v) = self.nodes.get(&(level as u16, path)) {
+            return v.clone();
+        }
+        if level == 256 || !self.has_descendant(level, &path) {
+            return ZERO_VALUE.to_vec();
+        }
+        let l = self.resolve(level + 1, Self::with_bit(path, level, 0));
+        let r = self.resolve(level + 1, Self::with_bit(path, level, 1));
+        parent_hash(&l, &r)
+    }
+
+    fn root(&self) -> Vec<u8> {
+        self.resolve(0, [0u8; 32])
+    }
+}
+
 pub struct PrefixTransitioner;
 
 impl PrefixTransitioner {
+    /// §15.2 steps 6-7: rebuild the previous prefix root from the batch proof,
+    /// then apply the declared additions and removals for the new root.
     pub fn verify_and_transition(
         old_root: &[u8],
         added: &[PrefixLeaf],
         removed: &[PrefixLeaf],
-        proof: &PrefixProof
+        proof: &PrefixProof,
     ) -> Result<Vec<u8>> {
-        use crate::tree::prefix::hasher::{leaf_hash, parent_hash, ZERO_VALUE};
-        
-        if added.len() == 1 && removed.is_empty() {
-             // Handle Genesis Case: No previous tree exists.
-             if proof.results.is_empty() {
-                 if !old_root.iter().all(|&b| b == 0) && old_root != ZERO_VALUE {
-                     return Err(anyhow!("Proof results empty but old root is not empty"));
-                 }
-                 
-                 let item = &added[0];
-                 let new_root = Self::compute_genesis_root(item);
-                 return Ok(new_root);
-             }
+        use crate::tree::prefix::hasher::{leaf_hash, ZERO_VALUE};
 
-             let item = &added[0];
-             let res = &proof.results[0];
-             
-             let computed_old = Self::compute_single_root(&item.vrf_output, None, res, &proof.elements)?;
-             if computed_old != old_root {
-                 if !(old_root.iter().all(|&b| b==0) && computed_old == ZERO_VALUE) {
-                    return Err(anyhow!("Old prefix root mismatch."));
-                 }
-             }
-
-             let computed_new = Self::compute_single_root(&item.vrf_output, Some(&item.commitment), res, &proof.elements)?;
-             return Ok(computed_new);
+        if proof.results.len() != added.len() + removed.len() {
+            return Err(anyhow!(
+                "Batch proof has {} results for {} added and {} removed leaves",
+                proof.results.len(), added.len(), removed.len()
+            ));
         }
-        Err(anyhow!("Multi-update batch verification not implemented in this client version"))
-    }
 
-    fn compute_genesis_root(item: &PrefixLeaf) -> Vec<u8> {
-        use crate::tree::prefix::hasher::{leaf_hash, parent_hash, ZERO_VALUE, get_bit};
-        
-        let mut acc = leaf_hash(&item.vrf_output, &item.commitment);
-        
-        // Simulate rolling up from depth 256 to 0
-        for i in (0..256).rev() {
-            let bit = get_bit(&item.vrf_output, i);
-            if bit == 1 {
-                acc = parent_hash(&ZERO_VALUE, &acc);
-            } else {
-                acc = parent_hash(&acc, &ZERO_VALUE);
+        let removed_keys: std::collections::HashSet<&[u8]> =
+            removed.iter().map(|l| l.vrf_output.as_slice()).collect();
+        let batch_keys: Vec<&[u8]> = added.iter().chain(removed.iter())
+            .map(|l| l.vrf_output.as_slice())
+            .collect();
+
+        let mut tree = PartialPrefixTree::new();
+        // covering elements span another batch key; their value must be derived
+        // from that key's own path data instead of trusted directly
+        let mut covering: Vec<(usize, [u8; 32], Vec<u8>)> = Vec::new();
+        let mut elements_offset = 0usize;
+
+        for (i, item) in added.iter().chain(removed.iter()).enumerate() {
+            let result = &proof.results[i];
+            let key = &item.vrf_output;
+            if key.len() != 32 {
+                return Err(anyhow!("VRF output must be 32 bytes"));
             }
-        }
-        acc
-    }
+            let depth = result.depth as usize;
+            if depth > 256 {
+                return Err(anyhow!("Result depth exceeds tree height"));
+            }
+            let end = elements_offset.checked_add(depth)
+                .ok_or_else(|| anyhow!("Element offset overflow"))?;
+            if end > proof.elements.len() {
+                return Err(anyhow!("Batch proof has insufficient elements"));
+            }
+            let elements = &proof.elements[elements_offset..end];
+            elements_offset = end;
 
-    fn compute_single_root(
-        key: &[u8],
-        new_commitment: Option<&[u8]>,
-        result: &PrefixSearchResult,
-        elements: &[Vec<u8>]
-    ) -> Result<Vec<u8>> {
-        use crate::tree::prefix::hasher::{leaf_hash, parent_hash, ZERO_VALUE};
-        
-        let mut curr_hash = if let Some(comm) = new_commitment {
-            leaf_hash(key, comm)
-        } else {
+            // old-tree terminal for this key
+            let is_removed_result = i >= added.len();
             match result.result_type {
-                2 => { 
-                    if let Some(l) = &result.leaf {
-                        leaf_hash(&l.vrf_output, &l.commitment)
-                    } else { return Err(anyhow!("Missing leaf in NonInclusion result")); }
-                },
-                3 => ZERO_VALUE.to_vec(),
-                _ => return Err(anyhow!("Invalid result type for reconstruction")),
+                1 if is_removed_result => {
+                    tree.set_leaf(key, leaf_hash(key, &item.commitment));
+                }
+                1 => {
+                    // an added key with an inclusion result must be re-added (also in removed)
+                    if !removed_keys.contains(key.as_slice()) {
+                        return Err(anyhow!("Inclusion result for an added key that is not being removed"));
+                    }
+                }
+                2 => {
+                    let leaf = result.leaf.as_ref()
+                        .ok_or_else(|| anyhow!("NonInclusionLeaf result missing leaf"))?;
+                    if leaf.vrf_output == *key {
+                        return Err(anyhow!("NonInclusionLeaf carries the searched key itself"));
+                    }
+                    tree.set_leaf(&leaf.vrf_output, leaf_hash(&leaf.vrf_output, &leaf.commitment));
+                }
+                3 => {}
+                _ => return Err(anyhow!("Unknown PrefixSearchResult.result_type")),
             }
-        };
 
-        let depth = result.depth as usize;
-        let mut element_idx = 0;
-        
-        for i in (0..depth).rev() {
-            if element_idx >= elements.len() { return Err(anyhow!("Missing proof elements")); }
-            let sibling = &elements[element_idx];
-            element_idx += 1;
-            
-            let bit = crate::tree::prefix::hasher::get_bit(key, i);
-            if bit == 1 {
-                curr_hash = parent_hash(sibling, &curr_hash);
-            } else {
-                curr_hash = parent_hash(&curr_hash, sibling);
+            for (k, element) in elements.iter().enumerate() {
+                let bit = crate::tree::prefix::hasher::get_bit(key, k) ^ 1;
+                let sib_path = PartialPrefixTree::with_bit(PartialPrefixTree::masked(key, k), k, bit);
+                let covers_batch_key = batch_keys.iter().any(|other| {
+                    *other != key.as_slice() && PartialPrefixTree::masked(other, k + 1) == sib_path
+                });
+                if covers_batch_key {
+                    covering.push((k + 1, sib_path, element.clone()));
+                } else {
+                    tree.insert(k + 1, sib_path, element.clone())?;
+                }
             }
         }
-        Ok(curr_hash)
+
+        if elements_offset != proof.elements.len() {
+            return Err(anyhow!("Batch proof has unused elements"));
+        }
+
+        for (level, path, expected) in &covering {
+            let derived = tree.resolve(*level, *path);
+            if &derived != expected {
+                return Err(anyhow!("Covering proof element disagrees with per-key data at level {}", level));
+            }
+        }
+
+        let computed_old = tree.root();
+        let old_is_empty = old_root.iter().all(|&b| b == 0);
+        if computed_old != old_root && !(old_is_empty && computed_old == ZERO_VALUE.to_vec()) {
+            return Err(anyhow!("Old prefix root mismatch"));
+        }
+
+        for item in removed {
+            tree.remove_leaf(&item.vrf_output);
+        }
+        for item in added {
+            tree.set_leaf(&item.vrf_output, leaf_hash(&item.vrf_output, &item.commitment));
+        }
+
+        Ok(tree.root())
     }
 }
