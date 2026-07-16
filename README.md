@@ -1,105 +1,111 @@
 # RuKT
 
-Key Transparency (KT) server implementation in Rust. We attempt conformance to **[draft-ietf-keytrans-protocol-03](https://datatracker.ietf.org/doc/draft-ietf-keytrans-protocol/)**.
+A Key Transparency implementation in Rust, conformant to
+**[draft-ietf-keytrans-protocol-05](https://datatracker.ietf.org/doc/draft-ietf-keytrans-protocol/)**
+and **[draft-ietf-keytrans-architecture-09](https://datatracker.ietf.org/doc/draft-ietf-keytrans-architecture/)**
+(both vendored under [`docs/spec/`](docs/spec/)).
 
-This server implements a verifiable, append-only log that maps user identifiers (labels) to public keys (values), allowing users to audibly detect unauthorized key changes.
+Key Transparency is a verifiable, append-only log that maps user identifiers
+(*labels*) to values such as public keys. Every response the log gives is
+accompanied by a cryptographic proof, so a client can detect a server that
+serves a forged key, hides a version, rolls back its history, or shows different
+users different views — without trusting the server.
 
-## Features
+RuKT implements the participant roles:
 
-*   **Protocol Compliance:** Full implementation of Draft-03, including Log Tree, Prefix Tree, and Combined Tree proofs.
-*   **Crypto Suites:** Support for `KT_128_SHA256_ED25519` (Ed25519 + ECVRF-EDWARDS25519-SHA512-TAI) and P-256.
-*   **Storage:** Persistent storage using **RocksDB** with tuned write throughput (large memtables, parallel background jobs, batched writes).
-*   **Privacy:** Randomized VRF proofs to prevent traffic correlation and "deletable openings" for Right-to-be-Forgotten compliance.
-*   **gRPC API:** High-performance gRPC interface via `tonic`.
-*   **Concurrent Batch Processing:** The batcher pipelines work into four phases — sequential versioning, parallel VRF/commitment cryptography (`spawn_blocking`), sequential Merkle appends, and parallel proof generation — using an `RwLock` to allow concurrent reads during proof assembly.
-*   **Prefix Tree Caching:** A `DashMap`-based in-memory node cache eliminates repeated RocksDB reads and protobuf deserialization on hot prefix tree nodes.
-*   **Bulk Population:** Utilities in `src/bulk.rs` for building large trees efficiently via SST file ingestion and RocksDB checkpointing, with parallelized cryptography via `rayon`.
+| Role | Type | Entry point |
+|------|------|-------------|
+| **Transparency Log** (server) | gRPC service | `KeyTransparencyImpl` ([`src/service.rs`](src/service.rs)) |
+| **Client** | verifying library — search, update, monitoring, and offline credential verification | `KtClient` ([`src/client/core.rs`](src/client/core.rs)) |
+| **Third-Party Auditor** | log verifier | `KtAuditor` ([`src/client/auditor.rs`](src/client/auditor.rs)) |
+
+## What it does
+
+- **Full client-side verification.** The client independently reconstructs the
+  log-tree root from every proof and checks the tree-head signature. Nothing a
+  response claims is trusted: VRF outputs, commitments, prefix-tree roots, log
+  roots, timestamps, and signatures are all verified. Tampering with any field
+  is rejected.
+- **Linearizable, fork-evident.** Clients persist their verified view and require
+  each new response to prove it extends the last one (`last`, retained
+  subtrees). A rolled-back or divergent-log head fails verification. Peers can
+  exchange signed heads and recent distinguished-head root values over an
+  out-of-band channel to detect a server that partitions its users; a
+  double-signing server yields self-contained, third-party-verifiable evidence.
+- **The full protocol-05 operation set:**
+  - *Search* — greatest-version or a specific version of a label.
+  - *Update* — compare-and-swap on the label's greatest version, so concurrent
+    writers can't fork a label's history; a behind client is transparently
+    caught up on existing versions.
+  - *Contact Monitor / Owner Initialization / Owner Monitoring* — the split
+    monitoring paths (§8.2/§8.3), replayed and verified client-side.
+  - *Distinguished* — walk the recent distinguished heads for fork detection.
+  - *Credentials* — standard and provisional credentials plus `CredentialUpdate`,
+    verified offline by a recipient without contacting the log.
+- **Deployment modes.** Contact Monitoring and Third-Party Auditing are
+  implemented; in auditing mode the client verifies the auditor's signed head
+  (including a lagging auditor's sub-root) against its own reconstruction, and
+  an auditor can bootstrap mid-history. Third-Party Management is out of scope.
+- **Deployment obligations from the architecture draft.** A pluggable access
+  policy gates Search and Update while monitoring stays unconditionally served;
+  values and commitment openings are independently deletable for erasure, and
+  expired non-greatest versions can be pruned by maximum lifetime.
+- **Cipher suites.** `KT_128_SHA256_ED25519` (Ed25519 + ECVRF-EDWARDS25519-SHA512-TAI)
+  and `KT_128_SHA256_P256`.
+- **Storage.** Persistent RocksDB with tuned write throughput (large memtables,
+  parallel background jobs, batched writes) and a `DashMap` in-memory cache over
+  hot prefix-tree nodes.
+- **Throughput.** The update batcher pipelines work into four phases —
+  sequential versioning, parallel VRF/commitment crypto (`spawn_blocking`),
+  sequential Merkle append, and parallel proof generation — dropping the write
+  lock early so proofs assemble concurrently. [`src/bulk.rs`](src/bulk.rs) builds
+  large trees offline via `rayon` and SST ingestion.
 
 ## Prerequisites
 
-Before building, ensure you have the following installed:
+- **Rust & Cargo** (edition 2024): `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`
+- **Protobuf compiler** (`protoc`): `brew install protobuf` / `sudo apt install protobuf-compiler`
+- **Clang/LLVM** (for RocksDB): `xcode-select --install` / `sudo apt install build-essential clang libclang-dev`
 
-1.  **Rust & Cargo:**
-    ```bash
-    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-    ```
-2.  **Protobuf Compiler (`protoc`):**
-    *   **macOS:** `brew install protobuf`
-    *   **Ubuntu/Debian:** `sudo apt install protobuf-compiler`
-3.  **Clang/LLVM (Required for RocksDB):**
-    *   **macOS:** Included with Xcode command line tools (`xcode-select --install`).
-    *   **Ubuntu/Debian:** `sudo apt install build-essential clang libclang-dev`
+## Build
 
-## Building and Running
+```bash
+cargo build --release
+```
 
-1.  **Clone and Build:**
-    ```bash
-    git clone <your-repo-url>
-    cd rukt
-    cargo build --release
-    ```
-
-2.  **Run the Server:**
-    ```bash
-    cargo run
-    ```
-    You should see:
-    ```text
-    Key Transparency Server listening on 0.0.0.0:8080
-    ```
-
-    > **⚠️ Important Note:** By default, this implementation generates **new random cryptographic keys** every time it starts.
-
-## Usage
-
-### 1. Start the Server
-
-Run the server and **keep the terminal open**.
+## Running the server
 
 ```bash
 cargo run
 ```
 
-You will see output containing cryptographic keys. **Copy these keys**; you will need them for the client to verify proofs.
+The server listens on `0.0.0.0:8081` in Contact Monitoring mode. On each start it
+**generates fresh keys** and prints them, then serves from a clean `./kt_data`:
 
 ```text
 === SERVER KEYS (COPY THESE TO CLIENT) ===
-SIG_KEY: <hex_string_A>
-VRF_KEY: <hex_string_B>
+SIG_KEY: <hex>
+VRF_KEY: <hex>
 ==========================================
-Key Transparency Server listening on 0.0.0.0:8080
+Key Transparency Server listening on 0.0.0.0:8081
 ```
 
-### 2. Configure the Client
+Because the keys are ephemeral, a verifying client must be told the server's
+public keys out of band — that is the trust root the whole protocol rests on. In
+a real deployment the log's configuration (cipher suite, keys, mode parameters)
+is pre-distributed over a trustworthy channel;
+`PublicConfig::to_json`/`from_json` provides that distribution format.
 
-Open `examples/client_demo.rs` in your editor. Replace the placeholder strings with the keys you copied from the server output:
+## Client demo
 
-```rust
-// examples/client_demo.rs
-
-// ...
-async fn main() -> anyhow::Result<()> {
-    // PASTE KEYS FROM SERVER OUTPUT HERE
-    let server_sig_hex = "<PASTE_SIG_KEY_HERE>";
-    let server_vrf_hex = "<PASTE_VRF_KEY_HERE>";
-    // ...
-}
-```
-
-> **Why is this necessary?**
-> This implementation generates new random cryptographic keys every time the server starts. The client must know these specific public keys to cryptographically verify that the server's responses (Merkle proofs and VRF outputs) are authentic.
-
-### 3. Run the Client Demo
-
-Once the keys are pasted, run the example client in a new terminal window:
+With the server running, paste its printed `SIG_KEY` and `VRF_KEY` into
+[`examples/client_demo.rs`](examples/client_demo.rs), then:
 
 ```bash
 cargo run --example client_demo
 ```
 
-**Expected Output:**
 ```text
-Connecting with trusted keys...
 Connected to Key Transparency Server
 Registering user 'bob'...
 Update successful. New Tree Size: 1
@@ -107,23 +113,75 @@ Searching for user 'bob'...
 Verified Value: "bob_pk_v1"
 ```
 
-### 4. Manual API Check (Optional)
+## Using the client library
 
-You can also inspect the server status using `grpcurl` to confirm the tree size increased after running the client demo.
+`KtClient` performs the RPC and the verification together; a call returns only
+if the response's proof checks out.
 
-```bash
-grpcurl -plaintext -emit-defaults \
-    -import-path proto \
-    -proto key_transparency.proto \
-    0.0.0.0:8080 kt.KeyTransparencyService/TreeSize
+```rust
+use rukt::client::KtClient;
+
+let mut client = KtClient::connect(uri, public_config).await?;
+client.persist_to("client-state.json")?;  // durable, fork-evident state
+
+client.update(b"alice".to_vec(), b"alice_pk".to_vec()).await?;
+let resp = client.search(b"alice".to_vec(), None).await?;   // verified greatest-version search
+let value = resp.value.unwrap().value;
+
+client.contact_monitor(b"alice".to_vec()).await?;           // discharge monitoring obligations
+
+// offline credentials: the issuer hands `cred` to a recipient out of band
+let cred = client.get_credential(b"alice".to_vec()).await?;
+recipient.distinguished(None).await?;                       // learn recent distinguished heads
+recipient.verify_credential(&cred)?;                        // verified without contacting the log
 ```
 
-## Benchmarks
+## Testing
 
-Criterion benchmarks live in `benches/kt_benchmarks.rs`. Run them with:
+```bash
+cargo test --workspace --lib --bins --tests --examples
+```
+
+The suite covers each operation client-verified in both deployment modes,
+per-field adversarial rejection (a tampered value, opening, ladder, commitment,
+timestamp, root, or signature is refused), cross-operation state continuity
+across restarts, and fork/rollback rejection.
+
+Formatting and lints are enforced as blocking CI gates:
+
+```bash
+cargo fmt --all --check
+cargo clippy --workspace --all-targets -- -D warnings
+```
+
+### Interop vectors
+
+Deterministic known-answer vectors for the hashed and signed byte formats
+(commitment, VRF, tree hashing, tree-head TBS) are pinned in
+[`src/integration/interop_vectors.rs`](src/integration/interop_vectors.rs) and
+mirrored, with documented inputs and spec-section anchors, in
+[`docs/spec/interop-vectors.json`](docs/spec/interop-vectors.json) for
+cross-implementation comparison.
+
+## Benchmarks
 
 ```bash
 cargo bench
 ```
 
-The benchmark suite uses `src/bulk.rs` to rapidly populate large trees (bypassing the gRPC/batcher path) and then measures operations like search, monitor, and update at scale. RocksDB checkpointing is used to snapshot a populated tree so each benchmark iteration starts from identical state.
+Criterion benchmarks ([`benches/kt_benchmarks.rs`](benches/kt_benchmarks.rs))
+populate large trees via `src/bulk.rs` and measure search, monitor, and update
+at scale, using RocksDB checkpointing so each iteration starts from identical
+state.
+
+## Layout
+
+```
+proto/            gRPC + wire message definitions (protocol-05)
+src/service.rs    gRPC server, deployment-mode wiring, access policy
+src/tree/         log tree, prefix tree, traversals, credentials, pruning
+src/client/       KtClient (verifying), KtAuditor, offline verifier, gossip
+src/crypto/       commitments, VRF, signatures, TLS presentation encoding
+src/bulk.rs       offline bulk tree population
+docs/spec/        vendored IETF drafts and interop vectors
+```
