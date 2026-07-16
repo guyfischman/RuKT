@@ -16,9 +16,17 @@ pub fn log2(n: u64) -> u32 {
     63 - n.leading_zeros()
 }
 
+// IBST root over n log entries (Appendix A)
 pub fn root(n: u64) -> u64 {
     if n == 0 { return 0; }
     (1 << log2(n)) - 1
+}
+
+// Merkle node id of the log tree root over n leaves (§11.8)
+pub fn merkle_root(n: u64) -> u64 {
+    if n <= 1 { return 0; }
+    let k = 64 - (n - 1).leading_zeros();
+    (1 << k) - 1
 }
 
 pub fn left_child(x: u64) -> u64 {
@@ -66,19 +74,20 @@ pub fn chunk_layout(chunk_root: u64) -> [u64; 15] {
 }
 
 // MERKLE TREE Right Child (For Log Tree Construction/Proofs)
-pub fn right_child(mut x: u64, n: u64) -> u64 {
+pub fn right_child(x: u64, n: u64) -> u64 {
     let k = level(x);
     if k == 0 { panic!("leaf node has no children"); }
-    
-    x ^= 3 << (k - 1);
-    
-    while leftmost_leaf_index(x) >= n {
-        if is_leaf(x) {
-             panic!("leaf node has no children or out of bounds");
+
+    let mut r = x ^ (3 << (k - 1));
+
+    while leftmost_leaf_index(r) >= n {
+        if is_leaf(r) {
+            // right subtree entirely absent: the node collapses to its left child
+            return left_child(x);
         }
-        x = left_child(x);
+        r = left_child(r);
     }
-    x
+    r
 }
 
 fn leftmost_leaf_index(mut x: u64) -> u64 {

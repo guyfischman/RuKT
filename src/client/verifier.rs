@@ -28,7 +28,7 @@ impl LogVerifier {
             .collect();
         nodes.sort_by_key(|(i, _)| *i);
         let mut proof_iter = proof_elements.iter();
-        let root = crate::tree::log_math::root(tree_size);
+        let root = crate::tree::log_math::merkle_root(tree_size);
         Self::recursive_hash(root, tree_size, &nodes, &mut proof_iter)
     }
 
@@ -45,7 +45,7 @@ impl LogVerifier {
         let is_ancestor = provided_leaves.iter().any(|(leaf_node_id, _)| {
              let mut curr = *leaf_node_id;
              while curr != node_id {
-                 if curr == crate::tree::log_math::root(tree_size) { return false; }
+                 if curr == crate::tree::log_math::merkle_root(tree_size) { return false; }
                  curr = crate::tree::log_math::parent(curr, tree_size);
              }
              true
@@ -91,7 +91,7 @@ impl LogAccumulator {
     pub fn calculate_root_naive(&self) -> Result<Vec<u8>> {
         if self.tree_size == 0 { return Ok(vec![0u8; 32]); }
         let leaves: Vec<(u64, Vec<u8>)> = self.peaks.iter().enumerate().map(|(i, h)| (i as u64 * 2, h.clone())).collect();
-        Self::build_from_leaves(crate::tree::log_math::root(self.tree_size), self.tree_size, &leaves)
+        Self::build_from_leaves(crate::tree::log_math::merkle_root(self.tree_size), self.tree_size, &leaves)
     }
 
     fn build_from_leaves(node_idx: u64, tree_size: u64, leaves: &[(u64, Vec<u8>)]) -> Result<Vec<u8>> {

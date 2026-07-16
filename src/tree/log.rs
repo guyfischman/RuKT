@@ -101,7 +101,7 @@ impl LogTree {
         if tree_size == 0 {
             return Ok(vec![0u8; 32]);
         }
-        let root_id = log_math::root(tree_size);
+        let root_id = log_math::merkle_root(tree_size);
         self.resolve_node(root_id, tree_size)
     }
 
@@ -245,13 +245,16 @@ impl LogTree {
         tree_size: u64, 
         last_size: u64
     ) -> Result<Vec<Vec<u8>>> {
+        let root_id = log_math::merkle_root(tree_size);
         let mut skeleton = HashSet::new();
         for &idx in &leaf_indices {
             let node_id = idx * 2;
             skeleton.insert(node_id);
-            let path = log_math::direct_path(node_id, tree_size);
-            for p in path {
-                skeleton.insert(p);
+            let mut curr = node_id;
+            for _ in 0..64 {
+                if curr == root_id { break; }
+                curr = log_math::parent(curr, tree_size);
+                skeleton.insert(curr);
             }
         }
         
@@ -264,7 +267,7 @@ impl LogTree {
             HashSet::new()
         };
         
-        let root_id = log_math::root(tree_size);
+        let root_id = log_math::merkle_root(tree_size);
         let needed_ids = self.recursive_needed(root_id, tree_size, &skeleton, &retained)?;
         
         let mut proof = Vec::new();
