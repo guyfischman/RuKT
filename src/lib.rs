@@ -1,10 +1,10 @@
-pub mod db;
-pub mod tree;
-pub mod service;
-pub mod crypto;
 pub mod batcher;
-pub mod client;
 pub mod bulk;
+pub mod client;
+pub mod crypto;
+pub mod db;
+pub mod service;
+pub mod tree;
 
 pub mod proto {
     pub mod transparency {

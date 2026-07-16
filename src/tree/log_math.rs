@@ -12,19 +12,25 @@ pub fn level(node_id: u64) -> u32 {
 }
 
 pub fn log2(n: u64) -> u32 {
-    if n == 0 { return 0; }
+    if n == 0 {
+        return 0;
+    }
     63 - n.leading_zeros()
 }
 
 // IBST root over n log entries (Appendix A)
 pub fn root(n: u64) -> u64 {
-    if n == 0 { return 0; }
+    if n == 0 {
+        return 0;
+    }
     (1 << log2(n)) - 1
 }
 
 // Merkle node id of the log tree root over n leaves (§11.8)
 pub fn merkle_root(n: u64) -> u64 {
-    if n <= 1 { return 0; }
+    if n <= 1 {
+        return 0;
+    }
     let k = 64 - (n - 1).leading_zeros();
     (1 << k) - 1
 }
@@ -32,7 +38,7 @@ pub fn merkle_root(n: u64) -> u64 {
 pub fn left_child(x: u64) -> u64 {
     let k = level(x);
     if k == 0 {
-        return x; 
+        return x;
     }
     x ^ (1 << (k - 1))
 }
@@ -42,10 +48,16 @@ pub fn chunk_id(node_id: u64) -> u64 {
     let mut i = 0;
     while level(c) % 4 != 3 && i < 64 {
         let l = level(c);
-        if l >= 62 { break; } 
+        if l >= 62 {
+            break;
+        }
         let is_right = (c >> (l + 1)) & 1;
-        let offset = 1u64 << l; 
-        if is_right == 1 { c -= offset; } else { c += offset; }
+        let offset = 1u64 << l;
+        if is_right == 1 {
+            c -= offset;
+        } else {
+            c += offset;
+        }
         i += 1;
     }
     c
@@ -53,9 +65,13 @@ pub fn chunk_id(node_id: u64) -> u64 {
 
 pub fn chunk_layout(chunk_root: u64) -> [u64; 15] {
     let mut ids = [0u64; 15];
-    ids[7] = chunk_root; 
-    fn internal_left(x: u64) -> u64 { x ^ (1 << (level(x) - 1)) }
-    fn internal_right(x: u64) -> u64 { x ^ (3 << (level(x) - 1)) }
+    ids[7] = chunk_root;
+    fn internal_left(x: u64) -> u64 {
+        x ^ (1 << (level(x) - 1))
+    }
+    fn internal_right(x: u64) -> u64 {
+        x ^ (3 << (level(x) - 1))
+    }
     ids[3] = internal_left(ids[7]);
     ids[11] = internal_right(ids[7]);
     ids[1] = internal_left(ids[3]);
@@ -76,7 +92,9 @@ pub fn chunk_layout(chunk_root: u64) -> [u64; 15] {
 // MERKLE TREE Right Child (For Log Tree Construction/Proofs)
 pub fn right_child(x: u64, n: u64) -> u64 {
     let k = level(x);
-    if k == 0 { panic!("leaf node has no children"); }
+    if k == 0 {
+        panic!("leaf node has no children");
+    }
 
     let mut r = x ^ (3 << (k - 1));
 
@@ -95,20 +113,24 @@ fn leftmost_leaf_index(mut x: u64) -> u64 {
         let k = level(x);
         x = x ^ (1 << (k - 1)); // Go left
     }
-    x / 2 
+    x / 2
 }
 
 // IBST Right Child (For Timestamp Search)
 // Valid for indices 0..n-1
 pub fn ibst_right_child(mut x: u64, n: u64) -> Option<u64> {
     let k = level(x);
-    if k == 0 { return None; }
-    
+    if k == 0 {
+        return None;
+    }
+
     x ^= 3 << (k - 1);
-    
+
     while x >= n {
         let k_curr = level(x);
-        if k_curr == 0 { return None; }
+        if k_curr == 0 {
+            return None;
+        }
         x = left_child(x);
     }
     Some(x)
@@ -129,26 +151,42 @@ pub fn get_roots(mut n: u64) -> Vec<u64> {
 
 pub fn parent(node_id: u64, _tree_size: u64) -> u64 {
     let l = level(node_id);
-    if l >= 62 { return 0; }
+    if l >= 62 {
+        return 0;
+    }
     let is_right = (node_id >> (l + 1)) & 1;
     let offset = 1 << l;
-    if is_right == 1 { node_id - offset } else { node_id + offset }
+    if is_right == 1 {
+        node_id - offset
+    } else {
+        node_id + offset
+    }
 }
 
 pub fn sibling(node_id: u64) -> u64 {
     let l = level(node_id);
-    if l >= 62 { return 0; }
+    if l >= 62 {
+        return 0;
+    }
     let is_right = (node_id >> (l + 1)) & 1;
-    let p = parent(node_id, 0); 
-    if is_right == 1 { p ^ (1 << (level(p) - 1)) } else { p ^ (3 << (level(p) - 1)) }
+    let p = parent(node_id, 0);
+    if is_right == 1 {
+        p ^ (1 << (level(p) - 1))
+    } else {
+        p ^ (3 << (level(p) - 1))
+    }
 }
 
 pub fn copath(mut node_id: u64, tree_size: u64) -> Vec<u64> {
     let mut path = Vec::new();
     let roots = get_roots(tree_size);
-    if roots.contains(&node_id) { return path; }
+    if roots.contains(&node_id) {
+        return path;
+    }
     for _ in 0..100 {
-        if roots.contains(&node_id) { break; }
+        if roots.contains(&node_id) {
+            break;
+        }
         let p = parent(node_id, tree_size);
         let l = level(node_id);
         let is_right = if l < 62 { (node_id >> (l + 1)) & 1 } else { 0 };
@@ -157,7 +195,9 @@ pub fn copath(mut node_id: u64, tree_size: u64) -> Vec<u64> {
         } else {
             let std_right = p ^ (3 << (level(p) - 1));
             // This relies on Merkle ID check
-            if leftmost_leaf_index(std_right) < tree_size { path.push(std_right); }
+            if leftmost_leaf_index(std_right) < tree_size {
+                path.push(std_right);
+            }
         }
         node_id = p;
     }
@@ -165,13 +205,17 @@ pub fn copath(mut node_id: u64, tree_size: u64) -> Vec<u64> {
 }
 
 pub fn consistency_proof(m: u64, n: u64) -> Vec<u64> {
-    if m == 0 || m >= n { return Vec::new(); }
+    if m == 0 || m >= n {
+        return Vec::new();
+    }
     sub_proof(m, n, true)
 }
 
 fn sub_proof(m: u64, n: u64, b: bool) -> Vec<u64> {
     if m == n {
-        if b { return Vec::new(); }
+        if b {
+            return Vec::new();
+        }
         return vec![root(m)];
     }
     let k = 1u64 << log2(n);
@@ -182,7 +226,9 @@ fn sub_proof(m: u64, n: u64, b: bool) -> Vec<u64> {
         return proof;
     } else {
         let mut proof = sub_proof(m - k, n - k, false);
-        for i in 0..proof.len() { proof[i] += 2 * k; }
+        for i in 0..proof.len() {
+            proof[i] += 2 * k;
+        }
         let mut res = vec![left_child(root(n))];
         res.extend(proof);
         res
@@ -191,11 +237,13 @@ fn sub_proof(m: u64, n: u64, b: bool) -> Vec<u64> {
 
 pub fn get_frontier(tree_size: u64) -> Vec<u64> {
     let mut frontier = Vec::new();
-    if tree_size == 0 { return frontier; }
-    
+    if tree_size == 0 {
+        return frontier;
+    }
+
     let mut curr = root(tree_size);
     frontier.push(curr);
-    
+
     let rightmost = tree_size - 1;
     let mut safeguard = 0;
     while curr != rightmost && safeguard < 100 {
@@ -213,11 +261,15 @@ pub fn get_frontier(tree_size: u64) -> Vec<u64> {
 pub fn direct_path(mut node_id: u64, tree_size: u64) -> Vec<u64> {
     let mut path = Vec::new();
     let roots = get_roots(tree_size);
-    if roots.contains(&node_id) { return path; }
+    if roots.contains(&node_id) {
+        return path;
+    }
     for _ in 0..100 {
         node_id = parent(node_id, tree_size);
         path.push(node_id);
-        if roots.contains(&node_id) { break; }
+        if roots.contains(&node_id) {
+            break;
+        }
     }
     path
 }
@@ -225,7 +277,11 @@ pub fn direct_path(mut node_id: u64, tree_size: u64) -> Vec<u64> {
 pub fn full_monitoring_path(node_id: u64, _start: u64, tree_size: u64) -> Vec<u64> {
     let mut path = Vec::new();
     let parents = direct_path(node_id, tree_size);
-    for p in parents { if p > node_id { path.push(p); } }
+    for p in parents {
+        if p > node_id {
+            path.push(p);
+        }
+    }
     path.sort();
     path
 }
@@ -255,17 +311,17 @@ pub fn ibst_direct_path(target: u64, n: u64) -> Vec<u64> {
     let mut path = Vec::new();
     let mut curr_size = n;
     let mut offset = 0;
-    
+
     while curr_size > 0 {
         let left_size = (1u64 << log2(curr_size)) - 1;
         let root_idx = offset + left_size;
-        
+
         if target == root_idx {
             break;
         }
-        
+
         path.push(root_idx);
-        
+
         if target < root_idx {
             // Traverse Left
             curr_size = left_size;
@@ -275,7 +331,7 @@ pub fn ibst_direct_path(target: u64, n: u64) -> Vec<u64> {
             curr_size = curr_size - left_size - 1;
         }
     }
-    
+
     // Path was built from root down to target.
     // Ancestor paths are conventionally ordered from node up to root.
     path.reverse();

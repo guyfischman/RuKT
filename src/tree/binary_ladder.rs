@@ -10,11 +10,11 @@ pub fn base_binary_ladder(n: u32) -> Vec<u32> {
         // 2^len - 1
         // Use u64 to prevent overflow during calculation
         let value_u64 = (1u64 << len).saturating_sub(1);
-        
+
         let value = if value_u64 > u32::MAX as u64 {
-             u32::MAX
+            u32::MAX
         } else {
-             value_u64 as u32
+            value_u64 as u32
         };
 
         // Prevent duplicates (e.g. at u32::MAX boundary)
@@ -25,7 +25,7 @@ pub fn base_binary_ladder(n: u32) -> Vec<u32> {
         }
 
         out.push(value);
-        
+
         if value > n {
             break;
         }
@@ -52,7 +52,7 @@ pub fn base_binary_ladder(n: u32) -> Vec<u32> {
         while lower_bound < upper_bound && (upper_bound - lower_bound) > 1 {
             // Prevent overflow in midpoint calculation: (L+R)/2 can overflow u32
             let value = lower_bound + (upper_bound - lower_bound) / 2;
-            
+
             out.push(value);
             if value <= n {
                 lower_bound = value;
@@ -77,9 +77,11 @@ pub fn search_binary_ladder(
 
     // (Proof of inclusion for a version greater than t) OR
     // (Proof of non-inclusion for a version less than or equal to t)
-    let end = out.iter().position(|&v| {
-        (v <= n && v > t) || (v > n && v <= t)
-    }).map(|i| i + 1).unwrap_or(out.len());
+    let end = out
+        .iter()
+        .position(|&v| (v <= n && v > t) || (v > n && v <= t))
+        .map(|i| i + 1)
+        .unwrap_or(out.len());
 
     out.into_iter()
         .take(end)
@@ -88,10 +90,7 @@ pub fn search_binary_ladder(
 }
 
 /// Appendix B `monitoring_binary_ladder`: monitored version of the label is t.
-pub fn monitoring_binary_ladder(
-    t: u32,
-    left_inclusion: &[u32],
-) -> Vec<u32> {
+pub fn monitoring_binary_ladder(t: u32, left_inclusion: &[u32]) -> Vec<u32> {
     let out = base_binary_ladder(t);
     out.into_iter()
         .filter(|&v| v <= t && !left_inclusion.contains(&v))
@@ -146,7 +145,7 @@ mod tests {
         // This test ensures no panic/overflow for u32::MAX
         let n = u32::MAX;
         let res = base_binary_ladder(n);
-        
+
         // Should contain u32::MAX
         assert!(res.contains(&u32::MAX));
         // Should end with u32::MAX
@@ -155,11 +154,11 @@ mod tests {
         let mut dedup = res.clone();
         dedup.dedup();
         assert_eq!(dedup.len(), res.len());
-        
+
         // The last element before max should be 2^31 - 1
         let val_31 = 2147483647; // 2^31 - 1
         assert!(res.contains(&val_31));
-        
+
         // Since MAX is included, we do NOT expect binary search midpoints.
         // We verified MAX exists, and nothing > MAX can exist.
     }

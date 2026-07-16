@@ -1,11 +1,11 @@
-use crate::db::RocksDbStore;
-use crate::service::KeyTransparencyImpl;
 use crate::client::KtClient;
-use crate::proto::transparency::CredentialType;
 use crate::crypto::{self, CIPHER_SUITE_KT_128_SHA256_ED25519};
+use crate::db::RocksDbStore;
+use crate::proto::transparency::CredentialType;
+use crate::service::KeyTransparencyImpl;
 use anyhow::Result;
-use std::sync::Arc;
 use std::collections::HashMap;
+use std::sync::Arc;
 use tempfile::tempdir;
 use tokio::net::TcpListener;
 use tonic::transport::Server;
@@ -95,10 +95,14 @@ async fn test_credential_offline_verification() -> Result<()> {
     // §14.2: once a distinguished entry covers the credential's version, a
     // CredentialUpdate transitions it to a standard anchor
     for i in 0..4 {
-        sender.update(format!("filler_{}", i).into_bytes(), b"f".to_vec()).await?;
+        sender
+            .update(format!("filler_{}", i).into_bytes(), b"f".to_vec())
+            .await?;
     }
     let terminal = sender.credential_terminal(&prov)?;
-    let update = sender.get_credential_update(fresh.clone(), terminal, prov.version).await?;
+    let update = sender
+        .get_credential_update(fresh.clone(), terminal, prov.version)
+        .await?;
 
     recipient.distinguished(None).await?;
     recipient.verify_credential_update(&prov, &update)?;

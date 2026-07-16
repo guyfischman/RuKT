@@ -1,10 +1,10 @@
+use crate::client::{KtAuditor, KtClient};
+use crate::crypto::{self, CIPHER_SUITE_KT_128_SHA256_ED25519, ServiceVerifyingKey};
 use crate::db::RocksDbStore;
 use crate::service::KeyTransparencyImpl;
-use crate::client::{KtClient, KtAuditor};
-use crate::crypto::{self, CIPHER_SUITE_KT_128_SHA256_ED25519, ServiceVerifyingKey};
 use anyhow::Result;
-use std::sync::Arc;
 use std::collections::HashMap;
+use std::sync::Arc;
 use tempfile::TempDir;
 use tokio::net::TcpListener;
 use tonic::transport::Server;
@@ -91,7 +91,12 @@ impl TestServer {
             maximum_lifetime: None,
         };
 
-        Ok(Self { uri: format!("http://{}", local_addr), config, auditor_signer, _dir: dir })
+        Ok(Self {
+            uri: format!("http://{}", local_addr),
+            config,
+            auditor_signer,
+            _dir: dir,
+        })
     }
 
     pub async fn client(&self) -> Result<KtClient> {
@@ -100,7 +105,9 @@ impl TestServer {
 
     /// Ingests all pending log entries and publishes a fresh auditor head.
     pub async fn run_auditor(&self) -> Result<()> {
-        let signer = self.auditor_signer.clone()
+        let signer = self
+            .auditor_signer
+            .clone()
             .ok_or_else(|| anyhow::anyhow!("Not an auditing deployment"))?;
         let mut auditor = KtAuditor::connect(self.uri.clone(), signer, self.config.clone()).await?;
         auditor.process_and_sign().await?;

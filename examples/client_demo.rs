@@ -1,6 +1,6 @@
 use rukt::client::KtClient;
-use rukt::crypto::{self, ServiceVerifyingKey};
 use rukt::crypto::CIPHER_SUITE_KT_128_SHA256_ED25519;
+use rukt::crypto::{self, ServiceVerifyingKey};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -40,10 +40,7 @@ async fn main() -> anyhow::Result<()> {
         maximum_lifetime: None,
     };
 
-    let mut client = KtClient::connect(
-        "http://0.0.0.0:8081".to_string(),
-        public_config,
-    ).await?;
+    let mut client = KtClient::connect("http://0.0.0.0:8081".to_string(), public_config).await?;
 
     println!("Connected to Key Transparency Server");
 
@@ -51,15 +48,20 @@ async fn main() -> anyhow::Result<()> {
     let user = b"bob".to_vec();
     let key = b"bob_pk_v1".to_vec();
     println!("Registering user 'bob'...");
-    
+
     let update_resp = client.update(user.clone(), key.clone()).await?;
-    let ts = update_resp.full_tree_head.unwrap().tree_head.unwrap().tree_size;
+    let ts = update_resp
+        .full_tree_head
+        .unwrap()
+        .tree_head
+        .unwrap()
+        .tree_size;
     println!("Update successful. New Tree Size: {}", ts);
 
     // 2. Search
     println!("Searching for user 'bob'...");
     let search_resp = client.search(user, None).await?;
-    
+
     if let Some(val) = search_resp.value {
         println!("Verified Value: {:?}", String::from_utf8_lossy(&val.value));
     }

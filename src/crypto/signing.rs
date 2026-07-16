@@ -1,14 +1,13 @@
-use ed25519_dalek::{Signer, Verifier, Signature as EdSignature};
+use super::tls::{FixedOpaque, Opaqueu8, Opaqueu16, Opaqueu32, Optional, TlsEncode};
+use super::{PrivateConfig, PublicConfig};
+use anyhow::{Result, anyhow};
+use ed25519_dalek::{Signature as EdSignature, Signer, Verifier};
 use p256::ecdsa::{
-    SigningKey as P256SigningKey, VerifyingKey as P256VerifyingKey, 
-    signature::Signer as P256Signer, signature::Verifier as P256Verifier, 
-    Signature as P256Signature
+    Signature as P256Signature, SigningKey as P256SigningKey, VerifyingKey as P256VerifyingKey,
+    signature::Signer as P256Signer, signature::Verifier as P256Verifier,
 };
 use p256::elliptic_curve::sec1::ToEncodedPoint;
 use rand::rngs::OsRng;
-use anyhow::{Result, anyhow};
-use super::{PrivateConfig, PublicConfig};
-use super::tls::{TlsEncode, Opaqueu16, Opaqueu32, Opaqueu8, FixedOpaque, Optional};
 
 #[derive(Clone)]
 pub enum ServiceSigningKey {
@@ -49,7 +48,7 @@ impl ServiceVerifyingKey {
                 .map_err(|_| anyhow!("Invalid P-256 key bytes"))?;
             Ok(ServiceVerifyingKey::P256(k))
         } else {
-             Err(anyhow!("Unknown key format length: {}", bytes.len()))
+            Err(anyhow!("Unknown key format length: {}", bytes.len()))
         }
     }
 }
@@ -58,7 +57,10 @@ pub fn generate_sig_keypair() -> (ServiceSigningKey, ServiceVerifyingKey) {
     let mut csprng = OsRng;
     let sk = ed25519_dalek::SigningKey::generate(&mut csprng);
     let vk = sk.verifying_key();
-    (ServiceSigningKey::Ed25519(sk), ServiceVerifyingKey::Ed25519(vk))
+    (
+        ServiceSigningKey::Ed25519(sk),
+        ServiceVerifyingKey::Ed25519(vk),
+    )
 }
 
 pub fn generate_p256_keypair() -> (ServiceSigningKey, ServiceVerifyingKey) {
@@ -68,10 +70,7 @@ pub fn generate_p256_keypair() -> (ServiceSigningKey, ServiceVerifyingKey) {
 }
 
 // Section 10.2: Configuration Structure
-fn serialize_configuration(
-    config: &PrivateConfig,
-    auditor_pk: Option<&[u8]>,
-) -> Result<Vec<u8>> {
+fn serialize_configuration(config: &PrivateConfig, auditor_pk: Option<&[u8]>) -> Result<Vec<u8>> {
     let mut buf = Vec::new();
     let server_sig_pk = config.sig_key.verifying_key().to_bytes();
 
@@ -83,14 +82,15 @@ fn serialize_configuration(
     if config.mode == 3 {
         config.auditor_start_pos.tls_encode(&mut buf);
         config.max_auditor_lag.tls_encode(&mut buf);
-        let apk = auditor_pk.or(config.auditor_public_key.as_deref())
+        let apk = auditor_pk
+            .or(config.auditor_public_key.as_deref())
             .ok_or_else(|| anyhow!("Auditor public key required for ThirdPartyAuditing mode"))?;
         Opaqueu16(apk).tls_encode(&mut buf);
     } else {
         if let Some(lpk) = &config.leaf_public_key {
             Opaqueu16(lpk).tls_encode(&mut buf);
         } else {
-             Opaqueu16(&[]).tls_encode(&mut buf);
+            Opaqueu16(&[]).tls_encode(&mut buf);
         }
     }
 
@@ -113,21 +113,23 @@ fn serialize_configuration_public(config: &PublicConfig) -> Result<Vec<u8>> {
     if config.mode == 3 {
         config.auditor_start_pos.tls_encode(&mut buf);
         config.max_auditor_lag.tls_encode(&mut buf);
-        let apk = config.auditor_public_key.as_deref()
+        let apk = config
+            .auditor_public_key
+            .as_deref()
             .ok_or_else(|| anyhow!("Auditor public key required for ThirdPartyAuditing mode"))?;
         Opaqueu16(apk).tls_encode(&mut buf);
     } else {
         if let Some(lpk) = &config.leaf_public_key {
             Opaqueu16(lpk).tls_encode(&mut buf);
         } else {
-             Opaqueu16(&[]).tls_encode(&mut buf);
+            Opaqueu16(&[]).tls_encode(&mut buf);
         }
     }
 
     config.max_ahead.tls_encode(&mut buf);
     config.max_behind.tls_encode(&mut buf);
     config.reasonable_monitoring_window.tls_encode(&mut buf);
-    
+
     Optional(config.maximum_lifetime.as_ref()).tls_encode(&mut buf);
     Ok(buf)
 }
@@ -136,11 +138,13 @@ pub fn construct_tree_head_tbs(
     config: &PrivateConfig,
     auditor_pk: Option<&[u8]>,
     tree_size: u64,
-    root_hash: &[u8]
+    root_hash: &[u8],
 ) -> Result<Vec<u8>> {
     let mut buf = serialize_configuration(config, auditor_pk)?;
     tree_size.tls_encode(&mut buf);
-    if root_hash.len() != 32 { return Err(anyhow!("Root hash must be 32 bytes")); }
+    if root_hash.len() != 32 {
+        return Err(anyhow!("Root hash must be 32 bytes"));
+    }
     FixedOpaque(root_hash).tls_encode(&mut buf);
     Ok(buf)
 }
@@ -150,12 +154,14 @@ pub fn construct_auditor_tree_head_tbs(
     auditor_pk: &[u8],
     tree_size: u64,
     timestamp: u64,
-    root_hash: &[u8]
+    root_hash: &[u8],
 ) -> Result<Vec<u8>> {
     let mut buf = serialize_configuration(config, Some(auditor_pk))?;
     timestamp.tls_encode(&mut buf);
     tree_size.tls_encode(&mut buf);
-    if root_hash.len() != 32 { return Err(anyhow!("Root hash must be 32 bytes")); }
+    if root_hash.len() != 32 {
+        return Err(anyhow!("Root hash must be 32 bytes"));
+    }
     FixedOpaque(root_hash).tls_encode(&mut buf);
     Ok(buf)
 }
@@ -165,12 +171,14 @@ pub fn construct_auditor_tree_head_tbs_public(
     config: &PublicConfig,
     tree_size: u64,
     timestamp: u64,
-    root_hash: &[u8]
+    root_hash: &[u8],
 ) -> Result<Vec<u8>> {
     let mut buf = serialize_configuration_public(config)?;
     timestamp.tls_encode(&mut buf);
     tree_size.tls_encode(&mut buf);
-    if root_hash.len() != 32 { return Err(anyhow!("Root hash must be 32 bytes")); }
+    if root_hash.len() != 32 {
+        return Err(anyhow!("Root hash must be 32 bytes"));
+    }
     FixedOpaque(root_hash).tls_encode(&mut buf);
     Ok(buf)
 }
@@ -179,11 +187,13 @@ pub fn construct_auditor_tree_head_tbs_public(
 pub fn construct_tree_head_tbs_public(
     config: &PublicConfig,
     tree_size: u64,
-    root_hash: &[u8]
+    root_hash: &[u8],
 ) -> Result<Vec<u8>> {
     let mut buf = serialize_configuration_public(config)?;
     tree_size.tls_encode(&mut buf);
-    if root_hash.len() != 32 { return Err(anyhow!("Root hash must be 32 bytes")); }
+    if root_hash.len() != 32 {
+        return Err(anyhow!("Root hash must be 32 bytes"));
+    }
     FixedOpaque(root_hash).tls_encode(&mut buf);
     Ok(buf)
 }
@@ -193,13 +203,17 @@ pub fn construct_update_tbs(
     config: &PrivateConfig,
     label: &[u8],
     version: u32,
-    value: &[u8]
+    value: &[u8],
 ) -> Result<Vec<u8>> {
     let mut buf = serialize_configuration(config, None)?;
-    if label.len() >= 1 << 8 { return Err(anyhow!("Label too long")); }
+    if label.len() >= 1 << 8 {
+        return Err(anyhow!("Label too long"));
+    }
     Opaqueu8(label).tls_encode(&mut buf);
     version.tls_encode(&mut buf);
-    if value.len() >= 1 << 32 { return Err(anyhow!("Value too long")); }
+    if value.len() >= 1 << 32 {
+        return Err(anyhow!("Value too long"));
+    }
     Opaqueu32(value).tls_encode(&mut buf);
     Ok(buf)
 }
@@ -219,12 +233,14 @@ pub fn verify_data(pk: &ServiceVerifyingKey, data: &[u8], signature_bytes: &[u8]
         ServiceVerifyingKey::Ed25519(k) => {
             let sig = EdSignature::from_slice(signature_bytes)
                 .map_err(|_| anyhow!("Invalid Ed25519 signature format"))?;
-            k.verify(data, &sig).map_err(|_| anyhow!("Ed25519 Verification failed"))
-        },
+            k.verify(data, &sig)
+                .map_err(|_| anyhow!("Ed25519 Verification failed"))
+        }
         ServiceVerifyingKey::P256(k) => {
             let sig = P256Signature::from_bytes(signature_bytes.into())
                 .map_err(|_| anyhow!("Invalid P-256 signature format"))?;
-            k.verify(data, &sig).map_err(|_| anyhow!("P-256 Verification failed"))
+            k.verify(data, &sig)
+                .map_err(|_| anyhow!("P-256 Verification failed"))
         }
     }
 }

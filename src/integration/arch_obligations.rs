@@ -1,18 +1,24 @@
+use crate::crypto::{self, CIPHER_SUITE_KT_128_SHA256_ED25519};
 use crate::db::RocksDbStore;
 use crate::db::TransparencyStore;
-use crate::service::{AccessPolicy, KeyTransparencyImpl};
-use crate::proto::transparency::{ContactMonitorRequest, MonitorMapEntry, SearchRequest, UpdateRequest, LabelValue};
 use crate::proto::kt::key_transparency_service_server::KeyTransparencyService;
-use crate::crypto::{self, CIPHER_SUITE_KT_128_SHA256_ED25519};
+use crate::proto::transparency::{
+    ContactMonitorRequest, LabelValue, MonitorMapEntry, SearchRequest, UpdateRequest,
+};
+use crate::service::{AccessPolicy, KeyTransparencyImpl};
 use anyhow::Result;
-use std::sync::Arc;
 use std::collections::HashMap;
+use std::sync::Arc;
 use tempfile::tempdir;
 
 struct DenyLabel(Vec<u8>);
 impl AccessPolicy for DenyLabel {
-    fn allow_search(&self, label: &[u8]) -> bool { label != self.0.as_slice() }
-    fn allow_update(&self, label: &[u8]) -> bool { label != self.0.as_slice() }
+    fn allow_search(&self, label: &[u8]) -> bool {
+        label != self.0.as_slice()
+    }
+    fn allow_update(&self, label: &[u8]) -> bool {
+        label != self.0.as_slice()
+    }
 }
 
 #[tokio::test]
@@ -27,49 +33,72 @@ async fn test_monitoring_bypasses_revoked_access() -> Result<()> {
 
     // populated while access was still granted; label lands at position 2
     for i in 0..2 {
-        service.update(tonic::Request::new(UpdateRequest {
-            last: None,
-            label: format!("f_{}", i).into_bytes(),
-            greatest_version: None,
-            values: vec![LabelValue { value: b"x".to_vec() }],
-        })).await?;
+        service
+            .update(tonic::Request::new(UpdateRequest {
+                last: None,
+                label: format!("f_{}", i).into_bytes(),
+                greatest_version: None,
+                values: vec![LabelValue {
+                    value: b"x".to_vec(),
+                }],
+            }))
+            .await?;
     }
-    service.update(tonic::Request::new(UpdateRequest {
-        last: None,
-        label: label.clone(),
-        greatest_version: None,
-        values: vec![LabelValue { value: b"v0".to_vec() }],
-    })).await?;
-    service.update(tonic::Request::new(UpdateRequest {
-        last: None,
-        label: b"f_2".to_vec(),
-        greatest_version: None,
-        values: vec![LabelValue { value: b"x".to_vec() }],
-    })).await?;
+    service
+        .update(tonic::Request::new(UpdateRequest {
+            last: None,
+            label: label.clone(),
+            greatest_version: None,
+            values: vec![LabelValue {
+                value: b"v0".to_vec(),
+            }],
+        }))
+        .await?;
+    service
+        .update(tonic::Request::new(UpdateRequest {
+            last: None,
+            label: b"f_2".to_vec(),
+            greatest_version: None,
+            values: vec![LabelValue {
+                value: b"x".to_vec(),
+            }],
+        }))
+        .await?;
 
     service.set_access_policy(Arc::new(DenyLabel(label.clone())));
 
-    let denied = service.search(tonic::Request::new(SearchRequest {
-        last: None,
-        label: label.clone(),
-        version: None,
-    })).await;
+    let denied = service
+        .search(tonic::Request::new(SearchRequest {
+            last: None,
+            label: label.clone(),
+            version: None,
+        }))
+        .await;
     assert_eq!(denied.unwrap_err().code(), tonic::Code::PermissionDenied);
 
-    let denied = service.update(tonic::Request::new(UpdateRequest {
-        last: None,
-        label: label.clone(),
-        greatest_version: Some(0),
-        values: vec![LabelValue { value: b"v1".to_vec() }],
-    })).await;
+    let denied = service
+        .update(tonic::Request::new(UpdateRequest {
+            last: None,
+            label: label.clone(),
+            greatest_version: Some(0),
+            values: vec![LabelValue {
+                value: b"v1".to_vec(),
+            }],
+        }))
+        .await;
     assert_eq!(denied.unwrap_err().code(), tonic::Code::PermissionDenied);
 
     // protocol-obligated monitoring must still be served
-    let monitored = service.contact_monitor(tonic::Request::new(ContactMonitorRequest {
-        last: None,
-        label: label.clone(),
-        entries: vec![MonitorMapEntry { position: 2, version: 0 }],
-    })).await?;
+    let monitored = service
+        .contact_monitor(tonic::Request::new(ContactMonitorRequest {
+            last: None,
+            label: label.clone(),
+            entries: vec![MonitorMapEntry {
+                position: 2,
+                version: 0,
+            }],
+        }))
+        .await?;
     assert!(monitored.into_inner().monitor.is_some());
 
     Ok(())
@@ -82,25 +111,34 @@ async fn test_erasure_and_lifetime_pruning() -> Result<()> {
     let (signer, _) = crypto::generate_sig_keypair();
     let (vrf_key, _) = crypto::generate_vrf_keypair(CIPHER_SUITE_KT_128_SHA256_ED25519);
 
-    let service = KeyTransparencyImpl::new(db.clone(), signer, vrf_key, HashMap::new(), None).await?;
+    let service =
+        KeyTransparencyImpl::new(db.clone(), signer, vrf_key, HashMap::new(), None).await?;
     {
         let mut tree = service.tree.write().await;
         tree.config.maximum_lifetime = Some(10_000);
     }
 
     let label = b"erased_user".to_vec();
-    service.update(tonic::Request::new(UpdateRequest {
-        last: None,
-        label: label.clone(),
-        greatest_version: None,
-        values: vec![LabelValue { value: b"v0".to_vec() }],
-    })).await?;
-    service.update(tonic::Request::new(UpdateRequest {
-        last: None,
-        label: label.clone(),
-        greatest_version: Some(0),
-        values: vec![LabelValue { value: b"v1".to_vec() }],
-    })).await?;
+    service
+        .update(tonic::Request::new(UpdateRequest {
+            last: None,
+            label: label.clone(),
+            greatest_version: None,
+            values: vec![LabelValue {
+                value: b"v0".to_vec(),
+            }],
+        }))
+        .await?;
+    service
+        .update(tonic::Request::new(UpdateRequest {
+            last: None,
+            label: label.clone(),
+            greatest_version: Some(0),
+            values: vec![LabelValue {
+                value: b"v1".to_vec(),
+            }],
+        }))
+        .await?;
 
     // erasure removes the value and opening immediately
     {
@@ -112,18 +150,22 @@ async fn test_erasure_and_lifetime_pruning() -> Result<()> {
         assert!(db.get_opening(pos)?.is_none());
     }
 
-    let gone = service.search(tonic::Request::new(SearchRequest {
-        last: None,
-        label: label.clone(),
-        version: Some(0),
-    })).await;
+    let gone = service
+        .search(tonic::Request::new(SearchRequest {
+            last: None,
+            label: label.clone(),
+            version: Some(0),
+        }))
+        .await;
     assert!(gone.is_err(), "Erased version must not be servable");
 
-    let latest = service.search(tonic::Request::new(SearchRequest {
-        last: None,
-        label: label.clone(),
-        version: None,
-    })).await?;
+    let latest = service
+        .search(tonic::Request::new(SearchRequest {
+            last: None,
+            label: label.clone(),
+            version: None,
+        }))
+        .await?;
     assert_eq!(latest.into_inner().value.unwrap().value, b"v1".to_vec());
 
     // lifetime pruning: backdate entry 0 past the maximum lifetime

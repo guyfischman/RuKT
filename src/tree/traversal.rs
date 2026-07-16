@@ -1,9 +1,11 @@
 use super::Tree;
-use crate::proto::transparency::{CombinedTreeProof, MonitorMapEntry, BinaryLadderStep, UpdateValue};
-use crate::tree::walker::TraversalSession;
-use crate::tree::log_math;
-use crate::tree::binary_ladder::{search_binary_ladder, monitoring_binary_ladder};
+use crate::proto::transparency::{
+    BinaryLadderStep, CombinedTreeProof, MonitorMapEntry, UpdateValue,
+};
+use crate::tree::binary_ladder::{monitoring_binary_ladder, search_binary_ladder};
 use crate::tree::errors::KtError;
+use crate::tree::log_math;
+use crate::tree::walker::TraversalSession;
 use anyhow::{Result, anyhow};
 use std::collections::{HashMap, HashSet};
 
@@ -25,19 +27,25 @@ impl Tree {
         consistency_last: u64,
     ) -> Result<CombinedTreeProof> {
         let mut session = TraversalSession::new(self, label);
-        
+
         let prev_frontier = self.get_frontier_nodes(insertion_log_index, 0);
         let target_ver_frontier = if new_version > 0 { new_version - 1 } else { 0 };
 
         for &node in &prev_frontier {
             let versions = crate::tree::binary_ladder::base_binary_ladder(target_ver_frontier);
-            session.visit(node, &versions, None, current_tree_size).await?;
+            session
+                .visit(node, &versions, None, current_tree_size)
+                .await?;
         }
 
         let mut versions_new = crate::tree::binary_ladder::base_binary_ladder(new_version);
-        if !versions_new.contains(&new_version) { versions_new.push(new_version); }
-        
-        session.visit(insertion_log_index, &versions_new, None, current_tree_size).await?;
+        if !versions_new.contains(&new_version) {
+            versions_new.push(new_version);
+        }
+
+        session
+            .visit(insertion_log_index, &versions_new, None, current_tree_size)
+            .await?;
 
         Ok(session.finalize(current_tree_size, consistency_last)?.0)
     }
@@ -48,7 +56,7 @@ impl Tree {
         tree_size: u64,
         label: &[u8],
         target_ver: u32,
-        consistency_last: u64
+        consistency_last: u64,
     ) -> Result<SearchResultData> {
         let mut session = TraversalSession::new(self, label);
         let label_history = self.store.get_label_history(label)?;
@@ -56,10 +64,10 @@ impl Tree {
         let max_life = self.config.maximum_lifetime;
         let distinguished = self.find_distinguished_nodes(tree_size).await?;
 
-        let is_expired = |ts: u64| max_life.map_or(false, |ml| rightmost_ts.saturating_sub(ts) >= ml);
-        let is_unexpired_distinguished = |node: u64, ts: u64| {
-            distinguished.binary_search(&node).is_ok() && !is_expired(ts)
-        };
+        let is_expired =
+            |ts: u64| max_life.map_or(false, |ml| rightmost_ts.saturating_sub(ts) >= ml);
+        let is_unexpired_distinguished =
+            |node: u64, ts: u64| distinguished.binary_search(&node).is_ok() && !is_expired(ts);
 
         session.visit_frontier(tree_size).await?;
 
@@ -73,7 +81,11 @@ impl Tree {
         loop {
             let ts = self.log.get_timestamp(curr)?;
 
-            let right_child = if log_math::is_leaf(curr) { None } else { log_math::ibst_right_child(curr, tree_size) };
+            let right_child = if log_math::is_leaf(curr) {
+                None
+            } else {
+                log_math::ibst_right_child(curr, tree_size)
+            };
 
             // step 1
             if is_expired(ts) {
@@ -81,7 +93,11 @@ impl Tree {
                 expired_on_path = true;
                 session.visit_timestamp_only(curr)?;
                 match right_child {
-                    Some(rc) => { left_path.push((curr, ts)); curr = rc; continue; }
+                    Some(rc) => {
+                        left_path.push((curr, ts));
+                        curr = rc;
+                        continue;
+                    }
                     None => break,
                 }
             }
@@ -93,25 +109,36 @@ impl Tree {
                 None => vec![0],
             };
             let n = n_opt;
-            let extract = if n == Some(target_ver) { Some(target_ver) } else { None };
+            let extract = if n == Some(target_ver) {
+                Some(target_ver)
+            } else {
+                None
+            };
             session.visit(curr, &versions, extract, tree_size).await?;
             inspected.push((curr, n));
 
             if n.map_or(true, |n| n < target_ver) {
                 // step 3
                 match right_child {
-                    Some(rc) => { left_path.push((curr, ts)); curr = rc; }
+                    Some(rc) => {
+                        left_path.push((curr, ts));
+                        curr = rc;
+                    }
                     None => break,
                 }
             } else if n.map_or(false, |n| n > target_ver) {
                 // step 4
-                if log_math::is_leaf(curr) { break; }
+                if log_math::is_leaf(curr) {
+                    break;
+                }
                 curr = log_math::left_child(curr);
             } else {
                 // step 5
                 if !expired_on_path
                     || is_unexpired_distinguished(curr, ts)
-                    || left_path.iter().any(|&(node, node_ts)| is_unexpired_distinguished(node, node_ts))
+                    || left_path
+                        .iter()
+                        .any(|&(node, node_ts)| is_unexpired_distinguished(node, node_ts))
                 {
                     success = true;
                     break;
@@ -122,7 +149,8 @@ impl Tree {
 
         // step 6
         if !success {
-            let identified = inspected.iter()
+            let identified = inspected
+                .iter()
                 .filter(|&&(_, n)| n.map_or(false, |n| n > target_ver))
                 .map(|&(node, _)| node)
                 .min();
@@ -134,7 +162,9 @@ impl Tree {
             if encountered_expired {
                 let mut has_unexpired_dist_left = false;
                 for &d in &distinguished {
-                    if d >= identified { break; }
+                    if d >= identified {
+                        break;
+                    }
                     if !is_expired(self.log.get_timestamp(d)?) {
                         has_unexpired_dist_left = true;
                         break;
@@ -145,7 +175,9 @@ impl Tree {
                 }
             }
 
-            session.visit(identified, &[target_ver], Some(target_ver), tree_size).await?;
+            session
+                .visit(identified, &[target_ver], Some(target_ver), tree_size)
+                .await?;
             if session.found_value.is_none() {
                 return Err(anyhow::Error::new(KtError::Unavailable));
             }
@@ -167,7 +199,7 @@ impl Tree {
         &self,
         tree_size: u64,
         label: &[u8],
-        consistency_last: u64
+        consistency_last: u64,
     ) -> Result<SearchResultData> {
         let mut session = TraversalSession::new(self, label);
         let label_history = self.store.get_label_history(label)?;
@@ -177,7 +209,8 @@ impl Tree {
         let frontier = self.get_frontier_nodes(tree_size, 0);
         let rightmost = *frontier.last().unwrap();
         // every entry's ladder targets the claimed greatest version
-        let target = self.get_max_version_at(&label_history, rightmost)
+        let target = self
+            .get_max_version_at(&label_history, rightmost)
             .ok_or_else(|| anyhow::Error::new(KtError::Unavailable))?;
 
         for &node in &frontier {
@@ -185,7 +218,11 @@ impl Tree {
                 Some(n) => search_binary_ladder(target, n, &[], &[]),
                 None => vec![0],
             };
-            let extract = if node == rightmost { Some(target) } else { None };
+            let extract = if node == rightmost {
+                Some(target)
+            } else {
+                None
+            };
 
             session.visit(node, &versions, extract, tree_size).await?;
         }
@@ -241,11 +278,12 @@ impl Tree {
                     };
                 }
             }
-            let pos_dist = parent_dist && curr == pos
-                && bounds.1.saturating_sub(bounds.0) >= rmw;
+            let pos_dist = parent_dist && curr == pos && bounds.1.saturating_sub(bounds.0) >= rmw;
 
             // step 1
-            if pos_dist { continue; }
+            if pos_dist {
+                continue;
+            }
 
             // step 2
             let mut list: Vec<u64> = log_math::ibst_direct_path(pos, tree_size)
@@ -253,13 +291,18 @@ impl Tree {
                 .filter(|&a| a > pos)
                 .collect();
             list.sort();
-            if let Some(cut) = list.iter().position(|a| *ancestor_dist.get(a).unwrap_or(&false)) {
+            if let Some(cut) = list
+                .iter()
+                .position(|a| *ancestor_dist.get(a).unwrap_or(&false))
+            {
                 list.truncate(cut + 1);
             }
 
             // step 3
             for &e in &list {
-                if ladder_targets.contains_key(&e) { break; }
+                if ladder_targets.contains_key(&e) {
+                    break;
+                }
                 let versions = monitoring_binary_ladder(entry.version, &[]);
                 session.visit(e, &versions, None, tree_size).await?;
                 ladder_targets.insert(e, entry.version);
@@ -281,9 +324,17 @@ impl Tree {
         let rightmost_ts = self.log.get_timestamp(tree_size - 1)?;
         let limit = self.config.max_response_entries;
 
-        let (nodes, _) = self.owner_monitoring_traversal_collect(
-            root_idx, 0, rightmost_ts, tree_size, start, &history, limit
-        ).await?;
+        let (nodes, _) = self
+            .owner_monitoring_traversal_collect(
+                root_idx,
+                0,
+                rightmost_ts,
+                tree_size,
+                start,
+                &history,
+                limit,
+            )
+            .await?;
 
         let mut versions = Vec::new();
         for (node_idx, ver) in nodes {
@@ -304,7 +355,8 @@ impl Tree {
         let mut session = TraversalSession::new(self, label);
         session.visit_frontier(tree_size).await?;
 
-        self.visit_contact_entries(&mut session, entries, tree_size).await?;
+        self.visit_contact_entries(&mut session, entries, tree_size)
+            .await?;
 
         Ok(session.finalize(tree_size, last)?.0)
     }
@@ -321,17 +373,22 @@ impl Tree {
         let history = self.store.get_label_history(label)?;
         let rightmost_ts = self.log.get_timestamp(tree_size - 1)?;
         let max_life = self.config.maximum_lifetime;
-        let is_expired = |ts: u64| max_life.map_or(false, |ml| rightmost_ts.saturating_sub(ts) >= ml);
+        let is_expired =
+            |ts: u64| max_life.map_or(false, |ml| rightmost_ts.saturating_sub(ts) >= ml);
 
         session.visit_frontier(tree_size).await?;
 
         let mut versions = Vec::new();
         for node in log_math::owner_init_list(start, tree_size) {
-            if is_expired(self.log.get_timestamp(node)?) { break; }
+            if is_expired(self.log.get_timestamp(node)?) {
+                break;
+            }
             let ver = self.get_max_version_at(&history, node);
             // step 2: non-increasing greatest versions
             if let (Some(prev), Some(v)) = (versions.last().copied().flatten(), ver) {
-                if v > prev { return Err(anyhow!("Owner-init greatest versions are not monotonic")); }
+                if v > prev {
+                    return Err(anyhow!("Owner-init greatest versions are not monotonic"));
+                }
             }
             versions.push(ver);
             // step 5: full search ladder targeting this entry's greatest version
@@ -360,7 +417,9 @@ impl Tree {
 
         let distinguished = self.find_distinguished_nodes(tree_size).await?;
         let dset: HashSet<u64> = distinguished.iter().copied().collect();
-        let recent: HashSet<u64> = distinguished.iter().rev()
+        let recent: HashSet<u64> = distinguished
+            .iter()
+            .rev()
             .take(self.config.max_response_entries as usize)
             .copied()
             .collect();
@@ -369,7 +428,9 @@ impl Tree {
         let mut stack = vec![log_math::root(tree_size)];
         while let Some(curr) = stack.pop() {
             // step 1
-            if !dset.contains(&curr) { continue; }
+            if !dset.contains(&curr) {
+                continue;
+            }
             // §12.3.8
             session.visit_timestamp_only(curr)?;
             // steps 3-5: the left child is only walked past the gates
@@ -404,17 +465,29 @@ impl Tree {
         out: &mut Vec<(u64, Option<u32>)>,
     ) -> Result<()> {
         // step 1
-        if right_ts.saturating_sub(left_ts) < rmw { return Ok(()); }
+        if right_ts.saturating_sub(left_ts) < rmw {
+            return Ok(());
+        }
         let node_ts = self.log.get_timestamp(node)?;
 
-        let right_child = if log_math::is_leaf(node) { None } else { log_math::ibst_right_child(node, tree_size) };
-        let left_child = if log_math::is_leaf(node) { None } else { Some(log_math::left_child(node)) };
+        let right_child = if log_math::is_leaf(node) {
+            None
+        } else {
+            log_math::ibst_right_child(node, tree_size)
+        };
+        let left_child = if log_math::is_leaf(node) {
+            None
+        } else {
+            Some(log_math::left_child(node))
+        };
 
         // step 2
         if node <= start {
             out.push((node, None));
             if let Some(rc) = right_child {
-                self.owner_walk_actions(history, rc, node_ts, right_ts, start, tree_size, rmw, out)?;
+                self.owner_walk_actions(
+                    history, rc, node_ts, right_ts, start, tree_size, rmw, out,
+                )?;
             }
             return Ok(());
         }
@@ -425,7 +498,10 @@ impl Tree {
         }
 
         // step 5
-        out.push((node, Some(self.get_max_version_at(history, node).unwrap_or(0))));
+        out.push((
+            node,
+            Some(self.get_max_version_at(history, node).unwrap_or(0)),
+        ));
 
         // step 6
         if let Some(rc) = right_child {
@@ -448,10 +524,20 @@ impl Tree {
 
         let mut session = TraversalSession::new(self, label);
         session.visit_frontier(tree_size).await?;
-        self.visit_contact_entries(&mut session, entries, tree_size).await?;
+        self.visit_contact_entries(&mut session, entries, tree_size)
+            .await?;
 
         let mut actions = Vec::new();
-        self.owner_walk_actions(&history, log_math::root(tree_size), 0, rightmost_ts, start, tree_size, rmw, &mut actions)?;
+        self.owner_walk_actions(
+            &history,
+            log_math::root(tree_size),
+            0,
+            rightmost_ts,
+            start,
+            tree_size,
+            rmw,
+            &mut actions,
+        )?;
         for (node, target) in actions {
             match target {
                 None => session.visit_timestamp_only(node)?,

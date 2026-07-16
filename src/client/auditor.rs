@@ -1,10 +1,10 @@
-use tonic::transport::Channel;
-use crate::proto::kt::key_transparency_service_client::KeyTransparencyServiceClient;
-use crate::proto::kt::{AuditRequest};
-use crate::proto::transparency::{AuditorTreeHead}; 
 use crate::client::verifier::{LogAccumulator, PrefixTransitioner};
-use crate::crypto::{self, ServiceSigningKey, sign_data, PublicConfig};
-use anyhow::{Result, anyhow, Context};
+use crate::crypto::{self, PublicConfig, ServiceSigningKey, sign_data};
+use crate::proto::kt::AuditRequest;
+use crate::proto::kt::key_transparency_service_client::KeyTransparencyServiceClient;
+use crate::proto::transparency::AuditorTreeHead;
+use anyhow::{Context, Result, anyhow};
+use tonic::transport::Channel;
 
 pub struct KtAuditor {
     client: KeyTransparencyServiceClient<Channel>,
@@ -17,9 +17,9 @@ pub struct KtAuditor {
 
 impl KtAuditor {
     pub async fn connect(
-        dst: String, 
-        signer: ServiceSigningKey, 
-        config: PublicConfig
+        dst: String,
+        signer: ServiceSigningKey,
+        config: PublicConfig,
     ) -> Result<Self> {
         let client = KeyTransparencyServiceClient::connect(dst).await?;
         Ok(Self {
@@ -44,7 +44,10 @@ impl KtAuditor {
 
         let tbs = crypto::construct_tree_head_tbs_public(&self.config, th.tree_size, &root)?;
         let server_pk = crate::crypto::ServiceVerifyingKey::from_bytes(&self.config.server_sig_pk)?;
-        let sig = th.signatures.first().ok_or(anyhow!("TreeHead has no signatures"))?;
+        let sig = th
+            .signatures
+            .first()
+            .ok_or(anyhow!("TreeHead has no signatures"))?;
         crate::crypto::verify_data(&server_pk, &tbs, &sig.signature)
             .context("Operator tree head signature verification failed")?;
 
@@ -56,13 +59,10 @@ impl KtAuditor {
 
     pub async fn process_and_sign(&mut self) -> Result<()> {
         let start = self.log_accumulator.tree_size;
-        let req = AuditRequest {
-            start,
-            limit: 10,
-        };
-        
+        let req = AuditRequest { start, limit: 10 };
+
         let resp = self.client.clone().audit(req).await?.into_inner();
-        
+
         if resp.updates.is_empty() {
             return Ok(());
         }
@@ -77,7 +77,9 @@ impl KtAuditor {
             for list in [&update.added, &update.removed] {
                 for pair in list.windows(2) {
                     if pair[0].vrf_output >= pair[1].vrf_output {
-                        return Err(anyhow!("Audit leaves are not sorted ascending without duplicates"));
+                        return Err(anyhow!(
+                            "Audit leaves are not sorted ascending without duplicates"
+                        ));
                     }
                 }
             }
@@ -88,13 +90,18 @@ impl KtAuditor {
             }
 
             // §15.2 steps 3-4
-            let removed_keys: std::collections::HashSet<&[u8]> =
-                update.removed.iter().map(|l| l.vrf_output.as_slice()).collect();
+            let removed_keys: std::collections::HashSet<&[u8]> = update
+                .removed
+                .iter()
+                .map(|l| l.vrf_output.as_slice())
+                .collect();
             for (i, leaf) in update.added.iter().enumerate() {
                 if !removed_keys.contains(leaf.vrf_output.as_slice())
                     && proof.results[i].result_type == 1
                 {
-                    return Err(anyhow!("Added leaf has an inclusion result but is not being removed"));
+                    return Err(anyhow!(
+                        "Added leaf has an inclusion result but is not being removed"
+                    ));
                 }
             }
             for (i, _) in update.removed.iter().enumerate() {
@@ -109,12 +116,13 @@ impl KtAuditor {
                 &self.prefix_root,
                 &update.added,
                 &update.removed,
-                &proof
-            ).context("Prefix tree transition verification failed")?;
+                &proof,
+            )
+            .context("Prefix tree transition verification failed")?;
 
             let leaf_hash = crate::crypto::hash::log_leaf_value(update.timestamp, &new_prefix_root);
             self.log_accumulator.append_leaf(leaf_hash);
-            
+
             self.prefix_root = new_prefix_root;
             self.last_timestamp = update.timestamp;
         }
@@ -126,19 +134,19 @@ impl KtAuditor {
             &self.config,
             tree_size,
             self.last_timestamp,
-            &new_log_root
+            &new_log_root,
         )?;
-        
+
         let sig = sign_data(&self.signer, &tbs);
-        
+
         let ath = AuditorTreeHead {
             tree_size,
             timestamp: self.last_timestamp as i64,
             signature: sig,
         };
-        
+
         self.client.clone().set_auditor_head(ath).await?;
-        
+
         Ok(())
     }
 }

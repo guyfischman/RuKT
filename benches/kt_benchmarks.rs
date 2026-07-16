@@ -14,33 +14,30 @@
 //   5. Scalability Analysis (how latency grows with tree size)
 //   6. Proof Size Analysis (response payload sizes)
 
-use criterion::{
-    criterion_group, criterion_main, Criterion, BenchmarkId, Throughput,
+use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
+use rukt::batcher::Batcher;
+use rukt::bulk;
+use rukt::crypto::{
+    self, CIPHER_SUITE_KT_128_SHA256_ED25519, CIPHER_SUITE_KT_128_SHA256_P256, PrivateConfig,
+    commit, generate_random_opening, generate_sig_keypair, generate_vrf_keypair, sign_data,
+    verify_data,
 };
 use rukt::db::{RocksDbStore, TransparencyStore};
-use rukt::service::KeyTransparencyImpl;
-use rukt::bulk;
-use rukt::tree::Tree;
-use rukt::proto::transparency::{
-    UpdateRequest, LabelValue, SearchRequest,
-    ContactMonitorRequest, OwnerInitRequest, MonitorMapEntry, Consistency,
-    GetCredentialRequest,
-};
 use rukt::proto::kt::AuditRequest;
 use rukt::proto::kt::key_transparency_service_server::KeyTransparencyService;
-use rukt::crypto::{
-    self, generate_sig_keypair, generate_vrf_keypair, generate_random_opening, commit,
-    sign_data, verify_data, PrivateConfig,
-    CIPHER_SUITE_KT_128_SHA256_ED25519, CIPHER_SUITE_KT_128_SHA256_P256,
+use rukt::proto::transparency::{
+    Consistency, ContactMonitorRequest, GetCredentialRequest, LabelValue, MonitorMapEntry,
+    OwnerInitRequest, SearchRequest, UpdateRequest,
 };
+use rukt::service::KeyTransparencyImpl;
+use rukt::tree::Tree;
 use rukt::tree::binary_ladder::{base_binary_ladder, search_binary_ladder};
-use std::sync::Arc;
-use std::path::Path;
 use std::collections::HashMap;
+use std::path::Path;
+use std::sync::Arc;
 use tempfile::tempdir;
 use tokio::runtime::Runtime;
 use tokio::sync::RwLock;
-use rukt::batcher::Batcher;
 
 /// Worker thread count for benchmark measurements (kept at 4 for consistency
 /// with all existing data). Golden DB builds use a separate higher-parallelism runtime.
@@ -192,17 +189,20 @@ fn load_keys(dir: &str) -> (rukt::crypto::ServiceSigningKey, Vec<u8>) {
     let path = format!("{}/{}", dir, KEYS_FILENAME);
     let data = std::fs::read(path).unwrap();
     let mut cursor = 0;
-    let sig_len = u32::from_be_bytes(data[cursor..cursor+4].try_into().unwrap()) as usize;
+    let sig_len = u32::from_be_bytes(data[cursor..cursor + 4].try_into().unwrap()) as usize;
     cursor += 4;
-    let sig_bytes = &data[cursor..cursor+sig_len];
+    let sig_bytes = &data[cursor..cursor + sig_len];
     cursor += sig_len;
-    let vrf_len = u32::from_be_bytes(data[cursor..cursor+4].try_into().unwrap()) as usize;
+    let vrf_len = u32::from_be_bytes(data[cursor..cursor + 4].try_into().unwrap()) as usize;
     cursor += 4;
-    let vrf_key = data[cursor..cursor+vrf_len].to_vec();
+    let vrf_key = data[cursor..cursor + vrf_len].to_vec();
 
     let sig_arr: [u8; 32] = sig_bytes.try_into().unwrap();
     let signing_key = ed25519_dalek::SigningKey::from_bytes(&sig_arr);
-    (rukt::crypto::ServiceSigningKey::Ed25519(signing_key), vrf_key)
+    (
+        rukt::crypto::ServiceSigningKey::Ed25519(signing_key),
+        vrf_key,
+    )
 }
 
 /// Build a golden database with `n` users using parallel bulk population.
@@ -235,14 +235,17 @@ fn build_or_load_golden(n: usize) -> String {
         let config = make_bench_config(signer.clone(), vrf_key.clone());
         let mut tree = Tree::new(db.clone(), &config).await.unwrap();
 
-        let labels: Vec<(Vec<u8>, Vec<u8>)> = (0..n)
-            .map(|i| (make_label(i), make_value(0)))
-            .collect();
+        let labels: Vec<(Vec<u8>, Vec<u8>)> =
+            (0..n).map(|i| (make_label(i), make_value(0))).collect();
 
         // Use parallel sub-tree construction for all sizes.
         // Larger trees get more partitions (2^6 = 64) to saturate all cores.
         // Memory: ~130 bytes/entry × 1M ≈ 130MB — well within bounds.
-        let k = if n > 32_768 { PARALLEL_PARTITION_BITS_LARGE } else { PARALLEL_PARTITION_BITS };
+        let k = if n > 32_768 {
+            PARALLEL_PARTITION_BITS_LARGE
+        } else {
+            PARALLEL_PARTITION_BITS
+        };
         bulk::parallel_bulk_populate(&mut tree, &db, &config, labels, k)
             .await
             .unwrap();
@@ -280,10 +283,7 @@ fn setup_from_checkpoint(golden_path: &str) -> (KeyTransparencyImpl, Runtime) {
 }
 
 /// Construct a PrivateConfig for benchmark use (no auditors, contact monitoring mode).
-fn make_bench_config(
-    signer: rukt::crypto::ServiceSigningKey,
-    vrf_key: Vec<u8>,
-) -> PrivateConfig {
+fn make_bench_config(signer: rukt::crypto::ServiceSigningKey, vrf_key: Vec<u8>) -> PrivateConfig {
     PrivateConfig::new(
         CIPHER_SUITE_KT_128_SHA256_ED25519,
         rukt::crypto::DEPLOYMENT_MODE_CONTACT_MONITORING,
@@ -396,9 +396,7 @@ fn bench_crypto_primitives(c: &mut Criterion) {
     let verifier =
         crypto::ServiceVerifyingKey::from_bytes(&signer.verifying_key().to_bytes()).unwrap();
 
-    group.bench_function("ed25519_sign", |b| {
-        b.iter(|| sign_data(&signer, &tbs_data))
-    });
+    group.bench_function("ed25519_sign", |b| b.iter(|| sign_data(&signer, &tbs_data)));
     group.bench_function("ed25519_verify", |b| {
         b.iter(|| verify_data(&verifier, &tbs_data, &sig).unwrap())
     });
@@ -502,39 +500,31 @@ fn bench_protocol_search(c: &mut Criterion) {
     for &n in &[100usize, 1_000] {
         let (service, rt) = setup_service_with_users(n);
 
-        group.bench_with_input(
-            BenchmarkId::new("greatest_version", n),
-            &n,
-            |b, _| {
-                b.iter(|| {
-                    rt.block_on(async {
-                        let req = tonic::Request::new(SearchRequest {
-                            label: make_label(0),
-                            last: None,
-                            version: None,
-                        });
-                        service.search(req).await.unwrap()
-                    })
+        group.bench_with_input(BenchmarkId::new("greatest_version", n), &n, |b, _| {
+            b.iter(|| {
+                rt.block_on(async {
+                    let req = tonic::Request::new(SearchRequest {
+                        label: make_label(0),
+                        last: None,
+                        version: None,
+                    });
+                    service.search(req).await.unwrap()
                 })
-            },
-        );
+            })
+        });
 
-        group.bench_with_input(
-            BenchmarkId::new("fixed_version_0", n),
-            &n,
-            |b, _| {
-                b.iter(|| {
-                    rt.block_on(async {
-                        let req = tonic::Request::new(SearchRequest {
-                            label: make_label(0),
-                            last: None,
-                            version: Some(0),
-                        });
-                        service.search(req).await.unwrap()
-                    })
+        group.bench_with_input(BenchmarkId::new("fixed_version_0", n), &n, |b, _| {
+            b.iter(|| {
+                rt.block_on(async {
+                    let req = tonic::Request::new(SearchRequest {
+                        label: make_label(0),
+                        last: None,
+                        version: Some(0),
+                    });
+                    service.search(req).await.unwrap()
                 })
-            },
-        );
+            })
+        });
     }
 
     group.finish();
@@ -548,41 +538,33 @@ fn bench_protocol_search_versioned(c: &mut Criterion) {
     for &nv in &[10usize, 50] {
         let (service, rt) = setup_service_with_versions(nv);
 
-        group.bench_with_input(
-            BenchmarkId::new("latest_of_n", nv),
-            &nv,
-            |b, _| {
-                b.iter(|| {
-                    rt.block_on(async {
-                        let req = tonic::Request::new(SearchRequest {
-                            label: make_label(0),
-                            last: None,
-                            version: None,
-                        });
-                        service.search(req).await.unwrap()
-                    })
+        group.bench_with_input(BenchmarkId::new("latest_of_n", nv), &nv, |b, _| {
+            b.iter(|| {
+                rt.block_on(async {
+                    let req = tonic::Request::new(SearchRequest {
+                        label: make_label(0),
+                        last: None,
+                        version: None,
+                    });
+                    service.search(req).await.unwrap()
                 })
-            },
-        );
+            })
+        });
 
         // Fixed-version search with a pseudo-random version (avoids v0 bias)
         let rv = rand_version(nv);
-        group.bench_with_input(
-            BenchmarkId::new("fixed_vrand_of_n", nv),
-            &nv,
-            |b, _| {
-                b.iter(|| {
-                    rt.block_on(async {
-                        let req = tonic::Request::new(SearchRequest {
-                            label: make_label(0),
-                            last: None,
-                            version: Some(rv),
-                        });
-                        service.search(req).await.unwrap()
-                    })
+        group.bench_with_input(BenchmarkId::new("fixed_vrand_of_n", nv), &nv, |b, _| {
+            b.iter(|| {
+                rt.block_on(async {
+                    let req = tonic::Request::new(SearchRequest {
+                        label: make_label(0),
+                        last: None,
+                        version: Some(rv),
+                    });
+                    service.search(req).await.unwrap()
                 })
-            },
-        );
+            })
+        });
     }
 
     group.finish();
@@ -761,31 +743,27 @@ fn bench_concurrent_reads(c: &mut Criterion) {
 
     for &n in &[1usize, 10, 50, 100] {
         group.throughput(Throughput::Elements(n as u64));
-        group.bench_with_input(
-            BenchmarkId::new("parallel_searches", n),
-            &n,
-            |b, &n| {
-                b.iter(|| {
-                    rt.block_on(async {
-                        let mut handles = Vec::with_capacity(n);
-                        for i in 0..n {
-                            let svc = service.clone();
-                            handles.push(tokio::spawn(async move {
-                                let req = tonic::Request::new(SearchRequest {
-                                    label: make_label(i % 500),
-                                    last: None,
-                                    version: None,
-                                });
-                                let _ = svc.search(req).await;
-                            }));
-                        }
-                        for h in handles {
-                            let _ = h.await;
-                        }
-                    })
+        group.bench_with_input(BenchmarkId::new("parallel_searches", n), &n, |b, &n| {
+            b.iter(|| {
+                rt.block_on(async {
+                    let mut handles = Vec::with_capacity(n);
+                    for i in 0..n {
+                        let svc = service.clone();
+                        handles.push(tokio::spawn(async move {
+                            let req = tonic::Request::new(SearchRequest {
+                                label: make_label(i % 500),
+                                last: None,
+                                version: None,
+                            });
+                            let _ = svc.search(req).await;
+                        }));
+                    }
+                    for h in handles {
+                        let _ = h.await;
+                    }
                 })
-            },
-        );
+            })
+        });
     }
 
     group.finish();
@@ -892,7 +870,9 @@ fn bench_enterprise_rotation(c: &mut Criterion) {
                 let _ = s.update(req).await;
             }));
         }
-        for h in handles { let _ = h.await; }
+        for h in handles {
+            let _ = h.await;
+        }
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
         // Each user rotates 10 times
@@ -909,7 +889,9 @@ fn bench_enterprise_rotation(c: &mut Criterion) {
                     let _ = s.update(req).await;
                 }));
             }
-            for h in handles { let _ = h.await; }
+            for h in handles {
+                let _ = h.await;
+            }
             tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
         }
         svc
@@ -972,38 +954,29 @@ fn bench_scalability(c: &mut Criterion) {
     for &n in &[10usize, 100, 500, 1_000, 2_000] {
         let (service, rt) = setup_service_with_users(n);
 
-        group.bench_with_input(
-            BenchmarkId::new("search_at_size", n),
-            &n,
-            |b, &n| {
-                b.iter(|| {
-                    rt.block_on(async {
-                        let req = tonic::Request::new(SearchRequest {
-                            label: make_label(n / 2),
-                            last: None,
-                            version: None,
-                        });
-                        service.search(req).await.unwrap()
-                    })
+        group.bench_with_input(BenchmarkId::new("search_at_size", n), &n, |b, &n| {
+            b.iter(|| {
+                rt.block_on(async {
+                    let req = tonic::Request::new(SearchRequest {
+                        label: make_label(n / 2),
+                        last: None,
+                        version: None,
+                    });
+                    service.search(req).await.unwrap()
                 })
-            },
-        );
+            })
+        });
 
         let counter = std::sync::atomic::AtomicUsize::new(n + 100_000);
-        group.bench_with_input(
-            BenchmarkId::new("update_at_size", n),
-            &n,
-            |b, _| {
-                b.iter(|| {
-                    let i = counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                    rt.block_on(async {
-                        let req =
-                            tonic::Request::new(update_req(make_label(i), None, make_value(0)));
-                        service.update(req).await.unwrap()
-                    })
+        group.bench_with_input(BenchmarkId::new("update_at_size", n), &n, |b, _| {
+            b.iter(|| {
+                let i = counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                rt.block_on(async {
+                    let req = tonic::Request::new(update_req(make_label(i), None, make_value(0)));
+                    service.update(req).await.unwrap()
                 })
-            },
-        );
+            })
+        });
     }
 
     group.finish();
@@ -1020,34 +993,30 @@ fn bench_proof_sizes(c: &mut Criterion) {
     for &n in &[10usize, 100, 1_000] {
         let (service, rt) = setup_service_with_users(n);
 
-        group.bench_with_input(
-            BenchmarkId::new("search_response_bytes", n),
-            &n,
-            |b, _| {
-                b.iter(|| {
-                    rt.block_on(async {
-                        let req = tonic::Request::new(SearchRequest {
-                            label: make_label(0),
-                            last: None,
-                            version: None,
-                        });
-                        let resp = service.search(req).await.unwrap().into_inner();
-                        let mut size = 0usize;
-                        if let Some(th) = &resp.full_tree_head {
-                            size += prost::Message::encoded_len(th);
-                        }
-                        if let Some(s) = &resp.search {
-                            size += prost::Message::encoded_len(s);
-                        }
-                        size += resp.opening.len();
-                        for step in &resp.binary_ladder {
-                            size += prost::Message::encoded_len(step);
-                        }
-                        size
-                    })
+        group.bench_with_input(BenchmarkId::new("search_response_bytes", n), &n, |b, _| {
+            b.iter(|| {
+                rt.block_on(async {
+                    let req = tonic::Request::new(SearchRequest {
+                        label: make_label(0),
+                        last: None,
+                        version: None,
+                    });
+                    let resp = service.search(req).await.unwrap().into_inner();
+                    let mut size = 0usize;
+                    if let Some(th) = &resp.full_tree_head {
+                        size += prost::Message::encoded_len(th);
+                    }
+                    if let Some(s) = &resp.search {
+                        size += prost::Message::encoded_len(s);
+                    }
+                    size += resp.opening.len();
+                    for step in &resp.binary_ladder {
+                        size += prost::Message::encoded_len(step);
+                    }
+                    size
                 })
-            },
-        );
+            })
+        });
     }
 
     group.finish();
@@ -1071,23 +1040,16 @@ fn bench_value_sizes(c: &mut Criterion) {
         });
         let counter = std::sync::atomic::AtomicUsize::new(0);
 
-        group.bench_with_input(
-            BenchmarkId::new("update_value_bytes", sz),
-            &sz,
-            |b, &sz| {
-                b.iter(|| {
-                    let i = counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                    rt.block_on(async {
-                        let req = tonic::Request::new(update_req(
-                            make_label(i),
-                            None,
-                            make_large_value(sz),
-                        ));
-                        service.update(req).await.unwrap()
-                    })
+        group.bench_with_input(BenchmarkId::new("update_value_bytes", sz), &sz, |b, &sz| {
+            b.iter(|| {
+                let i = counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                rt.block_on(async {
+                    let req =
+                        tonic::Request::new(update_req(make_label(i), None, make_large_value(sz)));
+                    service.update(req).await.unwrap()
                 })
-            },
-        );
+            })
+        });
         std::mem::forget(dir);
     }
 
@@ -1150,39 +1112,31 @@ fn bench_comparative_analysis(c: &mut Criterion) {
     for &n in LARGE_TREE_SIZES {
         let (service, rt) = setup_service_bulk(n);
 
-        group.bench_with_input(
-            BenchmarkId::new("greatest_version", n),
-            &n,
-            |b, _| {
-                b.iter(|| {
-                    rt.block_on(async {
-                        let req = tonic::Request::new(SearchRequest {
-                            label: make_label(0),
-                            last: None,
-                            version: None,
-                        });
-                        service.search(req).await.unwrap()
-                    })
+        group.bench_with_input(BenchmarkId::new("greatest_version", n), &n, |b, _| {
+            b.iter(|| {
+                rt.block_on(async {
+                    let req = tonic::Request::new(SearchRequest {
+                        label: make_label(0),
+                        last: None,
+                        version: None,
+                    });
+                    service.search(req).await.unwrap()
                 })
-            },
-        );
+            })
+        });
 
-        group.bench_with_input(
-            BenchmarkId::new("fixed_v0", n),
-            &n,
-            |b, _| {
-                b.iter(|| {
-                    rt.block_on(async {
-                        let req = tonic::Request::new(SearchRequest {
-                            label: make_label(0),
-                            last: None,
-                            version: Some(0),
-                        });
-                        service.search(req).await.unwrap()
-                    })
+        group.bench_with_input(BenchmarkId::new("fixed_v0", n), &n, |b, _| {
+            b.iter(|| {
+                rt.block_on(async {
+                    let req = tonic::Request::new(SearchRequest {
+                        label: make_label(0),
+                        last: None,
+                        version: Some(0),
+                    });
+                    service.search(req).await.unwrap()
                 })
-            },
-        );
+            })
+        });
     }
 
     // --- Binary ladder efficiency: how search cost grows with version count ---
@@ -1194,41 +1148,33 @@ fn bench_comparative_analysis(c: &mut Criterion) {
     for &nv in BENCH_VERSION_COUNTS {
         let (service, rt) = setup_service_with_versions(nv);
 
-        group.bench_with_input(
-            BenchmarkId::new("ladder_greatest", nv),
-            &nv,
-            |b, _| {
-                b.iter(|| {
-                    rt.block_on(async {
-                        let req = tonic::Request::new(SearchRequest {
-                            label: make_label(0),
-                            last: None,
-                            version: None,
-                        });
-                        service.search(req).await.unwrap()
-                    })
+        group.bench_with_input(BenchmarkId::new("ladder_greatest", nv), &nv, |b, _| {
+            b.iter(|| {
+                rt.block_on(async {
+                    let req = tonic::Request::new(SearchRequest {
+                        label: make_label(0),
+                        last: None,
+                        version: None,
+                    });
+                    service.search(req).await.unwrap()
                 })
-            },
-        );
+            })
+        });
 
         // Fixed-version with pseudo-random version (avoids v0 best-case bias)
         let rv = rand_version(nv);
-        group.bench_with_input(
-            BenchmarkId::new("ladder_fixed_vrand", nv),
-            &nv,
-            |b, _| {
-                b.iter(|| {
-                    rt.block_on(async {
-                        let req = tonic::Request::new(SearchRequest {
-                            label: make_label(0),
-                            last: None,
-                            version: Some(rv),
-                        });
-                        service.search(req).await.unwrap()
-                    })
+        group.bench_with_input(BenchmarkId::new("ladder_fixed_vrand", nv), &nv, |b, _| {
+            b.iter(|| {
+                rt.block_on(async {
+                    let req = tonic::Request::new(SearchRequest {
+                        label: make_label(0),
+                        last: None,
+                        version: Some(rv),
+                    });
+                    service.search(req).await.unwrap()
                 })
-            },
-        );
+            })
+        });
     }
 
     // --- Proof payload size: combined proof bytes by tree size ---
@@ -1247,42 +1193,44 @@ fn bench_comparative_analysis(c: &mut Criterion) {
             });
             let resp = service.search(req).await.unwrap().into_inner();
             let mut size = 0usize;
-            if let Some(th) = &resp.full_tree_head { size += prost::Message::encoded_len(th); }
-            if let Some(s) = &resp.search { size += prost::Message::encoded_len(s); }
+            if let Some(th) = &resp.full_tree_head {
+                size += prost::Message::encoded_len(th);
+            }
+            if let Some(s) = &resp.search {
+                size += prost::Message::encoded_len(s);
+            }
             size += resp.opening.len();
-            for step in &resp.binary_ladder { size += prost::Message::encoded_len(step); }
+            for step in &resp.binary_ladder {
+                size += prost::Message::encoded_len(step);
+            }
             size
         });
         eprintln!("📐 proof_bytes_by_users/{} = {} bytes", n, one_shot_bytes);
 
-        group.bench_with_input(
-            BenchmarkId::new("proof_bytes_by_users", n),
-            &n,
-            |b, _| {
-                b.iter(|| {
-                    rt.block_on(async {
-                        let req = tonic::Request::new(SearchRequest {
-                            label: make_label(0),
-                            last: None,
-                            version: None,
-                        });
-                        let resp = service.search(req).await.unwrap().into_inner();
-                        let mut size = 0usize;
-                        if let Some(th) = &resp.full_tree_head {
-                            size += prost::Message::encoded_len(th);
-                        }
-                        if let Some(s) = &resp.search {
-                            size += prost::Message::encoded_len(s);
-                        }
-                        size += resp.opening.len();
-                        for step in &resp.binary_ladder {
-                            size += prost::Message::encoded_len(step);
-                        }
-                        size
-                    })
+        group.bench_with_input(BenchmarkId::new("proof_bytes_by_users", n), &n, |b, _| {
+            b.iter(|| {
+                rt.block_on(async {
+                    let req = tonic::Request::new(SearchRequest {
+                        label: make_label(0),
+                        last: None,
+                        version: None,
+                    });
+                    let resp = service.search(req).await.unwrap().into_inner();
+                    let mut size = 0usize;
+                    if let Some(th) = &resp.full_tree_head {
+                        size += prost::Message::encoded_len(th);
+                    }
+                    if let Some(s) = &resp.search {
+                        size += prost::Message::encoded_len(s);
+                    }
+                    size += resp.opening.len();
+                    for step in &resp.binary_ladder {
+                        size += prost::Message::encoded_len(step);
+                    }
+                    size
                 })
-            },
-        );
+            })
+        });
     }
 
     // --- Proof payload size: bytes by version count ---
@@ -1300,13 +1248,22 @@ fn bench_comparative_analysis(c: &mut Criterion) {
             });
             let resp = service.search(req).await.unwrap().into_inner();
             let mut size = 0usize;
-            if let Some(th) = &resp.full_tree_head { size += prost::Message::encoded_len(th); }
-            if let Some(s) = &resp.search { size += prost::Message::encoded_len(s); }
+            if let Some(th) = &resp.full_tree_head {
+                size += prost::Message::encoded_len(th);
+            }
+            if let Some(s) = &resp.search {
+                size += prost::Message::encoded_len(s);
+            }
             size += resp.opening.len();
-            for step in &resp.binary_ladder { size += prost::Message::encoded_len(step); }
+            for step in &resp.binary_ladder {
+                size += prost::Message::encoded_len(step);
+            }
             size
         });
-        eprintln!("📐 proof_bytes_by_versions/{} = {} bytes", nv, one_shot_bytes);
+        eprintln!(
+            "📐 proof_bytes_by_versions/{} = {} bytes",
+            nv, one_shot_bytes
+        );
 
         group.bench_with_input(
             BenchmarkId::new("proof_bytes_by_versions", nv),
@@ -1354,62 +1311,50 @@ fn bench_large_scale_scalability(c: &mut Criterion) {
         let (service, rt) = setup_service_bulk(n);
 
         // Search latency (greatest-version, 1 key version per user)
-        group.bench_with_input(
-            BenchmarkId::new("search_latency", n),
-            &n,
-            |b, &n| {
-                b.iter(|| {
-                    rt.block_on(async {
-                        let req = tonic::Request::new(SearchRequest {
-                            label: make_label(n / 2),
-                            last: None,
-                            version: None,
-                        });
-                        service.search(req).await.unwrap()
-                    })
+        group.bench_with_input(BenchmarkId::new("search_latency", n), &n, |b, &n| {
+            b.iter(|| {
+                rt.block_on(async {
+                    let req = tonic::Request::new(SearchRequest {
+                        label: make_label(n / 2),
+                        last: None,
+                        version: None,
+                    });
+                    service.search(req).await.unwrap()
                 })
-            },
-        );
+            })
+        });
 
         // Fixed-version search (mid-range label, version 0 — realistic since
         // most WhatsApp users have 1-3 versions)
-        group.bench_with_input(
-            BenchmarkId::new("fixed_v0_latency", n),
-            &n,
-            |b, &n| {
-                b.iter(|| {
-                    rt.block_on(async {
-                        let req = tonic::Request::new(SearchRequest {
-                            label: make_label(n / 2),
-                            last: None,
-                            version: Some(0),
-                        });
-                        service.search(req).await.unwrap()
-                    })
+        group.bench_with_input(BenchmarkId::new("fixed_v0_latency", n), &n, |b, &n| {
+            b.iter(|| {
+                rt.block_on(async {
+                    let req = tonic::Request::new(SearchRequest {
+                        label: make_label(n / 2),
+                        last: None,
+                        version: Some(0),
+                    });
+                    service.search(req).await.unwrap()
                 })
-            },
-        );
+            })
+        });
 
         // Contact monitoring latency (1 label)
-        group.bench_with_input(
-            BenchmarkId::new("monitor_latency", n),
-            &n,
-            |b, _| {
-                b.iter(|| {
-                    rt.block_on(async {
-                        let req = tonic::Request::new(ContactMonitorRequest {
-                            last: None,
-                            label: make_label(0),
-                            entries: vec![MonitorMapEntry {
-                                position: 0,
-                                version: 0,
-                            }],
-                        });
-                        service.contact_monitor(req).await.unwrap()
-                    })
+        group.bench_with_input(BenchmarkId::new("monitor_latency", n), &n, |b, _| {
+            b.iter(|| {
+                rt.block_on(async {
+                    let req = tonic::Request::new(ContactMonitorRequest {
+                        last: None,
+                        label: make_label(0),
+                        entries: vec![MonitorMapEntry {
+                            position: 0,
+                            version: 0,
+                        }],
+                    });
+                    service.contact_monitor(req).await.unwrap()
                 })
-            },
-        );
+            })
+        });
 
         // Search response payload size (bytes on the wire)
         let one_shot_bytes = rt.block_on(async {
@@ -1420,42 +1365,44 @@ fn bench_large_scale_scalability(c: &mut Criterion) {
             });
             let resp = service.search(req).await.unwrap().into_inner();
             let mut size = 0usize;
-            if let Some(th) = &resp.full_tree_head { size += prost::Message::encoded_len(th); }
-            if let Some(s) = &resp.search { size += prost::Message::encoded_len(s); }
+            if let Some(th) = &resp.full_tree_head {
+                size += prost::Message::encoded_len(th);
+            }
+            if let Some(s) = &resp.search {
+                size += prost::Message::encoded_len(s);
+            }
             size += resp.opening.len();
-            for step in &resp.binary_ladder { size += prost::Message::encoded_len(step); }
+            for step in &resp.binary_ladder {
+                size += prost::Message::encoded_len(step);
+            }
             size
         });
         eprintln!("📐 search_payload_bytes/{} = {} bytes", n, one_shot_bytes);
 
-        group.bench_with_input(
-            BenchmarkId::new("search_payload_bytes", n),
-            &n,
-            |b, &n| {
-                b.iter(|| {
-                    rt.block_on(async {
-                        let req = tonic::Request::new(SearchRequest {
-                            label: make_label(n / 2),
-                            last: None,
-                            version: None,
-                        });
-                        let resp = service.search(req).await.unwrap().into_inner();
-                        let mut size = 0usize;
-                        if let Some(th) = &resp.full_tree_head {
-                            size += prost::Message::encoded_len(th);
-                        }
-                        if let Some(s) = &resp.search {
-                            size += prost::Message::encoded_len(s);
-                        }
-                        size += resp.opening.len();
-                        for step in &resp.binary_ladder {
-                            size += prost::Message::encoded_len(step);
-                        }
-                        size
-                    })
+        group.bench_with_input(BenchmarkId::new("search_payload_bytes", n), &n, |b, &n| {
+            b.iter(|| {
+                rt.block_on(async {
+                    let req = tonic::Request::new(SearchRequest {
+                        label: make_label(n / 2),
+                        last: None,
+                        version: None,
+                    });
+                    let resp = service.search(req).await.unwrap().into_inner();
+                    let mut size = 0usize;
+                    if let Some(th) = &resp.full_tree_head {
+                        size += prost::Message::encoded_len(th);
+                    }
+                    if let Some(s) = &resp.search {
+                        size += prost::Message::encoded_len(s);
+                    }
+                    size += resp.opening.len();
+                    for step in &resp.binary_ladder {
+                        size += prost::Message::encoded_len(step);
+                    }
+                    size
                 })
-            },
-        );
+            })
+        });
     }
 
     group.finish();
@@ -1496,7 +1443,9 @@ fn bench_gdpr(c: &mut Criterion) {
                 let _ = s.update(req).await;
             }));
         }
-        for h in handles { let _ = h.await; }
+        for h in handles {
+            let _ = h.await;
+        }
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
         (svc, db)
@@ -1556,10 +1505,14 @@ fn bench_gdpr(c: &mut Criterion) {
     rt.block_on(async {
         let tree = service.tree.read().await;
         let tree_size = tree.latest.as_ref().unwrap().tree_size;
-        let current_ts_bytes = db.get_value((tree_size - 1) | (1u64 << 63)).unwrap().unwrap();
+        let current_ts_bytes = db
+            .get_value((tree_size - 1) | (1u64 << 63))
+            .unwrap()
+            .unwrap();
         let current_ts = u64::from_be_bytes(current_ts_bytes.try_into().unwrap());
         let old_ts = current_ts - 20_000;
-        db.put_value(0 | (1u64 << 63), old_ts.to_be_bytes().to_vec()).unwrap();
+        db.put_value(0 | (1u64 << 63), old_ts.to_be_bytes().to_vec())
+            .unwrap();
     });
     group.bench_function("search_expired_entry", |b| {
         b.iter(|| {
@@ -1656,4 +1609,14 @@ criterion_group! {
     targets = bench_gdpr
 }
 
-criterion_main!(warmup, crypto, tree_math, protocol, scale, analysis, comparative, large_scale, gdpr);
+criterion_main!(
+    warmup,
+    crypto,
+    tree_math,
+    protocol,
+    scale,
+    analysis,
+    comparative,
+    large_scale,
+    gdpr
+);

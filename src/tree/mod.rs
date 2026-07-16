@@ -1,30 +1,28 @@
-pub mod log;
-pub mod prefix;
-pub mod log_math;
-pub mod read;
-pub mod write;
-pub mod monitor;
 pub mod audit;
-pub mod prune;
 pub mod binary_ladder;
 pub mod credential;
 pub mod errors;
+pub mod log;
+pub mod log_math;
+pub mod monitor;
+pub mod prefix;
+pub mod prune;
+pub mod read;
 pub mod traversal;
 pub mod walker;
+pub mod write;
 
-use crate::db::{TransparencyStore, AuditorTreeHead};
-use crate::proto::transparency::{
-    FullTreeHead, TreeHead,
-};
 use crate::crypto::PrivateConfig;
-use std::sync::Arc;
-use std::collections::HashMap;
+use crate::db::{AuditorTreeHead, TransparencyStore};
+use crate::proto::transparency::{FullTreeHead, TreeHead};
 use anyhow::Result;
 use prost::Message;
+use std::collections::HashMap;
+use std::sync::Arc;
 
 pub struct Tree {
     pub store: Arc<dyn TransparencyStore>,
-    pub log: log::LogTree, 
+    pub log: log::LogTree,
     pub prefix: prefix::PrefixTree,
     pub config: PrivateConfig,
     pub latest: Option<TreeHead>,

@@ -1,11 +1,11 @@
 // Start src/client/verifier.rs
-use anyhow::{Result, anyhow, Context};
-use sha2::{Sha256, Digest};
-use hmac::{Hmac, Mac};
-use std::collections::{BTreeMap, HashSet};
 use crate::crypto::hash::{log_leaf_value, log_parent_value};
 use crate::crypto::tls::TlsEncode;
-use crate::proto::transparency::{PrefixProof, PrefixSearchResult, PrefixLeaf};
+use crate::proto::transparency::{PrefixLeaf, PrefixProof, PrefixSearchResult};
+use anyhow::{Context, Result, anyhow};
+use hmac::{Hmac, Mac};
+use sha2::{Digest, Sha256};
+use std::collections::{BTreeMap, HashSet};
 
 pub struct LogVerifier;
 
@@ -17,8 +17,14 @@ impl LogVerifier {
         proof_elements: &[Vec<u8>],
     ) -> Result<Vec<u8>> {
         Ok(Self::calculate_root_capturing(
-            node_indices, node_hashes, tree_size, proof_elements, &BTreeMap::new(), &HashSet::new(),
-        )?.0)
+            node_indices,
+            node_hashes,
+            tree_size,
+            proof_elements,
+            &BTreeMap::new(),
+            &HashSet::new(),
+        )?
+        .0)
     }
 
     /// Folds provided leaves, proof elements, and retained full-subtree values into
@@ -32,9 +38,16 @@ impl LogVerifier {
         proof_elements: &[Vec<u8>],
         retained: &BTreeMap<u64, Vec<u8>>,
     ) -> Result<(Vec<u8>, BTreeMap<u64, Vec<u8>>)> {
-        let peak_set: HashSet<u64> = crate::tree::log_math::get_roots(tree_size).into_iter().collect();
+        let peak_set: HashSet<u64> = crate::tree::log_math::get_roots(tree_size)
+            .into_iter()
+            .collect();
         Self::calculate_root_capturing(
-            node_indices, node_hashes, tree_size, proof_elements, retained, &peak_set,
+            node_indices,
+            node_hashes,
+            tree_size,
+            proof_elements,
+            retained,
+            &peak_set,
         )
     }
 
@@ -66,7 +79,13 @@ impl LogVerifier {
         let mut captured = BTreeMap::new();
 
         let root_hash = Self::recursive_hash(
-            root, tree_size, &nodes, &mut proof_iter, retained, wanted, &mut captured,
+            root,
+            tree_size,
+            &nodes,
+            &mut proof_iter,
+            retained,
+            wanted,
+            &mut captured,
         )?;
         if proof_iter.next().is_some() {
             return Err(anyhow!("Unused inclusion proof elements"));
@@ -88,7 +107,12 @@ impl LogVerifier {
         wanted: &HashSet<u64>,
         captured: &mut BTreeMap<u64, Vec<u8>>,
     ) -> Result<Vec<u8>> {
-        fn record(wanted: &HashSet<u64>, captured: &mut BTreeMap<u64, Vec<u8>>, id: u64, val: Vec<u8>) -> Vec<u8> {
+        fn record(
+            wanted: &HashSet<u64>,
+            captured: &mut BTreeMap<u64, Vec<u8>>,
+            id: u64,
+            val: Vec<u8>,
+        ) -> Vec<u8> {
             if wanted.contains(&id) {
                 captured.insert(id, val.clone());
             }
@@ -96,16 +120,23 @@ impl LogVerifier {
         }
 
         if let Ok(idx) = provided_leaves.binary_search_by_key(&node_id, |(k, _)| *k) {
-            return Ok(record(wanted, captured, node_id, provided_leaves[idx].1.clone()));
+            return Ok(record(
+                wanted,
+                captured,
+                node_id,
+                provided_leaves[idx].1.clone(),
+            ));
         }
 
         let is_ancestor = provided_leaves.iter().any(|(leaf_node_id, _)| {
-             let mut curr = *leaf_node_id;
-             while curr != node_id {
-                 if curr == crate::tree::log_math::merkle_root(tree_size) { return false; }
-                 curr = crate::tree::log_math::parent(curr, tree_size);
-             }
-             true
+            let mut curr = *leaf_node_id;
+            while curr != node_id {
+                if curr == crate::tree::log_math::merkle_root(tree_size) {
+                    return false;
+                }
+                curr = crate::tree::log_math::parent(curr, tree_size);
+            }
+            true
         });
 
         if !is_ancestor {
@@ -113,24 +144,48 @@ impl LogVerifier {
             if let Some(val) = retained.get(&node_id) {
                 return Ok(record(wanted, captured, node_id, val.clone()));
             }
-            let val = proof_iter.next()
+            let val = proof_iter
+                .next()
                 .cloned()
                 .ok_or_else(|| anyhow!("Ran out of proof elements at node {}", node_id))?;
             return Ok(record(wanted, captured, node_id, val));
         }
 
         if crate::tree::log_math::is_leaf(node_id) {
-             return Err(anyhow!("Leaf node {} missing", node_id));
+            return Err(anyhow!("Leaf node {} missing", node_id));
         }
 
         let l = crate::tree::log_math::left_child(node_id);
         let r = crate::tree::log_math::right_child(node_id, tree_size);
 
-        let l_hash = Self::recursive_hash(l, tree_size, provided_leaves, proof_iter, retained, wanted, captured)?;
-        if l == r { return Ok(record(wanted, captured, node_id, l_hash)); }
+        let l_hash = Self::recursive_hash(
+            l,
+            tree_size,
+            provided_leaves,
+            proof_iter,
+            retained,
+            wanted,
+            captured,
+        )?;
+        if l == r {
+            return Ok(record(wanted, captured, node_id, l_hash));
+        }
 
-        let r_hash = Self::recursive_hash(r, tree_size, provided_leaves, proof_iter, retained, wanted, captured)?;
-        let val = log_parent_value(&l_hash, crate::tree::log_math::is_leaf(l), &r_hash, crate::tree::log_math::is_leaf(r));
+        let r_hash = Self::recursive_hash(
+            r,
+            tree_size,
+            provided_leaves,
+            proof_iter,
+            retained,
+            wanted,
+            captured,
+        )?;
+        let val = log_parent_value(
+            &l_hash,
+            crate::tree::log_math::is_leaf(l),
+            &r_hash,
+            crate::tree::log_math::is_leaf(r),
+        );
         Ok(record(wanted, captured, node_id, val))
     }
 }
@@ -145,7 +200,10 @@ pub struct LogAccumulator {
 
 impl LogAccumulator {
     pub fn new() -> Self {
-        Self { tree_size: 0, peaks: Vec::new() }
+        Self {
+            tree_size: 0,
+            peaks: Vec::new(),
+        }
     }
 
     /// Rebuilds the accumulator from the full-subtree values of a tree of
@@ -153,9 +211,16 @@ impl LogAccumulator {
     pub fn from_peaks(tree_size: u64, values: Vec<Vec<u8>>) -> Result<Self> {
         let roots = crate::tree::log_math::get_roots(tree_size);
         if roots.len() != values.len() {
-            return Err(anyhow!("Expected {} peaks for tree size {}, got {}", roots.len(), tree_size, values.len()));
+            return Err(anyhow!(
+                "Expected {} peaks for tree size {}, got {}",
+                roots.len(),
+                tree_size,
+                values.len()
+            ));
         }
-        let peaks = roots.into_iter().zip(values)
+        let peaks = roots
+            .into_iter()
+            .zip(values)
             .map(|(node, v)| (crate::tree::log_math::level(node), v))
             .collect();
         Ok(Self { tree_size, peaks })
@@ -167,7 +232,9 @@ impl LogAccumulator {
         while self.peaks.len() >= 2 {
             let (rh, _) = self.peaks[self.peaks.len() - 1];
             let (lh, _) = self.peaks[self.peaks.len() - 2];
-            if lh != rh { break; }
+            if lh != rh {
+                break;
+            }
             let (_, r) = self.peaks.pop().unwrap();
             let (_, l) = self.peaks.pop().unwrap();
             let merged = log_parent_value(&l, lh == 0, &r, rh == 0);
@@ -176,7 +243,9 @@ impl LogAccumulator {
     }
 
     pub fn calculate_root(&self) -> Result<Vec<u8>> {
-        if self.tree_size == 0 { return Ok(vec![0u8; 32]); }
+        if self.tree_size == 0 {
+            return Ok(vec![0u8; 32]);
+        }
         let mut iter = self.peaks.iter().rev();
         let mut acc = iter.next().unwrap().1.clone();
         for (h, v) in iter {
@@ -219,7 +288,9 @@ impl PrefixVerifier {
     ) -> Result<()> {
         use crate::tree::prefix::hasher::{get_bit, leaf_hash, parent_hash};
 
-        if proof.results.is_empty() { return Err(anyhow!("Empty prefix proof results")); }
+        if proof.results.is_empty() {
+            return Err(anyhow!("Empty prefix proof results"));
+        }
 
         let result = &proof.results[0];
         let mut curr_hash = leaf_hash(search_key_vrf_output, commitment);
@@ -258,9 +329,13 @@ impl PrefixVerifier {
         commitment: Option<&[u8]>,
         elements_offset: usize,
     ) -> Result<(Vec<u8>, usize)> {
-        use crate::tree::prefix::hasher::{get_bit, leaf_hash, parent_hash, INDEX_LENGTH, ZERO_VALUE};
+        use crate::tree::prefix::hasher::{
+            INDEX_LENGTH, ZERO_VALUE, get_bit, leaf_hash, parent_hash,
+        };
 
-        let result = proof.results.get(result_idx)
+        let result = proof
+            .results
+            .get(result_idx)
             .ok_or_else(|| anyhow!("Result index out of range"))?;
 
         let depth = result.depth as usize;
@@ -273,11 +348,14 @@ impl PrefixVerifier {
         // diverging leaf's subtree sits in the copath, so both fold identically
         let (mut curr_hash, start_level): (Vec<u8>, usize) = match result.result_type {
             1 => {
-                let comm = commitment.ok_or_else(|| anyhow!("Inclusion result needs commitment"))?;
+                let comm =
+                    commitment.ok_or_else(|| anyhow!("Inclusion result needs commitment"))?;
                 (leaf_hash(vrf_output, comm), total_levels)
             }
             2 => {
-                let leaf = result.leaf.as_ref()
+                let leaf = result
+                    .leaf
+                    .as_ref()
                     .ok_or_else(|| anyhow!("NonInclusionLeaf result missing leaf"))?;
                 if leaf.vrf_output == vrf_output {
                     return Err(anyhow!("NonInclusionLeaf carries the searched key itself"));
@@ -288,7 +366,8 @@ impl PrefixVerifier {
             _ => return Err(anyhow!("Unknown PrefixSearchResult.result_type")),
         };
 
-        let end = elements_offset.checked_add(depth)
+        let end = elements_offset
+            .checked_add(depth)
             .ok_or_else(|| anyhow!("Element offset overflow"))?;
         if end > proof.elements.len() {
             return Err(anyhow!("PrefixProof: insufficient elements for result"));
@@ -324,14 +403,18 @@ pub fn compare_roots(roots_a: &[Vec<u8>], roots_b: &[Vec<u8>]) -> Result<()> {
             return Ok(());
         }
     }
-    Err(anyhow!("No valid overlap between root lists: possible fork"))
+    Err(anyhow!(
+        "No valid overlap between root lists: possible fork"
+    ))
 }
 
 #[cfg(test)]
 mod tests {
     use super::compare_roots;
 
-    fn r(b: u8) -> Vec<u8> { vec![b; 32] }
+    fn r(b: u8) -> Vec<u8> {
+        vec![b; 32]
+    }
 
     #[test]
     fn compare_roots_accepts_overlap() {
@@ -377,7 +460,9 @@ struct PartialPrefixTree {
 
 impl PartialPrefixTree {
     fn new() -> Self {
-        Self { nodes: std::collections::HashMap::new() }
+        Self {
+            nodes: std::collections::HashMap::new(),
+        }
     }
 
     fn masked(key: &[u8], level: usize) -> [u8; 32] {
@@ -399,9 +484,9 @@ impl PartialPrefixTree {
 
     fn insert(&mut self, level: usize, path: [u8; 32], value: Vec<u8>) -> Result<()> {
         match self.nodes.get(&(level as u16, path)) {
-            Some(prev) if prev != &value => Err(anyhow!(
-                "Batch proof paths disagree at level {}", level
-            )),
+            Some(prev) if prev != &value => {
+                Err(anyhow!("Batch proof paths disagree at level {}", level))
+            }
             _ => {
                 self.nodes.insert((level as u16, path), value);
                 Ok(())
@@ -418,13 +503,13 @@ impl PartialPrefixTree {
     }
 
     fn has_descendant(&self, level: usize, path: &[u8; 32]) -> bool {
-        self.nodes.keys().any(|(lv, p)| {
-            (*lv as usize) > level && Self::masked(p, level) == *path
-        })
+        self.nodes
+            .keys()
+            .any(|(lv, p)| (*lv as usize) > level && Self::masked(p, level) == *path)
     }
 
     fn resolve(&self, level: usize, path: [u8; 32]) -> Vec<u8> {
-        use crate::tree::prefix::hasher::{parent_hash, ZERO_VALUE};
+        use crate::tree::prefix::hasher::{ZERO_VALUE, parent_hash};
         if let Some(v) = self.nodes.get(&(level as u16, path)) {
             return v.clone();
         }
@@ -452,18 +537,22 @@ impl PrefixTransitioner {
         removed: &[PrefixLeaf],
         proof: &PrefixProof,
     ) -> Result<Vec<u8>> {
-        use crate::tree::prefix::hasher::{leaf_hash, ZERO_VALUE};
+        use crate::tree::prefix::hasher::{ZERO_VALUE, leaf_hash};
 
         if proof.results.len() != added.len() + removed.len() {
             return Err(anyhow!(
                 "Batch proof has {} results for {} added and {} removed leaves",
-                proof.results.len(), added.len(), removed.len()
+                proof.results.len(),
+                added.len(),
+                removed.len()
             ));
         }
 
         let removed_keys: std::collections::HashSet<&[u8]> =
             removed.iter().map(|l| l.vrf_output.as_slice()).collect();
-        let batch_keys: Vec<&[u8]> = added.iter().chain(removed.iter())
+        let batch_keys: Vec<&[u8]> = added
+            .iter()
+            .chain(removed.iter())
             .map(|l| l.vrf_output.as_slice())
             .collect();
 
@@ -483,7 +572,8 @@ impl PrefixTransitioner {
             if depth > 256 {
                 return Err(anyhow!("Result depth exceeds tree height"));
             }
-            let end = elements_offset.checked_add(depth)
+            let end = elements_offset
+                .checked_add(depth)
                 .ok_or_else(|| anyhow!("Element offset overflow"))?;
             if end > proof.elements.len() {
                 return Err(anyhow!("Batch proof has insufficient elements"));
@@ -500,16 +590,23 @@ impl PrefixTransitioner {
                 1 => {
                     // an added key with an inclusion result must be re-added (also in removed)
                     if !removed_keys.contains(key.as_slice()) {
-                        return Err(anyhow!("Inclusion result for an added key that is not being removed"));
+                        return Err(anyhow!(
+                            "Inclusion result for an added key that is not being removed"
+                        ));
                     }
                 }
                 2 => {
-                    let leaf = result.leaf.as_ref()
+                    let leaf = result
+                        .leaf
+                        .as_ref()
                         .ok_or_else(|| anyhow!("NonInclusionLeaf result missing leaf"))?;
                     if leaf.vrf_output == *key {
                         return Err(anyhow!("NonInclusionLeaf carries the searched key itself"));
                     }
-                    tree.set_leaf(&leaf.vrf_output, leaf_hash(&leaf.vrf_output, &leaf.commitment));
+                    tree.set_leaf(
+                        &leaf.vrf_output,
+                        leaf_hash(&leaf.vrf_output, &leaf.commitment),
+                    );
                 }
                 3 => {}
                 _ => return Err(anyhow!("Unknown PrefixSearchResult.result_type")),
@@ -517,7 +614,8 @@ impl PrefixTransitioner {
 
             for (k, element) in elements.iter().enumerate() {
                 let bit = crate::tree::prefix::hasher::get_bit(key, k) ^ 1;
-                let sib_path = PartialPrefixTree::with_bit(PartialPrefixTree::masked(key, k), k, bit);
+                let sib_path =
+                    PartialPrefixTree::with_bit(PartialPrefixTree::masked(key, k), k, bit);
                 let covers_batch_key = batch_keys.iter().any(|other| {
                     *other != key.as_slice() && PartialPrefixTree::masked(other, k + 1) == sib_path
                 });
@@ -536,7 +634,10 @@ impl PrefixTransitioner {
         for (level, path, expected) in &covering {
             let derived = tree.resolve(*level, *path);
             if &derived != expected {
-                return Err(anyhow!("Covering proof element disagrees with per-key data at level {}", level));
+                return Err(anyhow!(
+                    "Covering proof element disagrees with per-key data at level {}",
+                    level
+                ));
             }
         }
 
@@ -550,7 +651,10 @@ impl PrefixTransitioner {
             tree.remove_leaf(&item.vrf_output);
         }
         for item in added {
-            tree.set_leaf(&item.vrf_output, leaf_hash(&item.vrf_output, &item.commitment));
+            tree.set_leaf(
+                &item.vrf_output,
+                leaf_hash(&item.vrf_output, &item.commitment),
+            );
         }
 
         Ok(tree.root())

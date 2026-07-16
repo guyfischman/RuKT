@@ -1,14 +1,14 @@
 // src/tree/prefix/entry.rs
-use crate::proto::prefix_tree::{LogEntry, ParentNode};
 use super::hasher::*;
-use std::sync::{Arc, RwLock};
+use crate::proto::prefix_tree::{LogEntry, ParentNode};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, RwLock};
 
 #[derive(Debug)]
 pub struct CachedLogEntry {
     pub inner: Arc<LogEntry>,
     pub seed: Vec<u8>,
-    pub parents: RwLock<Vec<Option<Vec<u8>>>>, 
+    pub parents: RwLock<Vec<Option<Vec<u8>>>>,
 }
 
 impl CachedLogEntry {
@@ -18,7 +18,7 @@ impl CachedLogEntry {
         Self {
             inner,
             seed,
-            parents: RwLock::new(vec![None; depth + 1]), 
+            parents: RwLock::new(vec![None; depth + 1]),
         }
     }
 
@@ -38,8 +38,10 @@ impl CachedLogEntry {
         let mut parents_guard = self.parents.write().unwrap();
 
         if let Some(leaf) = &self.inner.leaf {
-            curr = 8 * INDEX_LENGTH; 
-            if let Some(c) = hash_counter { c.fetch_add(1, Ordering::Relaxed); }
+            curr = 8 * INDEX_LENGTH;
+            if let Some(c) = hash_counter {
+                c.fetch_add(1, Ordering::Relaxed);
+            }
             acc = leaf_hash(&self.inner.index, &leaf.commitment);
         } else {
             curr = self.inner.copath.len();
@@ -59,7 +61,9 @@ impl CachedLogEntry {
                 continue;
             }
 
-            if let Some(c) = hash_counter { c.fetch_add(1, Ordering::Relaxed); }
+            if let Some(c) = hash_counter {
+                c.fetch_add(1, Ordering::Relaxed);
+            }
 
             let sibling_hash = if curr < self.inner.copath.len() {
                 self.inner.copath[curr].hash.clone()

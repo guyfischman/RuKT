@@ -11,18 +11,18 @@
 //!    The prefix tree is still built sequentially (inherent dependency)
 //!    but all crypto is parallelized and batcher overhead is eliminated.
 
-use crate::crypto::{self, PrivateConfig, generate_random_opening, commit};
+use crate::crypto::{self, PrivateConfig, commit, generate_random_opening};
 use crate::db::RocksDbStore;
-use crate::tree::Tree;
-use crate::tree::prefix::hasher::{get_bit, parent_hash, ZERO_VALUE};
-use crate::tree::prefix::entry::CachedLogEntry;
 use crate::proto::prefix_tree::{LogEntry, ParentNode};
-use crate::proto::transparency::{TreeHead, Signature as PbSignature};
+use crate::proto::transparency::{Signature as PbSignature, TreeHead};
+use crate::tree::Tree;
+use crate::tree::prefix::entry::CachedLogEntry;
+use crate::tree::prefix::hasher::{ZERO_VALUE, get_bit, parent_hash};
 use anyhow::Result;
 use prost::Message;
 use rayon::prelude::*;
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH, Instant};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 /// Pre-computed cryptographic data for a single entry.
 struct BulkEntry {
@@ -104,17 +104,15 @@ pub async fn bulk_populate(
 
         // Phase 3: Log tree append
         let t_log = Instant::now();
-        let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)?
-            .as_millis() as u64;
+        let timestamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis() as u64;
 
         tree.log.put_prefix_ptr(start_size, final_prefix_ptr)?;
         tree.log.set_next_prefix_version(final_prefix_ptr + 1)?;
 
         let final_root_hash = roots.last().unwrap().clone();
-        let new_log_root =
-            tree.log
-                .batch_append(start_size, vec![(timestamp, final_root_hash)])?;
+        let new_log_root = tree
+            .log
+            .batch_append(start_size, vec![(timestamp, final_root_hash)])?;
         let dur_log = t_log.elapsed();
 
         // Phase 4: Auxiliary data via SST ingestion
@@ -172,7 +170,13 @@ pub async fn bulk_populate(
         processed += chunk.len();
         println!(
             "   📦 Bulk chunk [{}/{}] | Crypto: {:.2?} | Prefix: {:.2?} | Log: {:.2?} | SST: {:.2?} | Chunk: {:.2?}",
-            processed, total, dur_crypto, dur_prefix, dur_log, dur_aux, t_chunk.elapsed()
+            processed,
+            total,
+            dur_crypto,
+            dur_prefix,
+            dur_log,
+            dur_aux,
+            t_chunk.elapsed()
         );
     }
 
@@ -336,7 +340,10 @@ pub async fn parallel_bulk_populate(
         let (pid, final_ptr) = handle.await??;
         root_positions[pid] = Some(final_ptr);
     }
-    println!("   [parallel] Phase 3 (sub-tree build): {:.2?}", t3.elapsed());
+    println!(
+        "   [parallel] Phase 3 (sub-tree build): {:.2?}",
+        t3.elapsed()
+    );
 
     // Phase 4: Compute partition hash tree
     let t4 = Instant::now();
@@ -398,19 +405,12 @@ pub async fn parallel_bulk_populate(
     // Phase 6: Log tree + aux data + tree head
     let t6 = Instant::now();
     let start_size = tree.latest.as_ref().map(|th| th.tree_size).unwrap_or(0);
-    let timestamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)?
-        .as_millis() as u64;
+    let timestamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis() as u64;
 
     // Find the global root position (last entry of last non-empty partition)
-    let global_root_pos = root_positions
-        .iter()
-        .rev()
-        .find_map(|&p| p)
-        .unwrap();
+    let global_root_pos = root_positions.iter().rev().find_map(|&p| p).unwrap();
 
-    tree.log
-        .put_prefix_ptr(start_size, global_root_pos)?;
+    tree.log.put_prefix_ptr(start_size, global_root_pos)?;
     tree.log
         .set_next_prefix_version(start_prefix_version + total_positions)?;
 

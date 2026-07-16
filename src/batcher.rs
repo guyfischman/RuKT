@@ -1,10 +1,10 @@
-use tokio::sync::{mpsc, oneshot, RwLock};
-use tokio::time::{self, Duration};
-use crate::tree::{Tree, PreUpdateData};
 use crate::proto::transparency::{UpdateRequest, UpdateResponse};
+use crate::tree::{PreUpdateData, Tree};
 use anyhow::{Result, anyhow};
 use std::sync::Arc;
 use std::time::Instant;
+use tokio::sync::{RwLock, mpsc, oneshot};
+use tokio::time::{self, Duration};
 
 const MAX_BATCH_SIZE: usize = 4000;
 const BATCH_TIMEOUT: Duration = Duration::from_millis(50);
@@ -32,10 +32,14 @@ impl Batcher {
 
     pub async fn submit(&self, req: UpdateRequest) -> Result<UpdateResponse> {
         let (resp_tx, resp_rx) = oneshot::channel();
-        self.tx.send(UpdateJob { req, resp_tx }).await
+        self.tx
+            .send(UpdateJob { req, resp_tx })
+            .await
             .map_err(|_| anyhow!("Batcher worker is down"))?;
-            
-        resp_rx.await.map_err(|_| anyhow!("Batcher dropped response"))?
+
+        resp_rx
+            .await
+            .map_err(|_| anyhow!("Batcher dropped response"))?
     }
 }
 
@@ -75,7 +79,9 @@ impl BatchWorker {
     }
 
     async fn process_catchups(&self, jobs: Vec<UpdateJob>) {
-        if jobs.is_empty() { return; }
+        if jobs.is_empty() {
+            return;
+        }
         let mut tasks = Vec::new();
         for job in jobs {
             let tree_arc = self.tree.clone();
@@ -89,8 +95,10 @@ impl BatchWorker {
     }
 
     async fn process_batch(&mut self, batch: &mut Vec<UpdateJob>) {
-        if batch.is_empty() { return; }
-        
+        if batch.is_empty() {
+            return;
+        }
+
         let batch_size = batch.len();
         let t_total = Instant::now();
 
@@ -101,19 +109,24 @@ impl BatchWorker {
         let mut tree_guard = self.tree.write().await;
         let mut jobs_to_process = Vec::new();
         let all_jobs: Vec<UpdateJob> = batch.drain(..).collect();
-        
+
         let mut pre_jobs = Vec::new();
-        let mut version_overlay: std::collections::HashMap<Vec<u8>, u32> = std::collections::HashMap::new();
+        let mut version_overlay: std::collections::HashMap<Vec<u8>, u32> =
+            std::collections::HashMap::new();
 
         let mut catchup_jobs = Vec::new();
 
         for job in all_jobs {
             let req = &job.req;
 
-            let current_greatest: Option<u32> = version_overlay.get(&req.label).copied()
-                .or_else(|| {
-                    tree_guard.store.get_label_history(&req.label).unwrap_or_default()
-                        .last().map(|(v, _)| *v)
+            let current_greatest: Option<u32> =
+                version_overlay.get(&req.label).copied().or_else(|| {
+                    tree_guard
+                        .store
+                        .get_label_history(&req.label)
+                        .unwrap_or_default()
+                        .last()
+                        .map(|(v, _)| *v)
                 });
 
             // §13.5 compare-and-swap on greatest_version
@@ -133,12 +146,16 @@ impl BatchWorker {
                 continue;
             }
             if req.values.is_empty() {
-                let _ = job.resp_tx.send(Err(anyhow!("Empty values: no versions exist beyond the advertised greatest_version")));
+                let _ = job.resp_tx.send(Err(anyhow!(
+                    "Empty values: no versions exist beyond the advertised greatest_version"
+                )));
                 continue;
             }
 
             let start_ver = current_greatest.map(|v| v + 1).unwrap_or(0);
-            let versions: Vec<u32> = (0..req.values.len() as u32).map(|k| start_ver + k).collect();
+            let versions: Vec<u32> = (0..req.values.len() as u32)
+                .map(|k| start_ver + k)
+                .collect();
             version_overlay.insert(req.label.clone(), *versions.last().unwrap());
 
             pre_jobs.push((req.clone(), versions));
@@ -146,7 +163,9 @@ impl BatchWorker {
         }
         let dur_p1 = t1.elapsed();
 
-        if jobs_to_process.is_empty() && catchup_jobs.is_empty() { return; }
+        if jobs_to_process.is_empty() && catchup_jobs.is_empty() {
+            return;
+        }
 
         if jobs_to_process.is_empty() {
             drop(tree_guard);
@@ -175,7 +194,8 @@ impl BatchWorker {
                 crypto_tasks.push(tokio::task::spawn_blocking(move || {
                     let (index, vrf_proof) = cfg.vrf_prove(&label, version).unwrap();
                     let opening = crate::crypto::generate_random_opening();
-                    let commitment = crate::crypto::commit(&label, version, &value, &opening).unwrap();
+                    let commitment =
+                        crate::crypto::commit(&label, version, &value, &opening).unwrap();
 
                     PreUpdateData {
                         label,
@@ -251,13 +271,22 @@ impl BatchWorker {
             }
             Err(e) => {
                 for job in jobs_to_process {
-                    let _ = job.resp_tx.send(Err(anyhow::anyhow!("Batch commit failed: {}", e)));
+                    let _ = job
+                        .resp_tx
+                        .send(Err(anyhow::anyhow!("Batch commit failed: {}", e)));
                 }
             }
         }
         let dur_p4 = t4.elapsed();
 
-        println!("⚡ Batch [{}] | Total: {:.2?} | P1(Setup): {:.2?} | P2(Crypto): {:.2?} | P3(Writes): {:.2?} | P4(Proofs): {:.2?}", 
-            batch_size, t_total.elapsed(), dur_p1, dur_p2, dur_p3, dur_p4);
+        println!(
+            "⚡ Batch [{}] | Total: {:.2?} | P1(Setup): {:.2?} | P2(Crypto): {:.2?} | P3(Writes): {:.2?} | P4(Proofs): {:.2?}",
+            batch_size,
+            t_total.elapsed(),
+            dur_p1,
+            dur_p2,
+            dur_p3,
+            dur_p4
+        );
     }
 }

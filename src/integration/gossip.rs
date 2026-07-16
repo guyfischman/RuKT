@@ -1,11 +1,11 @@
+use crate::client::KtClient;
+use crate::client::gossip::{GossipHead, GossipOutcome, verify_fork_evidence};
+use crate::crypto::{self, CIPHER_SUITE_KT_128_SHA256_ED25519};
 use crate::db::RocksDbStore;
 use crate::service::KeyTransparencyImpl;
-use crate::client::KtClient;
-use crate::client::gossip::{verify_fork_evidence, GossipHead, GossipOutcome};
-use crate::crypto::{self, CIPHER_SUITE_KT_128_SHA256_ED25519};
 use anyhow::Result;
-use std::sync::Arc;
 use std::collections::HashMap;
+use std::sync::Arc;
 use tempfile::tempdir;
 use tokio::net::TcpListener;
 use tonic::transport::Server;
@@ -54,7 +54,10 @@ async fn test_gossip_detects_split_view() -> Result<()> {
     let json = public_config.to_json()?;
     let restored = crypto::PublicConfig::from_json(&json)?;
     assert_eq!(restored.server_sig_pk, public_config.server_sig_pk);
-    assert_eq!(restored.reasonable_monitoring_window, public_config.reasonable_monitoring_window);
+    assert_eq!(
+        restored.reasonable_monitoring_window,
+        public_config.reasonable_monitoring_window
+    );
 
     let mut alice: KtClient = KtClient::connect(uri.clone(), public_config.clone()).await?;
     let mut bob: KtClient = KtClient::connect(uri, public_config.clone()).await?;
@@ -90,7 +93,8 @@ async fn test_gossip_detects_split_view() -> Result<()> {
         GossipOutcome::Fork(evidence) => {
             verify_fork_evidence(&public_config, &evidence)?;
             let serialized = serde_json::to_string(&evidence)?;
-            let deserialized: crate::client::gossip::ForkEvidence = serde_json::from_str(&serialized)?;
+            let deserialized: crate::client::gossip::ForkEvidence =
+                serde_json::from_str(&serialized)?;
             verify_fork_evidence(&public_config, &deserialized)?;
         }
         _ => panic!("Split view must be detected as a fork"),

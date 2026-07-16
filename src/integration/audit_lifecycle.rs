@@ -1,10 +1,10 @@
+use crate::client::{KtAuditor, KtClient};
+use crate::crypto::{self, CIPHER_SUITE_KT_128_SHA256_ED25519};
 use crate::db::RocksDbStore;
 use crate::service::KeyTransparencyImpl;
-use crate::client::{KtClient, KtAuditor};
-use crate::crypto::{self, CIPHER_SUITE_KT_128_SHA256_ED25519};
 use anyhow::Result;
-use std::sync::Arc;
 use std::collections::HashMap;
+use std::sync::Arc;
 use tempfile::tempdir;
 use tokio::net::TcpListener;
 use tonic::transport::Server;
@@ -14,30 +14,24 @@ async fn test_full_auditor_lifecycle() -> Result<()> {
     // 1. Keys
     let (server_sk, server_vk) = crypto::generate_sig_keypair();
     let (vrf_priv, vrf_pub) = crypto::generate_vrf_keypair(CIPHER_SUITE_KT_128_SHA256_ED25519);
-    
+
     let (auditor_sk, auditor_vk) = crypto::generate_sig_keypair();
     let auditor_vk_bytes = auditor_vk.to_bytes();
 
     // 2. Setup Server with Auditing Mode
     let dir = tempdir()?;
     let db = Arc::new(RocksDbStore::new(dir.path().to_str().unwrap())?);
-    
+
     let mut auditor_keys = HashMap::new();
     auditor_keys.insert(auditor_vk_bytes.clone(), auditor_vk.clone());
 
-    let service = KeyTransparencyImpl::new(
-        db, 
-        server_sk, 
-        vrf_priv, 
-        auditor_keys, 
-        None
-    ).await?;
+    let service = KeyTransparencyImpl::new(db, server_sk, vrf_priv, auditor_keys, None).await?;
 
     // Fix: Explicit type annotation
     let addr: std::net::SocketAddr = "127.0.0.1:0".parse().unwrap();
     let listener = TcpListener::bind(addr).await?;
     let local_addr = listener.local_addr()?;
-    
+
     tokio::spawn(async move {
         // Create a stream manually using futures::stream::unfold
         let incoming = futures::stream::unfold(listener, |listener| async move {
@@ -76,41 +70,55 @@ async fn test_full_auditor_lifecycle() -> Result<()> {
     let mut user_client: KtClient = KtClient::connect(uri.clone(), public_config.clone()).await?;
 
     println!("--- User Update 1 ---");
-    let _ = user_client.update(b"user1".to_vec(), b"val1".to_vec()).await?;
+    let _ = user_client
+        .update(b"user1".to_vec(), b"val1".to_vec())
+        .await?;
 
     println!("--- Auditor Processing ---");
-    let mut auditor: KtAuditor = KtAuditor::connect(uri.clone(), auditor_sk.clone(), public_config.clone()).await?;
-    
+    let mut auditor: KtAuditor =
+        KtAuditor::connect(uri.clone(), auditor_sk.clone(), public_config.clone()).await?;
+
     // Process update 1
     auditor.process_and_sign().await?;
-    
+
     assert_eq!(auditor.log_accumulator.tree_size, 1);
-    
+
     // 5. Check Server State
     // User client performs search. The response should now contain the AuditorTreeHead.
     println!("--- User Checks for Signed Head ---");
     let search_resp = user_client.search(b"user1".to_vec(), None).await?;
     let fth = search_resp.full_tree_head.unwrap();
-    
-    let returned_ath = fth.auditor_tree_head.expect("Server should return auditor tree head");
+
+    let returned_ath = fth
+        .auditor_tree_head
+        .expect("Server should return auditor tree head");
     assert_eq!(returned_ath.tree_size, 1);
 
     // 6. The auditor restarts with no local history and bootstraps from the
     // operator's current signed head, then audits forward
-    let _ = user_client.update(b"user2".to_vec(), b"val2".to_vec()).await?;
-    let _ = user_client.update(b"user3".to_vec(), b"val3".to_vec()).await?;
+    let _ = user_client
+        .update(b"user2".to_vec(), b"val2".to_vec())
+        .await?;
+    let _ = user_client
+        .update(b"user3".to_vec(), b"val3".to_vec())
+        .await?;
 
-    let mut restarted: KtAuditor = KtAuditor::connect(uri.clone(), auditor_sk, public_config).await?;
+    let mut restarted: KtAuditor =
+        KtAuditor::connect(uri.clone(), auditor_sk, public_config).await?;
     let started_at = restarted.bootstrap().await?;
     assert_eq!(started_at, 3);
 
-    let _ = user_client.update(b"user4".to_vec(), b"val4".to_vec()).await?;
+    let _ = user_client
+        .update(b"user4".to_vec(), b"val4".to_vec())
+        .await?;
     restarted.process_and_sign().await?;
     assert_eq!(restarted.log_accumulator.tree_size, 4);
 
     // 7. The log advances past the auditor; the client verifies the lagging
     // auditor signature against the derived root at the auditor's tree size
-    let _ = user_client.update(b"user5".to_vec(), b"val5".to_vec()).await?;
+    let _ = user_client
+        .update(b"user5".to_vec(), b"val5".to_vec())
+        .await?;
     let resp = user_client.search(b"user5".to_vec(), None).await?;
     let lagging_ath = resp.full_tree_head.unwrap().auditor_tree_head.unwrap();
     assert_eq!(lagging_ath.tree_size, 4);

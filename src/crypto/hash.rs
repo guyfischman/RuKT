@@ -1,12 +1,11 @@
-use sha2::{Sha256, Digest};
-use hmac::{Hmac, Mac};
 use anyhow::Result;
+use hmac::{Hmac, Mac};
 use rand::{RngCore, rngs::OsRng};
+use sha2::{Digest, Sha256};
 
 // §11.6
 const KC: [u8; 16] = [
-    0xd8, 0x21, 0xf8, 0x79, 0x0d, 0x97, 0x70, 0x97,
-    0x96, 0xb4, 0xd7, 0x90, 0x33, 0x57, 0xc3, 0xf5
+    0xd8, 0x21, 0xf8, 0x79, 0x0d, 0x97, 0x70, 0x97, 0x96, 0xb4, 0xd7, 0x90, 0x33, 0x57, 0xc3, 0xf5,
 ];
 
 // §11.6
@@ -56,9 +55,14 @@ pub fn log_leaf_value(timestamp: u64, prefix_root: &[u8]) -> Vec<u8> {
 // Hash(hashContent(left) || hashContent(right))
 // hashContent(leaf) = 0x00 || value
 // hashContent(parent) = 0x01 || value
-pub fn log_parent_value(left: &[u8], left_is_leaf: bool, right: &[u8], right_is_leaf: bool) -> Vec<u8> {
+pub fn log_parent_value(
+    left: &[u8],
+    left_is_leaf: bool,
+    right: &[u8],
+    right_is_leaf: bool,
+) -> Vec<u8> {
     let mut h = Sha256::new();
-    
+
     if left_is_leaf {
         h.update(&[0x00]);
     } else {

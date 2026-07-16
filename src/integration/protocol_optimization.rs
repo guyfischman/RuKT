@@ -1,11 +1,11 @@
-use crate::db::RocksDbStore;
-use crate::service::KeyTransparencyImpl;
-use crate::proto::transparency::{UpdateRequest, SearchRequest, LabelValue};
-use crate::proto::kt::key_transparency_service_server::KeyTransparencyService;
 use crate::crypto::{self, CIPHER_SUITE_KT_128_SHA256_ED25519};
+use crate::db::RocksDbStore;
+use crate::proto::kt::key_transparency_service_server::KeyTransparencyService;
+use crate::proto::transparency::{LabelValue, SearchRequest, UpdateRequest};
+use crate::service::KeyTransparencyImpl;
 use anyhow::Result;
-use std::sync::Arc;
 use std::collections::HashMap;
+use std::sync::Arc;
 use tempfile::tempdir;
 
 #[tokio::test]
@@ -14,30 +14,42 @@ async fn test_protocol_optimization_prefix_roots() -> Result<()> {
     let db = Arc::new(RocksDbStore::new(dir.path().to_str().unwrap())?);
     let (signer, _) = crypto::generate_sig_keypair();
     let (vrf_key, _) = crypto::generate_vrf_keypair(CIPHER_SUITE_KT_128_SHA256_ED25519);
-    
+
     let service = KeyTransparencyImpl::new(db, signer, vrf_key, HashMap::new(), None).await?;
     let user = b"opt_user".to_vec();
 
-    service.update(tonic::Request::new(UpdateRequest {
-        last: None,
-        label: user.clone(),
-        greatest_version: None,
-        values: vec![LabelValue { value: b"v0".to_vec() }],
-    })).await?;
+    service
+        .update(tonic::Request::new(UpdateRequest {
+            last: None,
+            label: user.clone(),
+            greatest_version: None,
+            values: vec![LabelValue {
+                value: b"v0".to_vec(),
+            }],
+        }))
+        .await?;
 
-    service.update(tonic::Request::new(UpdateRequest {
-        last: None,
-        label: user.clone(),
-        greatest_version: Some(0),
-        values: vec![LabelValue { value: b"v1".to_vec() }],
-    })).await?;
+    service
+        .update(tonic::Request::new(UpdateRequest {
+            last: None,
+            label: user.clone(),
+            greatest_version: Some(0),
+            values: vec![LabelValue {
+                value: b"v1".to_vec(),
+            }],
+        }))
+        .await?;
 
-    service.update(tonic::Request::new(UpdateRequest {
-        last: None,
-        label: user.clone(),
-        greatest_version: Some(1),
-        values: vec![LabelValue { value: b"v2".to_vec() }],
-    })).await?;
+    service
+        .update(tonic::Request::new(UpdateRequest {
+            last: None,
+            label: user.clone(),
+            greatest_version: Some(1),
+            values: vec![LabelValue {
+                value: b"v2".to_vec(),
+            }],
+        }))
+        .await?;
 
     let req = tonic::Request::new(SearchRequest {
         label: user.clone(),

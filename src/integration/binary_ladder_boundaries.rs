@@ -25,24 +25,24 @@ fn test_binary_ladder_boundary_one() -> Result<()> {
 fn test_binary_ladder_boundary_max() -> Result<()> {
     // Scenario 3: Version 2^32 - 1 (u32::MAX)
     // This previously caused overflow panics.
-    
+
     let max = u32::MAX;
     let ladder = base_binary_ladder(max);
-    
+
     // 1. Must contain max
     assert!(ladder.contains(&max));
-    
+
     // 2. Must end with max (since it exists and is the protocol limit)
     assert_eq!(*ladder.last().unwrap(), max);
-    
+
     // 3. Verify sequence logic
     // The "Powers of 2" phase should reach MAX.
     let val_31 = 2147483647; // 2^31 - 1
     assert!(ladder.contains(&val_31));
-    
+
     // Ensure no binary search midpoints were added erroneously.
     // If n=MAX, we proved existence of MAX. We implicitly know MAX+1 cannot exist.
     // So the ladder stops at MAX.
-    
+
     Ok(())
 }

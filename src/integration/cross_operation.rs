@@ -57,27 +57,43 @@ async fn test_cross_operation_state_continuity() -> Result<()> {
     // the remaining operations all ride the same evolving trusted state
     client.contact_monitor(label.clone()).await?;
     client.owner_init(label.clone(), 3).await?;
-    client.owner_monitor(label.clone(), vec![], 3, Some(2)).await?;
+    client
+        .owner_monitor(label.clone(), vec![], 3, Some(2))
+        .await?;
     client.distinguished(None).await?;
     assert!(!client.distinguished_entries.is_empty());
 
     // the whole run is reproducible from the persisted state alone
     let mut reloaded = server.client().await?;
     reloaded.persist_to(&state_file)?;
-    assert_eq!(reloaded.state.as_ref().unwrap().tree_size, client.state.as_ref().unwrap().tree_size);
+    assert_eq!(
+        reloaded.state.as_ref().unwrap().tree_size,
+        client.state.as_ref().unwrap().tree_size
+    );
 
     // a rolled-back head (tree size below the retained view) is rejected
     let mut fresh = server.client().await?;
     let good = fresh.search_raw(label.clone(), None).await?;
     let mut rolled_back = good.clone();
     {
-        let th = rolled_back.full_tree_head.as_mut().unwrap().tree_head.as_mut().unwrap();
+        let th = rolled_back
+            .full_tree_head
+            .as_mut()
+            .unwrap()
+            .tree_head
+            .as_mut()
+            .unwrap();
         th.tree_size = 1;
     }
     let mut victim = server.client().await?;
     victim.persist_to(&state_file)?;
-    let result = victim.verify_search_response(&label, None, &rolled_back).await;
-    assert!(result.is_err(), "a head below the retained tree size must be rejected");
+    let result = victim
+        .verify_search_response(&label, None, &rolled_back)
+        .await;
+    assert!(
+        result.is_err(),
+        "a head below the retained tree size must be rejected"
+    );
 
     Ok(())
 }
@@ -102,7 +118,10 @@ async fn test_state_from_one_log_rejects_another() -> Result<()> {
 
     // ca advertises last, so B's head must prove it extends A's retained view; it can't
     let result = ca.verify_search_response(b"shared", None, &from_b).await;
-    assert!(result.is_err(), "a response from a divergent log must not verify");
+    assert!(
+        result.is_err(),
+        "a response from a divergent log must not verify"
+    );
 
     Ok(())
 }

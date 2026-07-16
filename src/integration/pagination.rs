@@ -1,10 +1,10 @@
-use crate::db::RocksDbStore;
-use crate::service::KeyTransparencyImpl;
 use crate::client::KtClient;
 use crate::crypto::{self, CIPHER_SUITE_KT_128_SHA256_ED25519};
+use crate::db::RocksDbStore;
+use crate::service::KeyTransparencyImpl;
 use anyhow::Result;
-use std::sync::Arc;
 use std::collections::HashMap;
+use std::sync::Arc;
 use tempfile::tempdir;
 use tokio::net::TcpListener;
 use tonic::transport::Server;
@@ -74,7 +74,9 @@ async fn test_owner_init_client_verified() -> Result<()> {
     // at any distinguished entry as the tree grows
     client.update(b"noise2".to_vec(), b"y".to_vec()).await?;
     client.update(b"noise3".to_vec(), b"z".to_vec()).await?;
-    let owner_resp = client.owner_monitor(owner.clone(), vec![], 3, Some(2)).await?;
+    let owner_resp = client
+        .owner_monitor(owner.clone(), vec![], 3, Some(2))
+        .await?;
     assert!(owner_resp.monitor.is_some());
     assert_eq!(client.state.as_ref().map(|s| s.tree_size), Some(6));
 

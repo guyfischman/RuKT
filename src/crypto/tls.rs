@@ -118,7 +118,10 @@ impl<T: TlsDecode> TlsDecode for Option<T> {
         match u8::tls_decode(buf)? {
             0 => Ok(None),
             1 => Ok(Some(T::tls_decode(buf)?)),
-            other => Err(anyhow!("TLS decode: malformed optional presence octet {}", other)),
+            other => Err(anyhow!(
+                "TLS decode: malformed optional presence octet {}",
+                other
+            )),
         }
     }
 }

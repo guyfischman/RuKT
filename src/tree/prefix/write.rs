@@ -1,50 +1,46 @@
 // src/tree/prefix/write.rs
-use crate::proto::prefix_tree::{LogEntry, LeafNode};
-use crate::tree::prefix::{StepResult, PrefixTree, SearchResult};
 use super::entry::CachedLogEntry; // Import struct
+use crate::proto::prefix_tree::{LeafNode, LogEntry};
+use crate::tree::prefix::{PrefixTree, SearchResult, StepResult};
 use anyhow::Result;
-use std::collections::HashMap;
 use prost::Message;
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 impl PrefixTree {
     pub async fn batch_insert(
-        &self, 
-        start_version: u64, 
-        current_root_ptr: Option<u64>, 
-        entries: &[(Vec<u8>, Vec<u8>)]
+        &self,
+        start_version: u64,
+        current_root_ptr: Option<u64>,
+        entries: &[(Vec<u8>, Vec<u8>)],
     ) -> Result<(Vec<Vec<u8>>, Vec<SearchResult>, u64)> {
-        
         let mut current_ptr = current_root_ptr;
         let mut alloc_version = start_version;
         let mut db_batch = Vec::new();
         let mut roots = Vec::new();
         let mut search_results = Vec::new();
         let mut overlay: HashMap<u64, Vec<u8>> = HashMap::new();
-        let mut new_cache_entries: Vec<(u64, Arc<CachedLogEntry>)> = Vec::with_capacity(entries.len() * 2);
+        let mut new_cache_entries: Vec<(u64, Arc<CachedLogEntry>)> =
+            Vec::with_capacity(entries.len() * 2);
 
         self.debug_hash_ops.store(0, Ordering::Relaxed);
         self.debug_steps.store(0, Ordering::Relaxed);
 
         for (index, commitment) in entries {
-            let (root, search_res, (pos, data), cached_obj) = self.insert_internal(
-                alloc_version, 
-                current_ptr,
-                index, 
-                commitment, 
-                &overlay
-            ).await?;
-            
+            let (root, search_res, (pos, data), cached_obj) = self
+                .insert_internal(alloc_version, current_ptr, index, commitment, &overlay)
+                .await?;
+
             db_batch.push((pos, data.clone()));
             overlay.insert(pos, data);
-            
+
             // Push the fully constructed CachedLogEntry (with hashes!) to global cache
             new_cache_entries.push((pos, cached_obj));
-            
+
             roots.push(root);
             search_results.push(search_res);
-            
+
             current_ptr = Some(pos);
             alloc_version += 1;
         }
@@ -63,22 +59,23 @@ impl PrefixTree {
         let total = hits + misses;
         if total > 0 {
             let rate = (hits as f64 / total as f64) * 100.0;
-            println!("   🧠 Cache Stats: Hits: {} | Misses: {} | Rate: {:.1}% | HashOps: {} | Steps: {}", 
-                hits, misses, rate, hashes, steps);
+            println!(
+                "   🧠 Cache Stats: Hits: {} | Misses: {} | Rate: {:.1}% | HashOps: {} | Steps: {}",
+                hits, misses, rate, hashes, steps
+            );
         }
 
         Ok((roots, search_results, current_ptr.unwrap_or(0)))
     }
 
     pub(crate) async fn insert_internal(
-        &self, 
-        new_pos: u64, 
-        current_ptr: Option<u64>, 
-        index: &[u8], 
+        &self,
+        new_pos: u64,
+        current_ptr: Option<u64>,
+        index: &[u8],
         commitment: &[u8],
-        overlay: &HashMap<u64, Vec<u8>>
+        overlay: &HashMap<u64, Vec<u8>>,
     ) -> Result<(Vec<u8>, SearchResult, (u64, Vec<u8>), Arc<CachedLogEntry>)> {
-        
         let mut copath = Vec::new();
         let mut current_ctr = 0;
 
@@ -87,17 +84,17 @@ impl PrefixTree {
             loop {
                 // Returns Arc<CachedLogEntry> with populated hash cache!
                 let entry = self.get_entry(curr, overlay)?;
-                
+
                 match self.step(index, curr, &mut copath, &entry) {
                     StepResult::Found(final_entry) => {
                         let leaf = final_entry.inner.leaf.as_ref().unwrap();
                         current_ctr = leaf.ctr + 1;
                         copath = final_entry.inner.copath.clone();
                         break;
-                    },
+                    }
                     StepResult::Continue(next_ptr) => {
                         curr = next_ptr;
-                    },
+                    }
                     StepResult::Failed(failed_copath, _) => {
                         copath = failed_copath;
                         break;
@@ -119,10 +116,10 @@ impl PrefixTree {
 
         let mut buf = Vec::new();
         new_entry.encode(&mut buf)?;
-        
+
         // Create cache entry immediately
         let cached_new = Arc::new(CachedLogEntry::new(Arc::new(new_entry), &self.aes_key));
-        
+
         // This rollup will populate the parents cache for the first time
         let root = cached_new.rollup(0, Some(&self.debug_hash_ops));
 

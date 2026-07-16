@@ -1,11 +1,11 @@
 use super::Tree;
 use crate::proto::transparency::{
-    SearchResponse, FullTreeHead, Consistency,
-    AuditorTreeHead as PbAuditorTreeHead, FullTreeHeadType, UpdateValue
+    AuditorTreeHead as PbAuditorTreeHead, Consistency, FullTreeHead, FullTreeHeadType,
+    SearchResponse, UpdateValue,
 };
 use crate::tree::errors::KtError;
-use anyhow::{Result, anyhow};
 use crate::tree::log_math;
+use anyhow::{Result, anyhow};
 
 impl Tree {
     // §11.4
@@ -27,7 +27,9 @@ impl Tree {
         }
 
         // freshest verified auditor head
-        let auditor_tree_head = self.auditors.values()
+        let auditor_tree_head = self
+            .auditors
+            .values()
             .max_by_key(|ath| ath.tree_size)
             .map(|ath| PbAuditorTreeHead {
                 tree_size: ath.tree_size,
@@ -47,18 +49,23 @@ impl Tree {
     }
 
     /// None when no version of the label existed in the entry's prefix tree.
-    pub(crate) fn get_max_version_at(&self, label_history: &[(u32, u64)], log_pos: u64) -> Option<u32> {
+    pub(crate) fn get_max_version_at(
+        &self,
+        label_history: &[(u32, u64)],
+        log_pos: u64,
+    ) -> Option<u32> {
         let log_prefix_ptr = self.log.get_prefix_ptr(log_pos).unwrap_or(0);
 
-        label_history.iter()
+        label_history
+            .iter()
             .filter(|(_, ptr)| *ptr <= log_prefix_ptr)
             .map(|(ver, _)| *ver)
             .max()
     }
-    
+
     pub(crate) fn exists_at(&self, label_history: &[(u32, u64)], log_pos: u64) -> bool {
-         let log_prefix_ptr = self.log.get_prefix_ptr(log_pos).unwrap_or(0);
-         label_history.iter().any(|(_, p)| *p <= log_prefix_ptr)
+        let log_prefix_ptr = self.log.get_prefix_ptr(log_pos).unwrap_or(0);
+        label_history.iter().any(|(_, p)| *p <= log_prefix_ptr)
     }
 
     pub(crate) fn get_frontier_nodes(&self, tree_size: u64, _last_size: u64) -> Vec<u64> {
@@ -67,17 +74,17 @@ impl Tree {
 
     // Moved from traversal.rs
     pub(crate) fn extract_value_and_opening(
-        &self, 
-        history: &[(u32, u64)], 
-        ver: u32, 
-        val_out: &mut Option<UpdateValue>, 
-        open_out: &mut Vec<u8>
+        &self,
+        history: &[(u32, u64)],
+        ver: u32,
+        val_out: &mut Option<UpdateValue>,
+        open_out: &mut Vec<u8>,
     ) -> Result<()> {
         let pos = history.iter().find(|(v, _)| *v == ver).map(|(_, p)| *p);
         if let Some(p) = pos {
             let val = self.store.get_value(p)?.unwrap_or_default();
             *val_out = Some(UpdateValue { value: val });
-            
+
             if let Some(op) = self.store.get_opening(p)? {
                 *open_out = op;
             } else {
@@ -102,7 +109,9 @@ impl Tree {
     ) -> futures::future::BoxFuture<'a, Result<(Vec<(u64, u32)>, usize)>> {
         Box::pin(async move {
             let mut current_limit = limit;
-            if current_limit == 0 { return Ok((vec![], 0)); }
+            if current_limit == 0 {
+                return Ok((vec![], 0));
+            }
 
             if right_ts.saturating_sub(left_ts) < self.config.reasonable_monitoring_window {
                 return Ok((Vec::new(), current_limit));
@@ -115,9 +124,17 @@ impl Tree {
                 if !log_math::is_leaf(node_idx) {
                     if let Some(r) = log_math::ibst_right_child(node_idx, tree_size) {
                         if r < tree_size && r != node_idx {
-                            let (mut right_res, remaining) = self.owner_monitoring_traversal_collect(
-                                r, node_ts, right_ts, tree_size, user_advertised_rightmost, history, current_limit
-                            ).await?;
+                            let (mut right_res, remaining) = self
+                                .owner_monitoring_traversal_collect(
+                                    r,
+                                    node_ts,
+                                    right_ts,
+                                    tree_size,
+                                    user_advertised_rightmost,
+                                    history,
+                                    current_limit,
+                                )
+                                .await?;
                             results.append(&mut right_res);
                             current_limit = remaining;
                         }
@@ -129,9 +146,17 @@ impl Tree {
             if !log_math::is_leaf(node_idx) {
                 let l = log_math::left_child(node_idx);
                 if l < tree_size {
-                    let (mut left_res, remaining) = self.owner_monitoring_traversal_collect(
-                        l, left_ts, node_ts, tree_size, user_advertised_rightmost, history, current_limit
-                    ).await?;
+                    let (mut left_res, remaining) = self
+                        .owner_monitoring_traversal_collect(
+                            l,
+                            left_ts,
+                            node_ts,
+                            tree_size,
+                            user_advertised_rightmost,
+                            history,
+                            current_limit,
+                        )
+                        .await?;
                     results.append(&mut left_res);
                     current_limit = remaining;
                 }
@@ -147,9 +172,17 @@ impl Tree {
             if current_limit > 0 && !log_math::is_leaf(node_idx) {
                 if let Some(r) = log_math::ibst_right_child(node_idx, tree_size) {
                     if r < tree_size && r != node_idx {
-                        let (mut right_res, remaining) = self.owner_monitoring_traversal_collect(
-                            r, node_ts, right_ts, tree_size, user_advertised_rightmost, history, current_limit
-                        ).await?;
+                        let (mut right_res, remaining) = self
+                            .owner_monitoring_traversal_collect(
+                                r,
+                                node_ts,
+                                right_ts,
+                                tree_size,
+                                user_advertised_rightmost,
+                                history,
+                                current_limit,
+                            )
+                            .await?;
                         results.append(&mut right_res);
                         current_limit = remaining;
                     }
@@ -160,30 +193,38 @@ impl Tree {
         })
     }
 
-    pub async fn search(&self, req: &crate::proto::transparency::SearchRequest) -> Result<SearchResponse> {
+    pub async fn search(
+        &self,
+        req: &crate::proto::transparency::SearchRequest,
+    ) -> Result<SearchResponse> {
         let tree_size = self.latest.as_ref().map(|th| th.tree_size).unwrap_or(0);
 
         if tree_size == 0 {
-             return Ok(SearchResponse {
-                 full_tree_head: Some(self.get_full_tree_head(None)?),
-                 binary_ladder: vec![],
-                 search: Some(crate::proto::transparency::CombinedTreeProof::default()),
-                 opening: vec![],
-                 value: None,
-                 version: None,
-             });
+            return Ok(SearchResponse {
+                full_tree_head: Some(self.get_full_tree_head(None)?),
+                binary_ladder: vec![],
+                search: Some(crate::proto::transparency::CombinedTreeProof::default()),
+                opening: vec![],
+                value: None,
+                version: None,
+            });
         }
 
         let last = req.last.unwrap_or(0);
         let is_greatest = req.version.is_none();
 
         let result_data = if let Some(target_ver) = req.version {
-            self.traverse_fixed_search(tree_size, &req.label, target_ver, last).await?
+            self.traverse_fixed_search(tree_size, &req.label, target_ver, last)
+                .await?
         } else {
-            self.traverse_greatest_search(tree_size, &req.label, last).await?
+            self.traverse_greatest_search(tree_size, &req.label, last)
+                .await?
         };
 
-        let consistency = Consistency { last: req.last, distinguished: None };
+        let consistency = Consistency {
+            last: req.last,
+            distinguished: None,
+        };
         let fth = self.get_full_tree_head(Some(consistency))?;
 
         Ok(SearchResponse {
@@ -192,15 +233,26 @@ impl Tree {
             search: Some(result_data.combined_proof),
             opening: result_data.opening,
             value: result_data.value,
-            version: if is_greatest { Some(result_data.greatest_version) } else { None },
+            version: if is_greatest {
+                Some(result_data.greatest_version)
+            } else {
+                None
+            },
         })
     }
-    
+
     /// Returns the PrefixProof for the requested versions plus, per version, the
     /// commitment when the version is included.
-    pub(crate) async fn generate_ladder_proof(&self, prefix_ptr: u64, _tree_size: u64, label: &[u8], versions: &[u32])
-        -> Result<(crate::proto::transparency::PrefixProof, Vec<(u32, Option<Vec<u8>>)>)> {
-
+    pub(crate) async fn generate_ladder_proof(
+        &self,
+        prefix_ptr: u64,
+        _tree_size: u64,
+        label: &[u8],
+        versions: &[u32],
+    ) -> Result<(
+        crate::proto::transparency::PrefixProof,
+        Vec<(u32, Option<Vec<u8>>)>,
+    )> {
         let overlay = std::collections::HashMap::new();
         let mut proof_results = Vec::new();
         let mut elements = Vec::new();
@@ -208,7 +260,10 @@ impl Tree {
 
         for &v in versions {
             let (idx, _) = self.config.vrf_prove(label, v)?;
-            let res = self.prefix.search_for_proof(prefix_ptr, &idx, &overlay).await?;
+            let res = self
+                .prefix
+                .search_for_proof(prefix_ptr, &idx, &overlay)
+                .await?;
 
             // §12.2
             let leaf = match res.result_type {
@@ -227,6 +282,12 @@ impl Tree {
             ladder_tuples.push((v, res.commitment));
         }
 
-        Ok((crate::proto::transparency::PrefixProof { results: proof_results, elements }, ladder_tuples))
+        Ok((
+            crate::proto::transparency::PrefixProof {
+                results: proof_results,
+                elements,
+            },
+            ladder_tuples,
+        ))
     }
 }

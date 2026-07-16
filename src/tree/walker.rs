@@ -1,10 +1,9 @@
 use super::Tree;
 use crate::proto::transparency::{
-    CombinedTreeProof, PrefixProof, InclusionProof,
-    BinaryLadderStep, UpdateValue
+    BinaryLadderStep, CombinedTreeProof, InclusionProof, PrefixProof, UpdateValue,
 };
 use anyhow::Result;
-use std::collections::{HashSet, HashMap};
+use std::collections::{HashMap, HashSet};
 
 /// Accumulates a CombinedTreeProof in the order the client-side algorithm will
 /// request its parts (§12.3, Appendix C).
@@ -68,17 +67,21 @@ impl<'a> TraversalSession<'a> {
 
     /// Visits a specific node, generates required proofs, and optionally extracts value.
     /// `extract_target`: If Some(ver), attempts to retrieve the value/opening for `ver` from DB.
-    pub async fn visit(&mut self, node_idx: u64, versions_to_prove: &[u32], extract_target: Option<u32>, tree_size: u64) -> Result<()> {
+    pub async fn visit(
+        &mut self,
+        node_idx: u64,
+        versions_to_prove: &[u32],
+        extract_target: Option<u32>,
+        tree_size: u64,
+    ) -> Result<()> {
         let ts = self.tree.log.get_timestamp(node_idx)?;
         self.add_node(node_idx, ts);
 
         let prefix_ptr = self.tree.log.get_prefix_ptr(node_idx)?;
-        let (proof_struct, ladder_results) = self.tree.generate_ladder_proof(
-            prefix_ptr, 
-            tree_size, 
-            self.label, 
-            versions_to_prove
-        ).await?;
+        let (proof_struct, ladder_results) = self
+            .tree
+            .generate_ladder_proof(prefix_ptr, tree_size, self.label, versions_to_prove)
+            .await?;
 
         self.add_proof(node_idx, proof_struct);
 
@@ -86,7 +89,11 @@ impl<'a> TraversalSession<'a> {
             if self.ladder_versions_added.insert(ver) {
                 let (_, vrf_proof) = self.tree.config.vrf_prove(self.label, ver)?;
                 // §13.1: the target version's commitment is recomputed from opening + value
-                let commitment = if extract_target == Some(ver) { None } else { comm };
+                let commitment = if extract_target == Some(ver) {
+                    None
+                } else {
+                    comm
+                };
                 self.binary_ladder.push(BinaryLadderStep {
                     proof: vrf_proof,
                     commitment,
@@ -98,10 +105,10 @@ impl<'a> TraversalSession<'a> {
             let label_history = self.tree.store.get_label_history(self.label)?;
             // Attempt extraction. If it fails (doesn't exist), it returns Err(Unavailable)
             self.tree.extract_value_and_opening(
-                &label_history, 
-                target_ver, 
-                &mut self.found_value, 
-                &mut self.found_opening
+                &label_history,
+                target_ver,
+                &mut self.found_value,
+                &mut self.found_opening,
             )?;
         }
 
@@ -119,7 +126,16 @@ impl<'a> TraversalSession<'a> {
         self.prefix_proofs.push((idx, proof));
     }
 
-    pub fn finalize(self, tree_size: u64, consistency_last: u64) -> Result<(CombinedTreeProof, Vec<BinaryLadderStep>, Option<UpdateValue>, Vec<u8>)> {
+    pub fn finalize(
+        self,
+        tree_size: u64,
+        consistency_last: u64,
+    ) -> Result<(
+        CombinedTreeProof,
+        Vec<BinaryLadderStep>,
+        Option<UpdateValue>,
+        Vec<u8>,
+    )> {
         let mut combined = CombinedTreeProof::default();
 
         // §12.3: timestamps and proofs in request order
@@ -132,7 +148,10 @@ impl<'a> TraversalSession<'a> {
         }
 
         // §12.3: prefix roots left-to-right for timestamped entries without a proof
-        let mut rootless: Vec<u64> = self.ts_order.iter().copied()
+        let mut rootless: Vec<u64> = self
+            .ts_order
+            .iter()
+            .copied()
             .filter(|idx| !proof_nodes.contains(idx))
             .collect();
         rootless.sort();
@@ -145,7 +164,10 @@ impl<'a> TraversalSession<'a> {
         let mut visited: Vec<u64> = self.ts_order.clone();
         visited.sort();
         // in auditing mode the client also derives the root at the auditor's size
-        let boundaries: Vec<u64> = self.tree.auditors.values()
+        let boundaries: Vec<u64> = self
+            .tree
+            .auditors
+            .values()
             .map(|ath| ath.tree_size)
             .max()
             .into_iter()
@@ -157,9 +179,16 @@ impl<'a> TraversalSession<'a> {
             &boundaries,
         )?;
 
-        combined.inclusion = Some(InclusionProof { elements: inc_proof });
+        combined.inclusion = Some(InclusionProof {
+            elements: inc_proof,
+        });
 
-        Ok((combined, self.binary_ladder, self.found_value, self.found_opening))
+        Ok((
+            combined,
+            self.binary_ladder,
+            self.found_value,
+            self.found_opening,
+        ))
     }
 }
 
@@ -182,7 +211,7 @@ impl StandaloneProofBuilder {
             prefix_roots: HashMap::new(),
         }
     }
-    
+
     pub fn add_node(&mut self, idx: u64, ts: u64) {
         if self.visited_set.insert(idx) {
             self.visited_nodes.push(idx);
@@ -193,7 +222,7 @@ impl StandaloneProofBuilder {
     pub fn add_proof(&mut self, idx: u64, proof: PrefixProof) {
         self.prefix_proofs.insert(idx, proof);
     }
-    
+
     pub fn get_sorted_nodes(&self) -> Vec<u64> {
         let mut n = self.visited_nodes.clone();
         n.sort();
@@ -203,12 +232,17 @@ impl StandaloneProofBuilder {
     pub fn finalize(mut self, inclusion: InclusionProof) -> CombinedTreeProof {
         let mut combined = CombinedTreeProof::default();
         combined.inclusion = Some(inclusion);
-        self.visited_nodes.sort(); 
+        self.visited_nodes.sort();
 
         for &idx in &self.visited_nodes {
-            if let Some(&ts) = self.timestamps.get(&idx) { combined.timestamps.push(ts); }
-            if let Some(proof) = self.prefix_proofs.remove(&idx) { combined.prefix_proofs.push(proof); }
-            else if let Some(root) = self.prefix_roots.remove(&idx) { combined.prefix_roots.push(root); }
+            if let Some(&ts) = self.timestamps.get(&idx) {
+                combined.timestamps.push(ts);
+            }
+            if let Some(proof) = self.prefix_proofs.remove(&idx) {
+                combined.prefix_proofs.push(proof);
+            } else if let Some(root) = self.prefix_roots.remove(&idx) {
+                combined.prefix_roots.push(root);
+            }
         }
         combined
     }

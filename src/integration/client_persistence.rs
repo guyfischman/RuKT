@@ -1,10 +1,10 @@
-use crate::db::RocksDbStore;
-use crate::service::KeyTransparencyImpl;
 use crate::client::KtClient;
 use crate::crypto::{self, CIPHER_SUITE_KT_128_SHA256_ED25519};
+use crate::db::RocksDbStore;
+use crate::service::KeyTransparencyImpl;
 use anyhow::Result;
-use std::sync::Arc;
 use std::collections::HashMap;
+use std::sync::Arc;
 use tempfile::tempdir;
 use tokio::net::TcpListener;
 use tonic::transport::Server;
@@ -79,7 +79,9 @@ async fn test_client_state_survives_restart() -> Result<()> {
     // against retained subtrees on reconnect
     {
         let mut writer: KtClient = KtClient::connect(uri.clone(), public_config.clone()).await?;
-        writer.update(b"other_label".to_vec(), b"x".to_vec()).await?;
+        writer
+            .update(b"other_label".to_vec(), b"x".to_vec())
+            .await?;
         writer.update(label.clone(), b"v1".to_vec()).await?;
 
         let mut client: KtClient = KtClient::connect(uri.clone(), public_config.clone()).await?;
@@ -89,14 +91,19 @@ async fn test_client_state_survives_restart() -> Result<()> {
         assert_eq!(resp.version, Some(1));
         assert_eq!(client.state.as_ref().map(|s| s.tree_size), Some(3));
         assert_eq!(client.label_versions.get(&label), Some(&1));
-        assert_eq!(client.monitoring_map.get(&label).and_then(|m| m.get(&2)), Some(&1));
+        assert_eq!(
+            client.monitoring_map.get(&label).and_then(|m| m.get(&2)),
+            Some(&1)
+        );
     }
 
     // §8.2: monitoring walks the obligation up to a distinguished ancestor,
     // verifies the ladder there, and discharges it
     {
         let mut writer: KtClient = KtClient::connect(uri.clone(), public_config.clone()).await?;
-        writer.update(b"other_label".to_vec(), b"y".to_vec()).await?;
+        writer
+            .update(b"other_label".to_vec(), b"y".to_vec())
+            .await?;
 
         let mut client: KtClient = KtClient::connect(uri, public_config).await?;
         client.persist_to(&state_file)?;
@@ -104,7 +111,10 @@ async fn test_client_state_survives_restart() -> Result<()> {
         let resp = client.contact_monitor(label.clone()).await?;
         assert!(resp.monitor.is_some());
         assert!(
-            client.monitoring_map.get(&label).map_or(true, |m| m.is_empty()),
+            client
+                .monitoring_map
+                .get(&label)
+                .map_or(true, |m| m.is_empty()),
             "Obligation should be discharged at the distinguished ancestor"
         );
         assert_eq!(client.state.as_ref().map(|s| s.tree_size), Some(4));

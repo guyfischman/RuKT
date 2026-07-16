@@ -1,21 +1,21 @@
-use tonic::transport::Channel;
+use crate::client::verifier::{LogVerifier, PrefixVerifier};
+use crate::crypto::{
+    self, PublicConfig, ServiceVerifyingKey, construct_tree_head_tbs_public, construct_vrf_input,
+    verify_data,
+};
 use crate::proto::kt::key_transparency_service_client::KeyTransparencyServiceClient;
 use crate::proto::transparency::{
-    SearchRequest, UpdateRequest, LabelValue,
-    ContactMonitorRequest, ContactMonitorResponse,
-    OwnerInitRequest, OwnerInitResponse,
-    OwnerMonitorRequest, OwnerMonitorResponse,
-    DistinguishedRequest, DistinguishedResponse,
-    MonitorMapEntry, Consistency, CombinedTreeProof,
-    UpdateResponse, SearchResponse,
-    FullTreeHead, FullTreeHeadType, PrefixProof,
+    CombinedTreeProof, Consistency, ContactMonitorRequest, ContactMonitorResponse,
+    DistinguishedRequest, DistinguishedResponse, FullTreeHead, FullTreeHeadType, LabelValue,
+    MonitorMapEntry, OwnerInitRequest, OwnerInitResponse, OwnerMonitorRequest,
+    OwnerMonitorResponse, PrefixProof, SearchRequest, SearchResponse, UpdateRequest,
+    UpdateResponse,
 };
-use std::collections::{BTreeMap, HashMap};
-use crate::crypto::{self, PublicConfig, ServiceVerifyingKey, construct_tree_head_tbs_public, verify_data, construct_vrf_input};
-use crate::client::verifier::{LogVerifier, PrefixVerifier};
-use crate::tree::log_math;
 use crate::tree::binary_ladder::base_binary_ladder;
-use anyhow::{Result, anyhow, Context};
+use crate::tree::log_math;
+use anyhow::{Context, Result, anyhow};
+use std::collections::{BTreeMap, HashMap};
+use tonic::transport::Channel;
 
 #[derive(Clone, Debug)]
 pub struct TrustedState {
@@ -102,26 +102,48 @@ impl KtClient {
                 });
             }
             self.auditor_head = p.auditor_head;
-            self.label_versions = p.label_versions.into_iter()
+            self.label_versions = p
+                .label_versions
+                .into_iter()
                 .map(|(l, v)| Ok((hex::decode(&l)?, v)))
                 .collect::<Result<_>>()?;
-            self.retained_subtrees = p.retained_subtrees.into_iter()
+            self.retained_subtrees = p
+                .retained_subtrees
+                .into_iter()
                 .map(|(n, h)| Ok((n, hex::decode(&h)?)))
                 .collect::<Result<_>>()?;
-            self.monitoring_map = p.monitoring_map.into_iter()
+            self.monitoring_map = p
+                .monitoring_map
+                .into_iter()
                 .map(|(l, m)| Ok((hex::decode(&l)?, m.into_iter().collect())))
                 .collect::<Result<_>>()?;
-            self.version_material = p.version_material.into_iter()
+            self.version_material = p
+                .version_material
+                .into_iter()
                 .map(|(l, vs)| {
-                    let inner = vs.into_iter()
-                        .map(|(v, vrf, comm)| Ok((v, (hex::decode(&vrf)?, comm.map(|c| hex::decode(&c)).transpose()?))))
+                    let inner = vs
+                        .into_iter()
+                        .map(|(v, vrf, comm)| {
+                            Ok((
+                                v,
+                                (
+                                    hex::decode(&vrf)?,
+                                    comm.map(|c| hex::decode(&c)).transpose()?,
+                                ),
+                            ))
+                        })
                         .collect::<Result<_>>()?;
                     Ok((hex::decode(&l)?, inner))
                 })
                 .collect::<Result<_>>()?;
-            self.distinguished_entries = p.distinguished_entries.into_iter()
+            self.distinguished_entries = p
+                .distinguished_entries
+                .into_iter()
                 .map(|(pos, ts, root, peaks)| {
-                    let peaks = peaks.into_iter().map(|h| Ok(hex::decode(&h)?)).collect::<Result<_>>()?;
+                    let peaks = peaks
+                        .into_iter()
+                        .map(|h| Ok(hex::decode(&h)?))
+                        .collect::<Result<_>>()?;
                     Ok((pos, (ts, hex::decode(&root)?, peaks)))
                 })
                 .collect::<Result<_>>()?;
@@ -132,26 +154,57 @@ impl KtClient {
     }
 
     fn save_state(&self) -> Result<()> {
-        let Some(path) = &self.state_path else { return Ok(()) };
+        let Some(path) = &self.state_path else {
+            return Ok(());
+        };
         let p = PersistedState {
             tree_size: self.state.as_ref().map(|s| s.tree_size).unwrap_or(0),
-            root_hash: self.state.as_ref().map(|s| hex::encode(&s.root_hash)).unwrap_or_default(),
+            root_hash: self
+                .state
+                .as_ref()
+                .map(|s| hex::encode(&s.root_hash))
+                .unwrap_or_default(),
             timestamp: self.state.as_ref().map(|s| s.timestamp).unwrap_or(0),
             auditor_head: self.auditor_head,
-            label_versions: self.label_versions.iter().map(|(l, v)| (hex::encode(l), *v)).collect(),
-            retained_subtrees: self.retained_subtrees.iter().map(|(n, h)| (*n, hex::encode(h))).collect(),
-            monitoring_map: self.monitoring_map.iter()
+            label_versions: self
+                .label_versions
+                .iter()
+                .map(|(l, v)| (hex::encode(l), *v))
+                .collect(),
+            retained_subtrees: self
+                .retained_subtrees
+                .iter()
+                .map(|(n, h)| (*n, hex::encode(h)))
+                .collect(),
+            monitoring_map: self
+                .monitoring_map
+                .iter()
                 .map(|(l, m)| (hex::encode(l), m.iter().map(|(&p, &v)| (p, v)).collect()))
                 .collect(),
-            version_material: self.version_material.iter()
-                .map(|(l, vs)| (
-                    hex::encode(l),
-                    vs.iter().map(|(&v, (vrf, comm))| (v, hex::encode(vrf), comm.as_ref().map(hex::encode))).collect(),
-                ))
+            version_material: self
+                .version_material
+                .iter()
+                .map(|(l, vs)| {
+                    (
+                        hex::encode(l),
+                        vs.iter()
+                            .map(|(&v, (vrf, comm))| {
+                                (v, hex::encode(vrf), comm.as_ref().map(hex::encode))
+                            })
+                            .collect(),
+                    )
+                })
                 .collect(),
-            distinguished_entries: self.distinguished_entries.iter()
+            distinguished_entries: self
+                .distinguished_entries
+                .iter()
                 .map(|(&pos, (ts, root, peaks))| {
-                    (pos, *ts, hex::encode(root), peaks.iter().map(hex::encode).collect())
+                    (
+                        pos,
+                        *ts,
+                        hex::encode(root),
+                        peaks.iter().map(hex::encode).collect(),
+                    )
                 })
                 .collect(),
             retained_head: self.retained_head.as_ref().map(hex::encode),
@@ -169,12 +222,15 @@ impl KtClient {
                 last: self.get_consistency_req().and_then(|c| c.last),
                 label: user.clone(),
                 greatest_version,
-                values: vec![LabelValue { value: value.clone() }],
+                values: vec![LabelValue {
+                    value: value.clone(),
+                }],
             };
 
             let resp = self.client.clone().update(req).await?.into_inner();
 
-            self.verify_update_response(&user, greatest_version, &[value.clone()], &resp).await?;
+            self.verify_update_response(&user, greatest_version, &[value.clone()], &resp)
+                .await?;
 
             let start = greatest_version.map(|v| v + 1).unwrap_or(0);
             if resp.values.is_empty() {
@@ -182,14 +238,21 @@ impl KtClient {
                 self.save_state()?;
                 return Ok(resp);
             }
-            self.label_versions.insert(user.clone(), start + resp.values.len() as u32 - 1);
+            self.label_versions
+                .insert(user.clone(), start + resp.values.len() as u32 - 1);
         }
-        Err(anyhow!("Update did not converge while catching up on existing versions"))
+        Err(anyhow!(
+            "Update did not converge while catching up on existing versions"
+        ))
     }
 
     /// Issues a Search RPC and returns the raw response without verifying it.
     /// For adversarial tests that tamper the response before verification.
-    pub(crate) async fn search_raw(&mut self, user: Vec<u8>, version: Option<u32>) -> Result<SearchResponse> {
+    pub(crate) async fn search_raw(
+        &mut self,
+        user: Vec<u8>,
+        version: Option<u32>,
+    ) -> Result<SearchResponse> {
         let req = SearchRequest {
             last: self.get_consistency_req().and_then(|c| c.last),
             label: user,
@@ -227,7 +290,8 @@ impl KtClient {
         let req = ContactMonitorRequest {
             last: self.state.as_ref().map(|s| s.tree_size),
             label: user.clone(),
-            entries: map.iter()
+            entries: map
+                .iter()
                 .map(|(&position, &version)| MonitorMapEntry { position, version })
                 .collect(),
         };
@@ -247,8 +311,14 @@ impl KtClient {
         map: &BTreeMap<u64, u32>,
         resp: &ContactMonitorResponse,
     ) -> Result<()> {
-        let fth = resp.full_tree_head.as_ref().ok_or(anyhow!("Missing FullTreeHead"))?;
-        let proof = resp.monitor.as_ref().ok_or(anyhow!("Missing monitor proof"))?;
+        let fth = resp
+            .full_tree_head
+            .as_ref()
+            .ok_or(anyhow!("Missing FullTreeHead"))?;
+        let proof = resp
+            .monitor
+            .as_ref()
+            .ok_or(anyhow!("Missing monitor proof"))?;
 
         let (tree_size, timestamp_opt, fth_is_updated) = self.tree_size_for_fth(fth)?;
         if tree_size == 0 {
@@ -261,7 +331,11 @@ impl KtClient {
             }
         }
 
-        let material = self.version_material.get(label).cloned().unwrap_or_default();
+        let material = self
+            .version_material
+            .get(label)
+            .cloned()
+            .unwrap_or_default();
         let rmw = self.config.reasonable_monitoring_window;
 
         let mut reader = ProofReader::new(proof);
@@ -273,20 +347,34 @@ impl KtClient {
 
         let mut entry_roots: BTreeMap<u64, Vec<u8>> = BTreeMap::new();
         let new_map = self.replay_contact_ladders(
-            label, map, tree_size, rmw, &material, &mut reader, &mut entry_roots,
+            label,
+            map,
+            tree_size,
+            rmw,
+            &material,
+            &mut reader,
+            &mut entry_roots,
         )?;
 
         let leaf_data = reader.finish(&entry_roots)?;
         let positions: Vec<u64> = leaf_data.iter().map(|(p, _, _)| *p).collect();
-        let leaf_hashes: Vec<Vec<u8>> = leaf_data.iter()
+        let leaf_hashes: Vec<Vec<u8>> = leaf_data
+            .iter()
             .map(|(_, ts, root)| crate::crypto::hash::log_leaf_value(*ts, root))
             .collect();
-        let inclusion = proof.inclusion.as_ref()
+        let inclusion = proof
+            .inclusion
+            .as_ref()
             .ok_or_else(|| anyhow!("Missing inclusion proof"))?;
 
         self.verify_head_and_commit(
-            fth, tree_size, timestamp_opt, fth_is_updated,
-            &positions, &leaf_hashes, &inclusion.elements,
+            fth,
+            tree_size,
+            timestamp_opt,
+            fth_is_updated,
+            &positions,
+            &leaf_hashes,
+            &inclusion.elements,
             &std::collections::HashSet::new(),
         )?;
 
@@ -319,7 +407,10 @@ impl KtClient {
                 let ts = reader.timestamp(curr)?;
                 let dist = parent_dist && bounds.1.saturating_sub(bounds.0) >= rmw;
                 ancestor_dist.insert(curr, dist);
-                if !dist { parent_dist = false; break; }
+                if !dist {
+                    parent_dist = false;
+                    break;
+                }
                 if pos < curr {
                     bounds.1 = ts;
                     curr = log_math::left_child(curr);
@@ -331,17 +422,24 @@ impl KtClient {
                     };
                 }
             }
-            let pos_dist = parent_dist && curr == pos
-                && bounds.1.saturating_sub(bounds.0) >= rmw;
+            let pos_dist = parent_dist && curr == pos && bounds.1.saturating_sub(bounds.0) >= rmw;
 
             // step 1
-            if pos_dist { new_map.remove(&pos); continue; }
+            if pos_dist {
+                new_map.remove(&pos);
+                continue;
+            }
 
             // step 2
             let mut list: Vec<u64> = log_math::ibst_direct_path(pos, tree_size)
-                .into_iter().filter(|&a| a > pos).collect();
+                .into_iter()
+                .filter(|&a| a > pos)
+                .collect();
             list.sort();
-            if let Some(cut) = list.iter().position(|a| *ancestor_dist.get(a).unwrap_or(&false)) {
+            if let Some(cut) = list
+                .iter()
+                .position(|a| *ancestor_dist.get(a).unwrap_or(&false))
+            {
                 list.truncate(cut + 1);
             }
 
@@ -354,13 +452,16 @@ impl KtClient {
                         moved_to = None;
                     } else {
                         return Err(anyhow!(
-                            "Entry {} already covered by a ladder with non-greater target {}", e, t
+                            "Entry {} already covered by a ladder with non-greater target {}",
+                            e,
+                            t
                         ));
                     }
                     break;
                 }
                 let pp = reader.prefix_proof(e)?;
-                let root = self.verify_monitoring_ladder(material, pp, ver)
+                let root = self
+                    .verify_monitoring_ladder(material, pp, ver)
                     .with_context(|| format!("Monitoring ladder failed at entry {}", e))?;
                 record_entry_root(entry_roots, e, root)?;
                 ladder_targets.insert(e, ver);
@@ -389,7 +490,8 @@ impl KtClient {
         if prefix_proof.results.len() != versions.len() {
             return Err(anyhow!(
                 "Monitoring ladder has {} results, expected {}",
-                prefix_proof.results.len(), versions.len()
+                prefix_proof.results.len(),
+                versions.len()
             ));
         }
 
@@ -398,22 +500,35 @@ impl KtClient {
 
         for (j, &v) in versions.iter().enumerate() {
             if prefix_proof.results[j].result_type != 1 {
-                return Err(anyhow!("Monitoring lookup for v={} is not an inclusion proof", v));
+                return Err(anyhow!(
+                    "Monitoring lookup for v={} is not an inclusion proof",
+                    v
+                ));
             }
-            let (vrf_output, commitment) = material.get(&v)
+            let (vrf_output, commitment) = material
+                .get(&v)
                 .ok_or_else(|| anyhow!("No retained material for v={}", v))?;
-            let commitment = commitment.as_ref()
+            let commitment = commitment
+                .as_ref()
                 .ok_or_else(|| anyhow!("No retained commitment for v={}", v))?;
 
             let (root, consumed) = PrefixVerifier::compute_root_from_result(
-                prefix_proof, j, vrf_output, Some(commitment), elements_offset,
+                prefix_proof,
+                j,
+                vrf_output,
+                Some(commitment),
+                elements_offset,
             )?;
             elements_offset += consumed;
 
             match &computed_root {
                 None => computed_root = Some(root),
                 Some(prev) if prev == &root => {}
-                Some(_) => return Err(anyhow!("Monitoring ladder results disagree on prefix-tree root")),
+                Some(_) => {
+                    return Err(anyhow!(
+                        "Monitoring ladder results disagree on prefix-tree root"
+                    ));
+                }
             }
         }
 
@@ -439,8 +554,16 @@ impl KtClient {
     }
 
     // §8.3 first algorithm
-    fn verify_owner_init(&mut self, label: &[u8], start: u64, resp: &OwnerInitResponse) -> Result<()> {
-        let fth = resp.full_tree_head.as_ref().ok_or(anyhow!("Missing FullTreeHead"))?;
+    fn verify_owner_init(
+        &mut self,
+        label: &[u8],
+        start: u64,
+        resp: &OwnerInitResponse,
+    ) -> Result<()> {
+        let fth = resp
+            .full_tree_head
+            .as_ref()
+            .ok_or(anyhow!("Missing FullTreeHead"))?;
         let proof = resp.init.as_ref().ok_or(anyhow!("Missing init proof"))?;
 
         let (tree_size, timestamp_opt, fth_is_updated) = self.tree_size_for_fth(fth)?;
@@ -449,7 +572,8 @@ impl KtClient {
         }
         if fth_is_updated {
             if let Some(head_ts) = timestamp_opt {
-                self.check_timestamp_bounds(head_ts).context("TreeHead timestamp out of bounds")?;
+                self.check_timestamp_bounds(head_ts)
+                    .context("TreeHead timestamp out of bounds")?;
             }
         }
 
@@ -467,7 +591,8 @@ impl KtClient {
             reader.timestamp(f)?;
         }
         let rightmost_ts = reader.timestamp(tree_size - 1)?;
-        let is_expired = |ts: u64| max_life.map_or(false, |ml| rightmost_ts.saturating_sub(ts) >= ml);
+        let is_expired =
+            |ts: u64| max_life.map_or(false, |ml| rightmost_ts.saturating_sub(ts) >= ml);
 
         let mut wire_index: HashMap<u32, usize> = HashMap::new();
         let mut vrf_cache: HashMap<u32, Vec<u8>> = HashMap::new();
@@ -476,25 +601,38 @@ impl KtClient {
         let mut count_existing = 0usize;
 
         for node in log_math::owner_init_list(start, tree_size) {
-            if is_expired(reader.timestamp(node)?) { break; }
+            if is_expired(reader.timestamp(node)?) {
+                break;
+            }
 
             let pp = reader.prefix_proof(node)?;
-            let (root, greatest) = self.verify_owner_ladder(
-                label, pp, &mut wire_index, &mut vrf_cache, &resp.binary_ladder,
-            ).with_context(|| format!("Owner-init ladder failed at entry {}", node))?;
+            let (root, greatest) = self
+                .verify_owner_ladder(
+                    label,
+                    pp,
+                    &mut wire_index,
+                    &mut vrf_cache,
+                    &resp.binary_ladder,
+                )
+                .with_context(|| format!("Owner-init ladder failed at entry {}", node))?;
 
             if let (Some(p), Some(t)) = (prev_ver, greatest) {
-                if t > p { return Err(anyhow!("Owner-init versions are not monotonic")); }
+                if t > p {
+                    return Err(anyhow!("Owner-init versions are not monotonic"));
+                }
             }
             prev_ver = greatest.or(prev_ver);
-            if greatest.is_some() { count_existing += 1; }
+            if greatest.is_some() {
+                count_existing += 1;
+            }
             record_entry_root(&mut entry_roots, node, root)?;
         }
 
         if count_existing != resp.greatest_versions.len() {
             return Err(anyhow!(
                 "greatest_versions count {} != {} entries where the label existed",
-                resp.greatest_versions.len(), count_existing
+                resp.greatest_versions.len(),
+                count_existing
             ));
         }
         if resp.binary_ladder.len() != wire_index.len() {
@@ -503,14 +641,23 @@ impl KtClient {
 
         let leaf_data = reader.finish(&entry_roots)?;
         let positions: Vec<u64> = leaf_data.iter().map(|(p, _, _)| *p).collect();
-        let leaf_hashes: Vec<Vec<u8>> = leaf_data.iter()
+        let leaf_hashes: Vec<Vec<u8>> = leaf_data
+            .iter()
             .map(|(_, ts, root)| crate::crypto::hash::log_leaf_value(*ts, root))
             .collect();
-        let inclusion = proof.inclusion.as_ref().ok_or_else(|| anyhow!("Missing inclusion proof"))?;
+        let inclusion = proof
+            .inclusion
+            .as_ref()
+            .ok_or_else(|| anyhow!("Missing inclusion proof"))?;
 
         self.verify_head_and_commit(
-            fth, tree_size, timestamp_opt, fth_is_updated,
-            &positions, &leaf_hashes, &inclusion.elements,
+            fth,
+            tree_size,
+            timestamp_opt,
+            fth_is_updated,
+            &positions,
+            &leaf_hashes,
+            &inclusion.elements,
             &std::collections::HashSet::new(),
         )?;
 
@@ -540,7 +687,11 @@ impl KtClient {
             for cand in 0..=(pp.results.len() as u32) {
                 if let Ok(d) = decode_search_ladder(&pp.results, cand) {
                     if d.len() == pp.results.len() {
-                        found = d.iter().filter(|lk| lk.inclusion).map(|lk| lk.version).max();
+                        found = d
+                            .iter()
+                            .filter(|lk| lk.inclusion)
+                            .map(|lk| lk.version)
+                            .max();
                         break;
                     }
                 }
@@ -551,7 +702,10 @@ impl KtClient {
         let target = greatest.unwrap_or(0);
         let decoded = decode_search_ladder(&pp.results, target)?;
         if decoded.len() != pp.results.len() {
-            return Err(anyhow!("Owner ladder does not match target version {}", target));
+            return Err(anyhow!(
+                "Owner ladder does not match target version {}",
+                target
+            ));
         }
 
         let mut elements_offset = 0usize;
@@ -560,44 +714,66 @@ impl KtClient {
         for (j, lk) in decoded.iter().enumerate() {
             // termination consistency: existence beyond the greatest is impossible
             if lk.inclusion && greatest.map_or(true, |g| lk.version > g) {
-                return Err(anyhow!("Owner ladder shows v={} beyond the claimed greatest", lk.version));
+                return Err(anyhow!(
+                    "Owner ladder shows v={} beyond the claimed greatest",
+                    lk.version
+                ));
             }
 
             let next_slot = wire_index.len();
             let wi = *wire_index.entry(lk.version).or_insert(next_slot);
-            let step = binary_ladder.get(wi)
+            let step = binary_ladder
+                .get(wi)
                 .ok_or_else(|| anyhow!("Ladder step missing for v={}", lk.version))?;
 
             if !vrf_cache.contains_key(&lk.version) {
                 let vrf_input = construct_vrf_input(label, lk.version)?;
-                let out = crypto::ecvrf_verify(self.config.cipher_suite, &self.vrf_pk, &vrf_input, &step.proof)
-                    .with_context(|| format!("Owner ladder VRF verify failed at v={}", lk.version))?;
+                let out = crypto::ecvrf_verify(
+                    self.config.cipher_suite,
+                    &self.vrf_pk,
+                    &vrf_input,
+                    &step.proof,
+                )
+                .with_context(|| format!("Owner ladder VRF verify failed at v={}", lk.version))?;
                 vrf_cache.insert(lk.version, out.to_vec());
             }
 
             let commitment = if lk.inclusion {
-                Some(step.commitment.clone()
-                    .ok_or_else(|| anyhow!("Inclusion for v={} but ladder has no commitment", lk.version))?)
+                Some(step.commitment.clone().ok_or_else(|| {
+                    anyhow!(
+                        "Inclusion for v={} but ladder has no commitment",
+                        lk.version
+                    )
+                })?)
             } else {
                 None
             };
 
             let (root, consumed) = PrefixVerifier::compute_root_from_result(
-                pp, j, &vrf_cache[&lk.version], commitment.as_deref(), elements_offset,
+                pp,
+                j,
+                &vrf_cache[&lk.version],
+                commitment.as_deref(),
+                elements_offset,
             )?;
             elements_offset += consumed;
 
             match &computed_root {
                 None => computed_root = Some(root),
                 Some(prev) if prev == &root => {}
-                Some(_) => return Err(anyhow!("Owner ladder results disagree on prefix-tree root")),
+                Some(_) => {
+                    return Err(anyhow!("Owner ladder results disagree on prefix-tree root"));
+                }
             }
         }
 
         if elements_offset != pp.elements.len() {
             return Err(anyhow!("Owner ladder has unused proof elements"));
         }
-        Ok((computed_root.ok_or_else(|| anyhow!("Owner ladder contained no results"))?, greatest))
+        Ok((
+            computed_root.ok_or_else(|| anyhow!("Owner ladder contained no results"))?,
+            greatest,
+        ))
     }
 
     // §13.6: walks the recent distinguished heads and retains them for credential
@@ -617,9 +793,19 @@ impl KtClient {
     }
 
     // §10.1 replay; TODO: bound "recent" once the shared limit is configured
-    fn verify_distinguished(&mut self, stop: Option<u64>, resp: &DistinguishedResponse) -> Result<()> {
-        let fth = resp.full_tree_head.as_ref().ok_or(anyhow!("Missing FullTreeHead"))?;
-        let proof = resp.distinguished.as_ref().ok_or(anyhow!("Missing distinguished proof"))?;
+    fn verify_distinguished(
+        &mut self,
+        stop: Option<u64>,
+        resp: &DistinguishedResponse,
+    ) -> Result<()> {
+        let fth = resp
+            .full_tree_head
+            .as_ref()
+            .ok_or(anyhow!("Missing FullTreeHead"))?;
+        let proof = resp
+            .distinguished
+            .as_ref()
+            .ok_or(anyhow!("Missing distinguished proof"))?;
 
         let (tree_size, timestamp_opt, fth_is_updated) = self.tree_size_for_fth(fth)?;
         if tree_size == 0 {
@@ -644,7 +830,9 @@ impl KtClient {
         let mut stack = vec![(log_math::root(tree_size), 0u64, rightmost_ts)];
         while let Some((curr, lo, hi)) = stack.pop() {
             // step 1 (§6.1 interval selection)
-            if hi.saturating_sub(lo) < rmw { continue; }
+            if hi.saturating_sub(lo) < rmw {
+                continue;
+            }
             let ts = reader.timestamp(curr)?;
             walked.push(curr);
             if !log_math::is_leaf(curr) && !stop.map_or(false, |s| curr <= s) {
@@ -660,10 +848,13 @@ impl KtClient {
         let entry_roots = BTreeMap::new();
         let leaf_data = reader.finish(&entry_roots)?;
         let positions: Vec<u64> = leaf_data.iter().map(|(p, _, _)| *p).collect();
-        let leaf_hashes: Vec<Vec<u8>> = leaf_data.iter()
+        let leaf_hashes: Vec<Vec<u8>> = leaf_data
+            .iter()
             .map(|(_, ts, root)| crate::crypto::hash::log_leaf_value(*ts, root))
             .collect();
-        let inclusion = proof.inclusion.as_ref()
+        let inclusion = proof
+            .inclusion
+            .as_ref()
             .ok_or_else(|| anyhow!("Missing inclusion proof"))?;
 
         // §14.2.1: also derive the full subtrees at each walked distinguished
@@ -674,18 +865,26 @@ impl KtClient {
         }
 
         let captured = self.verify_head_and_commit(
-            fth, tree_size, timestamp_opt, fth_is_updated,
-            &positions, &leaf_hashes, &inclusion.elements,
+            fth,
+            tree_size,
+            timestamp_opt,
+            fth_is_updated,
+            &positions,
+            &leaf_hashes,
+            &inclusion.elements,
             &extra_wanted,
         )?;
 
-        let by_pos: BTreeMap<u64, (u64, Vec<u8>)> = leaf_data.into_iter()
+        let by_pos: BTreeMap<u64, (u64, Vec<u8>)> = leaf_data
+            .into_iter()
             .map(|(p, ts, root)| (p, (ts, root)))
             .collect();
-        self.distinguished_entries = walked.into_iter()
+        self.distinguished_entries = walked
+            .into_iter()
             .filter_map(|p| {
                 let (ts, prefix_root) = by_pos.get(&p)?.clone();
-                let peaks: Option<Vec<Vec<u8>>> = log_math::get_roots(p + 1).into_iter()
+                let peaks: Option<Vec<Vec<u8>>> = log_math::get_roots(p + 1)
+                    .into_iter()
                     .map(|n| captured.get(&n).cloned())
                     .collect();
                 Some((p, (ts, prefix_root, peaks?)))
@@ -708,7 +907,8 @@ impl KtClient {
 
     pub fn export_distinguished_roots(&self) -> Result<crate::client::gossip::GossipRoots> {
         Ok(crate::client::gossip::GossipRoots {
-            roots: self.distinguished_roots()?
+            roots: self
+                .distinguished_roots()?
                 .into_iter()
                 .map(|(pos, root)| (pos, hex::encode(root)))
                 .collect(),
@@ -723,8 +923,12 @@ impl KtClient {
         if n == 0 {
             return Err(anyhow!("No overlapping distinguished heads to compare"));
         }
-        let a: Vec<Vec<u8>> = mine[mine.len() - n..].iter().map(|(_, r)| r.clone()).collect();
-        let b: Vec<Vec<u8>> = theirs.roots[theirs.roots.len() - n..].iter()
+        let a: Vec<Vec<u8>> = mine[mine.len() - n..]
+            .iter()
+            .map(|(_, r)| r.clone())
+            .collect();
+        let b: Vec<Vec<u8>> = theirs.roots[theirs.roots.len() - n..]
+            .iter()
             .map(|(_, r)| Ok(hex::decode(r)?))
             .collect::<Result<_>>()?;
         crate::client::verifier::compare_roots(&a, &b)
@@ -741,7 +945,8 @@ impl KtClient {
         let req = OwnerMonitorRequest {
             last: self.state.as_ref().map(|s| s.tree_size),
             label: user.clone(),
-            entries: entries.into_iter()
+            entries: entries
+                .into_iter()
                 .map(|(position, version)| MonitorMapEntry { position, version })
                 .collect(),
             start,
@@ -766,19 +971,32 @@ impl KtClient {
         greatest_version: Option<u32>,
         resp: &OwnerMonitorResponse,
     ) -> Result<()> {
-        let fth = resp.full_tree_head.as_ref().ok_or(anyhow!("Missing FullTreeHead"))?;
-        let proof = resp.monitor.as_ref().ok_or(anyhow!("Missing monitor proof"))?;
+        let fth = resp
+            .full_tree_head
+            .as_ref()
+            .ok_or(anyhow!("Missing FullTreeHead"))?;
+        let proof = resp
+            .monitor
+            .as_ref()
+            .ok_or(anyhow!("Missing monitor proof"))?;
 
         let (tree_size, timestamp_opt, fth_is_updated) = self.tree_size_for_fth(fth)?;
-        if tree_size == 0 { return Err(anyhow!("Cannot monitor an empty tree")); }
+        if tree_size == 0 {
+            return Err(anyhow!("Cannot monitor an empty tree"));
+        }
         if fth_is_updated {
             if let Some(head_ts) = timestamp_opt {
-                self.check_timestamp_bounds(head_ts).context("TreeHead timestamp out of bounds")?;
+                self.check_timestamp_bounds(head_ts)
+                    .context("TreeHead timestamp out of bounds")?;
             }
         }
         let bound = greatest_version.unwrap_or(u32::MAX);
 
-        let material = self.version_material.get(label).cloned().unwrap_or_default();
+        let material = self
+            .version_material
+            .get(label)
+            .cloned()
+            .unwrap_or_default();
         let rmw = self.config.reasonable_monitoring_window;
         let mut reader = ProofReader::new(proof);
         let frontier = log_math::get_frontier(tree_size);
@@ -792,12 +1010,31 @@ impl KtClient {
         let mut vrf_cache: HashMap<u32, Vec<u8>> = HashMap::new();
 
         // §8.2 contact part for the map entries
-        self.replay_contact_ladders(label, map, tree_size, rmw, &material, &mut reader, &mut entry_roots)?;
+        self.replay_contact_ladders(
+            label,
+            map,
+            tree_size,
+            rmw,
+            &material,
+            &mut reader,
+            &mut entry_roots,
+        )?;
 
         // §8.3 second algorithm walk, mirroring the server's emission order
         self.replay_owner_walk(
-            label, log_math::root(tree_size), 0, rightmost_ts, start, tree_size, rmw, bound,
-            &resp.binary_ladder, &mut reader, &mut wire_index, &mut vrf_cache, &mut entry_roots,
+            label,
+            log_math::root(tree_size),
+            0,
+            rightmost_ts,
+            start,
+            tree_size,
+            rmw,
+            bound,
+            &resp.binary_ladder,
+            &mut reader,
+            &mut wire_index,
+            &mut vrf_cache,
+            &mut entry_roots,
         )?;
 
         let owner_ladder_ok = resp.binary_ladder.len() == wire_index.len() || wire_index.is_empty();
@@ -807,14 +1044,23 @@ impl KtClient {
 
         let leaf_data = reader.finish(&entry_roots)?;
         let positions: Vec<u64> = leaf_data.iter().map(|(p, _, _)| *p).collect();
-        let leaf_hashes: Vec<Vec<u8>> = leaf_data.iter()
+        let leaf_hashes: Vec<Vec<u8>> = leaf_data
+            .iter()
             .map(|(_, ts, root)| crate::crypto::hash::log_leaf_value(*ts, root))
             .collect();
-        let inclusion = proof.inclusion.as_ref().ok_or_else(|| anyhow!("Missing inclusion proof"))?;
+        let inclusion = proof
+            .inclusion
+            .as_ref()
+            .ok_or_else(|| anyhow!("Missing inclusion proof"))?;
 
         self.verify_head_and_commit(
-            fth, tree_size, timestamp_opt, fth_is_updated,
-            &positions, &leaf_hashes, &inclusion.elements,
+            fth,
+            tree_size,
+            timestamp_opt,
+            fth_is_updated,
+            &positions,
+            &leaf_hashes,
+            &inclusion.elements,
             &std::collections::HashSet::new(),
         )?;
         Ok(())
@@ -838,41 +1084,94 @@ impl KtClient {
         entry_roots: &mut BTreeMap<u64, Vec<u8>>,
     ) -> Result<()> {
         // step 1
-        if right_ts.saturating_sub(left_ts) < rmw { return Ok(()); }
+        if right_ts.saturating_sub(left_ts) < rmw {
+            return Ok(());
+        }
         let node_ts = reader.timestamp(node)?;
 
-        let right_child = if log_math::is_leaf(node) { None } else { log_math::ibst_right_child(node, tree_size) };
-        let left_child = if log_math::is_leaf(node) { None } else { Some(log_math::left_child(node)) };
+        let right_child = if log_math::is_leaf(node) {
+            None
+        } else {
+            log_math::ibst_right_child(node, tree_size)
+        };
+        let left_child = if log_math::is_leaf(node) {
+            None
+        } else {
+            Some(log_math::left_child(node))
+        };
 
         // step 2
         if node <= start {
             if let Some(rc) = right_child {
-                self.replay_owner_walk(label, rc, node_ts, right_ts, start, tree_size, rmw, bound,
-                    binary_ladder, reader, wire_index, vrf_cache, entry_roots)?;
+                self.replay_owner_walk(
+                    label,
+                    rc,
+                    node_ts,
+                    right_ts,
+                    start,
+                    tree_size,
+                    rmw,
+                    bound,
+                    binary_ladder,
+                    reader,
+                    wire_index,
+                    vrf_cache,
+                    entry_roots,
+                )?;
             }
             return Ok(());
         }
 
         // step 3
         if let Some(lc) = left_child {
-            self.replay_owner_walk(label, lc, left_ts, node_ts, start, tree_size, rmw, bound,
-                binary_ladder, reader, wire_index, vrf_cache, entry_roots)?;
+            self.replay_owner_walk(
+                label,
+                lc,
+                left_ts,
+                node_ts,
+                start,
+                tree_size,
+                rmw,
+                bound,
+                binary_ladder,
+                reader,
+                wire_index,
+                vrf_cache,
+                entry_roots,
+            )?;
         }
 
         // step 5
         let pp = reader.prefix_proof(node)?;
-        let (root, greatest) = self.verify_owner_ladder(
-            label, pp, wire_index, vrf_cache, binary_ladder,
-        ).with_context(|| format!("Owner-monitor ladder failed at entry {}", node))?;
+        let (root, greatest) = self
+            .verify_owner_ladder(label, pp, wire_index, vrf_cache, binary_ladder)
+            .with_context(|| format!("Owner-monitor ladder failed at entry {}", node))?;
         if greatest.map_or(false, |g| g > bound) {
-            return Err(anyhow!("Unexpected version {} exceeds advertised greatest {}", greatest.unwrap(), bound));
+            return Err(anyhow!(
+                "Unexpected version {} exceeds advertised greatest {}",
+                greatest.unwrap(),
+                bound
+            ));
         }
         record_entry_root(entry_roots, node, root)?;
 
         // step 6
         if let Some(rc) = right_child {
-            self.replay_owner_walk(label, rc, node_ts, right_ts, start, tree_size, rmw, bound,
-                binary_ladder, reader, wire_index, vrf_cache, entry_roots)?;
+            self.replay_owner_walk(
+                label,
+                rc,
+                node_ts,
+                right_ts,
+                start,
+                tree_size,
+                rmw,
+                bound,
+                binary_ladder,
+                reader,
+                wire_index,
+                vrf_cache,
+                entry_roots,
+            )?;
         }
         Ok(())
     }
@@ -880,7 +1179,10 @@ impl KtClient {
     // --- Helpers ---
 
     fn get_consistency_req(&self) -> Option<Consistency> {
-        self.state.as_ref().map(|s| Consistency { last: Some(s.tree_size), distinguished: None })
+        self.state.as_ref().map(|s| Consistency {
+            last: Some(s.tree_size),
+            distinguished: None,
+        })
     }
 
     async fn verify_update_response(
@@ -890,15 +1192,25 @@ impl KtClient {
         sent_values: &[Vec<u8>],
         resp: &UpdateResponse,
     ) -> Result<()> {
-        let proof = resp.update.as_ref().ok_or(anyhow!("Missing update proof"))?;
-        let fth = resp.full_tree_head.as_ref().ok_or(anyhow!("Missing FullTreeHead"))?;
+        let proof = resp
+            .update
+            .as_ref()
+            .ok_or(anyhow!("Missing update proof"))?;
+        let fth = resp
+            .full_tree_head
+            .as_ref()
+            .ok_or(anyhow!("Missing FullTreeHead"))?;
         let th = fth.tree_head.as_ref().ok_or(anyhow!("Missing TreeHead"))?;
 
         if th.tree_size == 0 {
             return Err(anyhow!("Tree size is 0"));
         }
         if resp.position >= th.tree_size {
-            return Err(anyhow!("Insertion position {} outside tree of size {}", resp.position, th.tree_size));
+            return Err(anyhow!(
+                "Insertion position {} outside tree of size {}",
+                resp.position,
+                th.tree_size
+            ));
         }
 
         // §13.5 step 2: non-empty response values mean the request was disregarded
@@ -912,22 +1224,38 @@ impl KtClient {
             return Err(anyhow!("Empty UpdateResponse.info"));
         }
         if resp.info.len() != effective_values.len() {
-            return Err(anyhow!("info length {} != covered values {}", resp.info.len(), effective_values.len()));
+            return Err(anyhow!(
+                "info length {} != covered values {}",
+                resp.info.len(),
+                effective_values.len()
+            ));
         }
 
         // §13.5 step 4
         if resp.binary_ladder.len() != effective_values.len() {
-            return Err(anyhow!("Binary ladder length {} != covered versions {}", resp.binary_ladder.len(), effective_values.len()));
+            return Err(anyhow!(
+                "Binary ladder length {} != covered versions {}",
+                resp.binary_ladder.len(),
+                effective_values.len()
+            ));
         }
         let start_ver = advertised_greatest.map(|v| v + 1).unwrap_or(0);
         for (k, step) in resp.binary_ladder.iter().enumerate() {
             let ver = start_ver + k as u32;
-            let vrf_input = construct_vrf_input(label, ver)
-                .context("VRF input construction failed")?;
-            crypto::ecvrf_verify(self.config.cipher_suite, &self.vrf_pk, &vrf_input, &step.proof)
-                .with_context(|| format!("Update ladder VRF verify failed at v={}", ver))?;
+            let vrf_input =
+                construct_vrf_input(label, ver).context("VRF input construction failed")?;
+            crypto::ecvrf_verify(
+                self.config.cipher_suite,
+                &self.vrf_pk,
+                &vrf_input,
+                &step.proof,
+            )
+            .with_context(|| format!("Update ladder VRF verify failed at v={}", ver))?;
             if step.commitment.is_some() {
-                return Err(anyhow!("Commitment provided for v={} greater than advertised greatest_version", ver));
+                return Err(anyhow!(
+                    "Commitment provided for v={} greater than advertised greatest_version",
+                    ver
+                ));
             }
         }
 
@@ -937,7 +1265,9 @@ impl KtClient {
                 .with_context(|| format!("Commitment recompute failed at v={}", ver))?;
         }
 
-        if proof.prefix_proofs.is_empty() { return Err(anyhow!("Missing prefix proof")); }
+        if proof.prefix_proofs.is_empty() {
+            return Err(anyhow!("Missing prefix proof"));
+        }
 
         // TODO: §9.1 proof verification and candidate-root reconstruction; until then
         // updates leave the trusted state alone rather than storing an unverified head
@@ -950,8 +1280,14 @@ impl KtClient {
         requested_version: Option<u32>,
         resp: &SearchResponse,
     ) -> Result<()> {
-        let fth = resp.full_tree_head.as_ref().ok_or(anyhow!("Missing FullTreeHead"))?;
-        let proof = resp.search.as_ref().ok_or(anyhow!("Missing CombinedTreeProof"))?;
+        let fth = resp
+            .full_tree_head
+            .as_ref()
+            .ok_or(anyhow!("Missing FullTreeHead"))?;
+        let proof = resp
+            .search
+            .as_ref()
+            .ok_or(anyhow!("Missing CombinedTreeProof"))?;
 
         let (tree_size, timestamp_opt, fth_is_updated) = self.tree_size_for_fth(fth)?;
         if tree_size == 0 {
@@ -977,7 +1313,9 @@ impl KtClient {
             if resp.binary_ladder.len() != base.len() {
                 return Err(anyhow!(
                     "Binary ladder length mismatch: got {}, expected {} for target v={}",
-                    resp.binary_ladder.len(), base.len(), target_version
+                    resp.binary_ladder.len(),
+                    base.len(),
+                    target_version
                 ));
             }
             for (i, &v) in base.iter().enumerate() {
@@ -986,8 +1324,9 @@ impl KtClient {
         }
 
         // §12.1: the target-version commitment is omitted; a server-sent one must match
-        let target_commitment = crate::crypto::hash::commit(label, target_version, &value.value, &resp.opening)
-            .context("Commitment computation failed")?;
+        let target_commitment =
+            crate::crypto::hash::commit(label, target_version, &value.value, &resp.opening)
+                .context("Commitment computation failed")?;
 
         // §11.4
         if fth_is_updated {
@@ -1016,11 +1355,20 @@ impl KtClient {
             let mut first_equal: Option<u64> = None;
             for &entry in &frontier {
                 let pp = reader.prefix_proof(entry)?;
-                let (root, relation) = self.verify_ladder_proof(
-                    label, pp, target_version, &mut wire_index, &mut vrf_cache,
-                    &resp.binary_ladder, &target_commitment, true, entry == rightmost,
-                    &mut material,
-                ).with_context(|| format!("Ladder verification failed at entry {}", entry))?;
+                let (root, relation) = self
+                    .verify_ladder_proof(
+                        label,
+                        pp,
+                        target_version,
+                        &mut wire_index,
+                        &mut vrf_cache,
+                        &resp.binary_ladder,
+                        &target_commitment,
+                        true,
+                        entry == rightmost,
+                        &mut material,
+                    )
+                    .with_context(|| format!("Ladder verification failed at entry {}", entry))?;
                 record_entry_root(&mut entry_roots, entry, root)?;
                 if relation == std::cmp::Ordering::Equal && first_equal.is_none() {
                     first_equal = Some(entry);
@@ -1029,8 +1377,15 @@ impl KtClient {
             terminal = first_equal.unwrap_or(rightmost);
         } else {
             terminal = self.simulate_fixed_search(
-                label, tree_size, target_version, &mut reader,
-                &mut wire_index, &mut vrf_cache, resp, &target_commitment, &mut entry_roots,
+                label,
+                tree_size,
+                target_version,
+                &mut reader,
+                &mut wire_index,
+                &mut vrf_cache,
+                resp,
+                &target_commitment,
+                &mut entry_roots,
                 &mut material,
             )?;
         }
@@ -1038,7 +1393,8 @@ impl KtClient {
         if resp.binary_ladder.len() != wire_index.len() {
             return Err(anyhow!(
                 "Binary ladder has {} steps but only {} versions were looked up",
-                resp.binary_ladder.len(), wire_index.len()
+                resp.binary_ladder.len(),
+                wire_index.len()
             ));
         }
 
@@ -1046,16 +1402,24 @@ impl KtClient {
         let leaf_data = reader.finish(&entry_roots)?;
 
         let positions: Vec<u64> = leaf_data.iter().map(|(p, _, _)| *p).collect();
-        let leaf_hashes: Vec<Vec<u8>> = leaf_data.iter()
+        let leaf_hashes: Vec<Vec<u8>> = leaf_data
+            .iter()
             .map(|(_, ts, root)| crate::crypto::hash::log_leaf_value(*ts, root))
             .collect();
 
-        let inclusion = proof.inclusion.as_ref()
+        let inclusion = proof
+            .inclusion
+            .as_ref()
             .ok_or_else(|| anyhow!("Missing inclusion proof"))?;
 
         self.verify_head_and_commit(
-            fth, tree_size, timestamp_opt, fth_is_updated,
-            &positions, &leaf_hashes, &inclusion.elements,
+            fth,
+            tree_size,
+            timestamp_opt,
+            fth_is_updated,
+            &positions,
+            &leaf_hashes,
+            &inclusion.elements,
             &std::collections::HashSet::new(),
         )?;
         self.save_state()?;
@@ -1068,7 +1432,9 @@ impl KtClient {
                 stash.insert(v, (out.clone(), comm));
             }
         }
-        self.monitoring_map.entry(label.to_vec()).or_default()
+        self.monitoring_map
+            .entry(label.to_vec())
+            .or_default()
             .insert(terminal, target_version);
 
         Ok(())
@@ -1103,7 +1469,8 @@ impl KtClient {
                 if greatest {
                     return Err(anyhow!(
                         "Inclusion proof for v={} contradicts claimed greatest version {}",
-                        lk.version, target_version
+                        lk.version,
+                        target_version
                     ));
                 }
                 relation = std::cmp::Ordering::Greater;
@@ -1112,7 +1479,8 @@ impl KtClient {
                 if greatest && is_rightmost {
                     return Err(anyhow!(
                         "Non-inclusion proof for v={} at the rightmost entry contradicts claimed greatest version {}",
-                        lk.version, target_version
+                        lk.version,
+                        target_version
                     ));
                 }
                 relation = std::cmp::Ordering::Less;
@@ -1120,7 +1488,8 @@ impl KtClient {
 
             let next_slot = wire_index.len();
             let wi = *wire_index.entry(lk.version).or_insert(next_slot);
-            let step = binary_ladder.get(wi)
+            let step = binary_ladder
+                .get(wi)
                 .ok_or_else(|| anyhow!("Ladder step missing for v={}", lk.version))?;
 
             if !vrf_cache.contains_key(&lk.version) {
@@ -1131,7 +1500,8 @@ impl KtClient {
                     &self.vrf_pk,
                     &vrf_input,
                     &step.proof,
-                ).with_context(|| format!("Binary ladder VRF verify failed at v={}", lk.version))?;
+                )
+                .with_context(|| format!("Binary ladder VRF verify failed at v={}", lk.version))?;
                 vrf_cache.insert(lk.version, out.to_vec());
             }
 
@@ -1146,14 +1516,20 @@ impl KtClient {
                     }
                     Some(target_commitment.to_vec())
                 } else {
-                    Some(step.commitment.clone().ok_or_else(|| anyhow!(
-                        "Inclusion result for v={} but binary ladder has no commitment", lk.version
-                    ))?)
+                    Some(step.commitment.clone().ok_or_else(|| {
+                        anyhow!(
+                            "Inclusion result for v={} but binary ladder has no commitment",
+                            lk.version
+                        )
+                    })?)
                 }
             } else {
                 // only a greatest-version claim makes versions above the target globally absent
                 if greatest && step.commitment.is_some() && lk.version > target_version {
-                    return Err(anyhow!("Commitment provided for non-existent v={}", lk.version));
+                    return Err(anyhow!(
+                        "Commitment provided for non-existent v={}",
+                        lk.version
+                    ));
                 }
                 None
             };
@@ -1177,7 +1553,8 @@ impl KtClient {
                 Some(prev) => {
                     return Err(anyhow!(
                         "PrefixProof results disagree on prefix-tree root: {} vs {}",
-                        hex::encode(&root), hex::encode(prev)
+                        hex::encode(&root),
+                        hex::encode(prev)
                     ));
                 }
             }
@@ -1217,24 +1594,37 @@ impl KtClient {
         target_commitment: &[u8],
     ) -> Result<(Vec<u8>, bool)> {
         if prefix_proof.results.len() != 1 {
-            return Err(anyhow!("Expected a single-lookup PrefixProof, got {} results", prefix_proof.results.len()));
+            return Err(anyhow!(
+                "Expected a single-lookup PrefixProof, got {} results",
+                prefix_proof.results.len()
+            ));
         }
         let inclusion = prefix_proof.results[0].result_type == 1;
 
         let next_slot = wire_index.len();
         let wi = *wire_index.entry(version).or_insert(next_slot);
-        let step = binary_ladder.get(wi)
+        let step = binary_ladder
+            .get(wi)
             .ok_or_else(|| anyhow!("Ladder step missing for v={}", version))?;
         if !vrf_cache.contains_key(&version) {
             let vrf_input = construct_vrf_input(label, version)?;
-            let out = crypto::ecvrf_verify(self.config.cipher_suite, &self.vrf_pk, &vrf_input, &step.proof)
-                .with_context(|| format!("VRF verify failed at v={}", version))?;
+            let out = crypto::ecvrf_verify(
+                self.config.cipher_suite,
+                &self.vrf_pk,
+                &vrf_input,
+                &step.proof,
+            )
+            .with_context(|| format!("VRF verify failed at v={}", version))?;
             vrf_cache.insert(version, out.to_vec());
         }
 
         let commitment = inclusion.then(|| target_commitment.to_vec());
         let (root, consumed) = PrefixVerifier::compute_root_from_result(
-            prefix_proof, 0, &vrf_cache[&version], commitment.as_deref(), 0,
+            prefix_proof,
+            0,
+            &vrf_cache[&version],
+            commitment.as_deref(),
+            0,
         )?;
         if consumed != prefix_proof.elements.len() {
             return Err(anyhow!("Single-lookup PrefixProof has unused elements"));
@@ -1259,7 +1649,8 @@ impl KtClient {
         let rightmost_ts = reader.timestamp(tree_size - 1)?;
         let max_life = self.config.maximum_lifetime;
         let rmw = self.config.reasonable_monitoring_window;
-        let is_expired = |ts: u64| max_life.map_or(false, |ml| rightmost_ts.saturating_sub(ts) >= ml);
+        let is_expired =
+            |ts: u64| max_life.map_or(false, |ml| rightmost_ts.saturating_sub(ts) >= ml);
 
         let mut curr = log_math::root(tree_size);
         // §6.1 selection interval, tracked along the walk
@@ -1275,7 +1666,11 @@ impl KtClient {
         loop {
             let ts = reader.timestamp(curr)?;
             let is_dist = parent_dist && bounds.1.saturating_sub(bounds.0) >= rmw;
-            let right_child = if log_math::is_leaf(curr) { None } else { log_math::ibst_right_child(curr, tree_size) };
+            let right_child = if log_math::is_leaf(curr) {
+                None
+            } else {
+                log_math::ibst_right_child(curr, tree_size)
+            };
 
             // step 1
             if is_expired(ts) {
@@ -1295,10 +1690,20 @@ impl KtClient {
 
             // step 2
             let pp = reader.prefix_proof(curr)?;
-            let (root, relation) = self.verify_ladder_proof(
-                label, pp, target_version, wire_index, vrf_cache,
-                &resp.binary_ladder, target_commitment, false, false, material,
-            ).with_context(|| format!("Ladder verification failed at entry {}", curr))?;
+            let (root, relation) = self
+                .verify_ladder_proof(
+                    label,
+                    pp,
+                    target_version,
+                    wire_index,
+                    vrf_cache,
+                    &resp.binary_ladder,
+                    target_commitment,
+                    false,
+                    false,
+                    material,
+                )
+                .with_context(|| format!("Ladder verification failed at entry {}", curr))?;
             record_entry_root(entry_roots, curr, root)?;
             inspected.push((curr, relation));
 
@@ -1315,17 +1720,16 @@ impl KtClient {
                 },
                 // step 4
                 std::cmp::Ordering::Greater => {
-                    if log_math::is_leaf(curr) { break; }
+                    if log_math::is_leaf(curr) {
+                        break;
+                    }
                     bounds.1 = ts;
                     parent_dist = is_dist;
                     curr = log_math::left_child(curr);
                 }
                 // step 5
                 std::cmp::Ordering::Equal => {
-                    if !expired_on_path
-                        || is_dist
-                        || left_path.iter().any(|&(_, d)| d)
-                    {
+                    if !expired_on_path || is_dist || left_path.iter().any(|&(_, d)| d) {
                         terminal = Some(curr);
                         break;
                     }
@@ -1336,7 +1740,8 @@ impl KtClient {
 
         // step 6
         if terminal.is_none() {
-            let identified = inspected.iter()
+            let identified = inspected
+                .iter()
                 .filter(|&&(_, r)| r == std::cmp::Ordering::Greater)
                 .map(|&(p, _)| p)
                 .min()
@@ -1351,10 +1756,17 @@ impl KtClient {
             }
 
             let pp = reader.prefix_proof(identified)?;
-            let (root, included) = self.verify_single_lookup(
-                label, pp, target_version, wire_index, vrf_cache,
-                &resp.binary_ladder, target_commitment,
-            ).with_context(|| format!("Target-version lookup failed at entry {}", identified))?;
+            let (root, included) = self
+                .verify_single_lookup(
+                    label,
+                    pp,
+                    target_version,
+                    wire_index,
+                    vrf_cache,
+                    &resp.binary_ladder,
+                    target_commitment,
+                )
+                .with_context(|| format!("Target-version lookup failed at entry {}", identified))?;
             record_entry_root(entry_roots, identified, root)?;
 
             if !included {
@@ -1368,20 +1780,36 @@ impl KtClient {
 
     /// Bundles the retained signed head for out-of-band exchange (arch §3.3).
     pub fn export_head(&self) -> Result<crate::client::gossip::GossipHead> {
-        let state = self.state.as_ref().ok_or_else(|| anyhow!("No verified state to export"))?;
-        let bytes = self.retained_head.as_ref().ok_or_else(|| anyhow!("No retained signed head"))?;
+        let state = self
+            .state
+            .as_ref()
+            .ok_or_else(|| anyhow!("No verified state to export"))?;
+        let bytes = self
+            .retained_head
+            .as_ref()
+            .ok_or_else(|| anyhow!("No retained signed head"))?;
         let head = prost::Message::decode(&bytes[..])?;
-        Ok(crate::client::gossip::GossipHead::new(state.tree_size, &state.root_hash, &head))
+        Ok(crate::client::gossip::GossipHead::new(
+            state.tree_size,
+            &state.root_hash,
+            &head,
+        ))
     }
 
     /// Compares a head received over a partition-resistant channel with the
     /// retained view; a same-size root conflict yields exportable fork evidence.
-    pub fn check_gossiped_head(&self, gossip: &crate::client::gossip::GossipHead) -> Result<crate::client::gossip::GossipOutcome> {
-        use crate::client::gossip::{verify_gossip_head, ForkEvidence, GossipOutcome};
+    pub fn check_gossiped_head(
+        &self,
+        gossip: &crate::client::gossip::GossipHead,
+    ) -> Result<crate::client::gossip::GossipOutcome> {
+        use crate::client::gossip::{ForkEvidence, GossipOutcome, verify_gossip_head};
 
         verify_gossip_head(&self.config, gossip)?;
 
-        let state = self.state.as_ref().ok_or_else(|| anyhow!("No verified state to compare against"))?;
+        let state = self
+            .state
+            .as_ref()
+            .ok_or_else(|| anyhow!("No verified state to compare against"))?;
         if gossip.tree_size != state.tree_size {
             return Ok(GossipOutcome::Inconclusive);
         }
@@ -1399,7 +1827,10 @@ impl KtClient {
         }))
     }
 
-    pub async fn get_credential(&mut self, label: Vec<u8>) -> Result<crate::proto::transparency::Credential> {
+    pub async fn get_credential(
+        &mut self,
+        label: Vec<u8>,
+    ) -> Result<crate::proto::transparency::Credential> {
         let req = crate::proto::transparency::GetCredentialRequest { label };
         Ok(self.client.clone().get_credential(req).await?.into_inner())
     }
@@ -1411,9 +1842,16 @@ impl KtClient {
         terminal_version: u32,
     ) -> Result<crate::proto::transparency::CredentialUpdate> {
         let req = crate::proto::transparency::GetCredentialUpdateRequest {
-            label, terminal_position, terminal_version,
+            label,
+            terminal_position,
+            terminal_version,
         };
-        Ok(self.client.clone().get_credential_update(req).await?.into_inner())
+        Ok(self
+            .client
+            .clone()
+            .get_credential_update(req)
+            .await?
+            .into_inner())
     }
 
     /// §14.2: transitions a verified provisional credential to a distinguished
@@ -1427,31 +1865,53 @@ impl KtClient {
         let terminal = self.credential_terminal(cred)?;
 
         // step 1
-        let (_, _, anchor_peaks) = self.distinguished_entries.get(&update.position)
-            .ok_or_else(|| anyhow!("CredentialUpdate anchors to an unknown distinguished log entry"))?;
+        let (_, _, anchor_peaks) = self
+            .distinguished_entries
+            .get(&update.position)
+            .ok_or_else(|| {
+                anyhow!("CredentialUpdate anchors to an unknown distinguished log entry")
+            })?;
         // step 2
-        let is_first_right = self.distinguished_entries.keys()
+        let is_first_right = self
+            .distinguished_entries
+            .keys()
             .filter(|&&p| p > terminal)
-            .min() == Some(&update.position);
+            .min()
+            == Some(&update.position);
         if !is_first_right {
-            return Err(anyhow!("CredentialUpdate position is not the first distinguished entry right of the search terminal"));
+            return Err(anyhow!(
+                "CredentialUpdate position is not the first distinguished entry right of the search terminal"
+            ));
         }
 
-        let proof = update.monitor.as_ref().ok_or_else(|| anyhow!("Missing monitor proof"))?;
+        let proof = update
+            .monitor
+            .as_ref()
+            .ok_or_else(|| anyhow!("Missing monitor proof"))?;
         let tree_size = update.position + 1;
 
         // material for the monitored version, recovered from the credential itself
-        let value = cred.value.as_ref().ok_or_else(|| anyhow!("Missing credential value"))?;
-        let commitment = crate::crypto::hash::commit(&cred.label, cred.version, &value.value, &cred.opening)?;
-        let ladder_step = cred.binary_ladder.iter()
+        let value = cred
+            .value
+            .as_ref()
+            .ok_or_else(|| anyhow!("Missing credential value"))?;
+        let commitment =
+            crate::crypto::hash::commit(&cred.label, cred.version, &value.value, &cred.opening)?;
+        let ladder_step = cred
+            .binary_ladder
+            .iter()
             .zip(base_binary_ladder(cred.version))
             .find(|(_, v)| *v == cred.version)
             .map(|(step, _)| step)
             .ok_or_else(|| anyhow!("Credential ladder missing the target version"))?;
         let vrf_input = construct_vrf_input(&cred.label, cred.version)?;
         let vrf_output = crypto::ecvrf_verify(
-            self.config.cipher_suite, &self.vrf_pk, &vrf_input, &ladder_step.proof,
-        )?.to_vec();
+            self.config.cipher_suite,
+            &self.vrf_pk,
+            &vrf_input,
+            &ladder_step.proof,
+        )?
+        .to_vec();
         let mut material: HashMap<u32, (Vec<u8>, Option<Vec<u8>>)> = HashMap::new();
         material.insert(cred.version, (vrf_output, Some(commitment)));
 
@@ -1472,7 +1932,10 @@ impl KtClient {
             let ts = reader.timestamp(curr)?;
             let dist = parent_dist && bounds.1.saturating_sub(bounds.0) >= rmw;
             ancestor_dist.insert(curr, dist);
-            if !dist { parent_dist = false; break; }
+            if !dist {
+                parent_dist = false;
+                break;
+            }
             if terminal < curr {
                 bounds.1 = ts;
                 curr = log_math::left_child(curr);
@@ -1486,16 +1949,22 @@ impl KtClient {
         }
 
         let mut list: Vec<u64> = log_math::ibst_direct_path(terminal, tree_size)
-            .into_iter().filter(|&a| a > terminal).collect();
+            .into_iter()
+            .filter(|&a| a > terminal)
+            .collect();
         list.sort();
-        if let Some(cut) = list.iter().position(|a| *ancestor_dist.get(a).unwrap_or(&false)) {
+        if let Some(cut) = list
+            .iter()
+            .position(|a| *ancestor_dist.get(a).unwrap_or(&false))
+        {
             list.truncate(cut + 1);
         }
 
         let mut entry_roots: BTreeMap<u64, Vec<u8>> = BTreeMap::new();
         for &e in &list {
             let pp = reader.prefix_proof(e)?;
-            let root = self.verify_monitoring_ladder(&material, pp, cred.version)
+            let root = self
+                .verify_monitoring_ladder(&material, pp, cred.version)
                 .with_context(|| format!("CredentialUpdate ladder failed at entry {}", e))?;
             record_entry_root(&mut entry_roots, e, root)?;
         }
@@ -1503,19 +1972,30 @@ impl KtClient {
         // step 4
         let leaf_data = reader.finish(&entry_roots)?;
         let positions: Vec<u64> = leaf_data.iter().map(|(p, _, _)| *p).collect();
-        let leaf_hashes: Vec<Vec<u8>> = leaf_data.iter()
+        let leaf_hashes: Vec<Vec<u8>> = leaf_data
+            .iter()
             .map(|(_, ts, root)| crate::crypto::hash::log_leaf_value(*ts, root))
             .collect();
-        let inclusion = proof.inclusion.as_ref().ok_or_else(|| anyhow!("Missing inclusion proof"))?;
+        let inclusion = proof
+            .inclusion
+            .as_ref()
+            .ok_or_else(|| anyhow!("Missing inclusion proof"))?;
 
         let (candidate_root, _) = LogVerifier::calculate_root_capturing(
-            &positions, &leaf_hashes, tree_size, &inclusion.elements,
-            &BTreeMap::new(), &std::collections::HashSet::new(),
-        ).context("CredentialUpdate view reconstruction failed")?;
+            &positions,
+            &leaf_hashes,
+            tree_size,
+            &inclusion.elements,
+            &BTreeMap::new(),
+            &std::collections::HashSet::new(),
+        )
+        .context("CredentialUpdate view reconstruction failed")?;
 
         let anchor_root = LogVerifier::accumulator_from_peaks(tree_size, anchor_peaks.clone())?;
         if candidate_root != anchor_root {
-            return Err(anyhow!("CredentialUpdate does not reconstruct the retained distinguished root"));
+            return Err(anyhow!(
+                "CredentialUpdate does not reconstruct the retained distinguished root"
+            ));
         }
 
         Ok(())
@@ -1523,11 +2003,24 @@ impl KtClient {
 
     /// Re-derives the terminal log entry of a provisional credential's search
     /// (the §6.3 leftmost entry containing the greatest version).
-    pub fn credential_terminal(&self, cred: &crate::proto::transparency::Credential) -> Result<u64> {
-        let th = cred.tree_head.as_ref().ok_or_else(|| anyhow!("Provisional credential missing TreeHead"))?;
-        let proof = cred.search.as_ref().ok_or_else(|| anyhow!("Provisional credential missing search proof"))?;
-        let value = cred.value.as_ref().ok_or_else(|| anyhow!("Missing credential value"))?;
-        let target_commitment = crate::crypto::hash::commit(&cred.label, cred.version, &value.value, &cred.opening)?;
+    pub fn credential_terminal(
+        &self,
+        cred: &crate::proto::transparency::Credential,
+    ) -> Result<u64> {
+        let th = cred
+            .tree_head
+            .as_ref()
+            .ok_or_else(|| anyhow!("Provisional credential missing TreeHead"))?;
+        let proof = cred
+            .search
+            .as_ref()
+            .ok_or_else(|| anyhow!("Provisional credential missing search proof"))?;
+        let value = cred
+            .value
+            .as_ref()
+            .ok_or_else(|| anyhow!("Missing credential value"))?;
+        let target_commitment =
+            crate::crypto::hash::commit(&cred.label, cred.version, &value.value, &cred.opening)?;
 
         let mut wire_index: HashMap<u32, usize> = HashMap::new();
         for (i, &v) in base_binary_ladder(cred.version).iter().enumerate() {
@@ -1546,8 +2039,16 @@ impl KtClient {
         for &entry in &frontier {
             let pp = reader.prefix_proof(entry)?;
             let (_, relation) = self.verify_ladder_proof(
-                &cred.label, pp, cred.version, &mut wire_index, &mut vrf_cache,
-                &cred.binary_ladder, &target_commitment, true, entry == rightmost, &mut material,
+                &cred.label,
+                pp,
+                cred.version,
+                &mut wire_index,
+                &mut vrf_cache,
+                &cred.binary_ladder,
+                &target_commitment,
+                true,
+                entry == rightmost,
+                &mut material,
             )?;
             if relation == std::cmp::Ordering::Equal && first_equal.is_none() {
                 first_equal = Some(entry);
@@ -1562,15 +2063,21 @@ impl KtClient {
         use crate::proto::transparency::CredentialType;
 
         // common step 1
-        let (_, dist_root, anchor_peaks) = self.distinguished_entries.get(&cred.position)
+        let (_, dist_root, anchor_peaks) = self
+            .distinguished_entries
+            .get(&cred.position)
             .ok_or_else(|| anyhow!("Credential anchors to an unknown distinguished log entry"))?;
 
         // common step 2 (§11.5)
-        let value = cred.value.as_ref().ok_or_else(|| anyhow!("Missing credential value"))?;
+        let value = cred
+            .value
+            .as_ref()
+            .ok_or_else(|| anyhow!("Missing credential value"))?;
 
         // common steps 3-4
-        let target_commitment = crate::crypto::hash::commit(&cred.label, cred.version, &value.value, &cred.opening)
-            .context("Commitment computation failed")?;
+        let target_commitment =
+            crate::crypto::hash::commit(&cred.label, cred.version, &value.value, &cred.opening)
+                .context("Commitment computation failed")?;
 
         let mut wire_index: HashMap<u32, usize> = HashMap::new();
         let mut vrf_cache: HashMap<u32, Vec<u8>> = HashMap::new();
@@ -1578,19 +2085,33 @@ impl KtClient {
 
         if cred.credential_type == CredentialType::Standard as i32 {
             // §14.1
-            let pp = cred.distinguished.as_ref()
+            let pp = cred
+                .distinguished
+                .as_ref()
                 .ok_or_else(|| anyhow!("Standard credential missing distinguished PrefixProof"))?;
 
-            let (root, _) = self.verify_ladder_proof(
-                &cred.label, pp, cred.version, &mut wire_index, &mut vrf_cache,
-                &cred.binary_ladder, &target_commitment, true, true, &mut material,
-            ).context("Credential ladder verification failed")?;
+            let (root, _) = self
+                .verify_ladder_proof(
+                    &cred.label,
+                    pp,
+                    cred.version,
+                    &mut wire_index,
+                    &mut vrf_cache,
+                    &cred.binary_ladder,
+                    &target_commitment,
+                    true,
+                    true,
+                    &mut material,
+                )
+                .context("Credential ladder verification failed")?;
 
             if cred.binary_ladder.len() != wire_index.len() {
                 return Err(anyhow!("Credential binary ladder has unused steps"));
             }
             if &root != dist_root {
-                return Err(anyhow!("Credential does not bind to the retained distinguished entry"));
+                return Err(anyhow!(
+                    "Credential does not bind to the retained distinguished entry"
+                ));
             }
 
             return Ok(());
@@ -1601,9 +2122,13 @@ impl KtClient {
         if cred.credential_type != CredentialType::Provisional as i32 {
             return Err(anyhow!("Unknown credential type"));
         }
-        let th = cred.tree_head.as_ref()
+        let th = cred
+            .tree_head
+            .as_ref()
             .ok_or_else(|| anyhow!("Provisional credential missing TreeHead"))?;
-        let proof = cred.search.as_ref()
+        let proof = cred
+            .search
+            .as_ref()
             .ok_or_else(|| anyhow!("Provisional credential missing search proof"))?;
 
         // step 1
@@ -1631,10 +2156,22 @@ impl KtClient {
         let mut first_equal: Option<u64> = None;
         for &entry in &frontier {
             let pp = reader.prefix_proof(entry)?;
-            let (root, relation) = self.verify_ladder_proof(
-                &cred.label, pp, cred.version, &mut wire_index, &mut vrf_cache,
-                &cred.binary_ladder, &target_commitment, true, entry == rightmost, &mut material,
-            ).with_context(|| format!("Credential ladder verification failed at entry {}", entry))?;
+            let (root, relation) = self
+                .verify_ladder_proof(
+                    &cred.label,
+                    pp,
+                    cred.version,
+                    &mut wire_index,
+                    &mut vrf_cache,
+                    &cred.binary_ladder,
+                    &target_commitment,
+                    true,
+                    entry == rightmost,
+                    &mut material,
+                )
+                .with_context(|| {
+                    format!("Credential ladder verification failed at entry {}", entry)
+                })?;
             record_entry_root(&mut entry_roots, entry, root)?;
             if relation == std::cmp::Ordering::Equal && first_equal.is_none() {
                 first_equal = Some(entry);
@@ -1643,16 +2180,21 @@ impl KtClient {
         let terminal = first_equal.unwrap_or(rightmost);
         // a standard credential could have been produced otherwise
         if terminal <= cred.position {
-            return Err(anyhow!("Provisional credential for a version already covered by the anchor"));
+            return Err(anyhow!(
+                "Provisional credential for a version already covered by the anchor"
+            ));
         }
 
         // step 3
         let leaf_data = reader.finish(&entry_roots)?;
         let positions: Vec<u64> = leaf_data.iter().map(|(p, _, _)| *p).collect();
-        let leaf_hashes: Vec<Vec<u8>> = leaf_data.iter()
+        let leaf_hashes: Vec<Vec<u8>> = leaf_data
+            .iter()
             .map(|(_, ts, root)| crate::crypto::hash::log_leaf_value(*ts, root))
             .collect();
-        let inclusion = proof.inclusion.as_ref()
+        let inclusion = proof
+            .inclusion
+            .as_ref()
             .ok_or_else(|| anyhow!("Missing inclusion proof"))?;
 
         let anchor_retained: BTreeMap<u64, Vec<u8>> = log_math::get_roots(cred.position + 1)
@@ -1660,9 +2202,14 @@ impl KtClient {
             .zip(anchor_peaks.iter().cloned())
             .collect();
         let (candidate_root, _) = LogVerifier::calculate_root_capturing(
-            &positions, &leaf_hashes, tree_size, &inclusion.elements,
-            &anchor_retained, &std::collections::HashSet::new(),
-        ).context("Provisional view reconstruction failed")?;
+            &positions,
+            &leaf_hashes,
+            tree_size,
+            &inclusion.elements,
+            &anchor_retained,
+            &std::collections::HashSet::new(),
+        )
+        .context("Provisional view reconstruction failed")?;
 
         // step 4
         self.verify_tree_head_signature(th, tree_size, &candidate_root)
@@ -1670,7 +2217,6 @@ impl KtClient {
 
         Ok(())
     }
-
 
     /// Shared tail of every verified operation: reconstruct the log root with
     /// retained subtrees (capturing any additionally wanted node values), verify
@@ -1700,11 +2246,19 @@ impl KtClient {
         }
 
         let (candidate_root, captured) = LogVerifier::calculate_root_capturing(
-            positions, leaf_hashes, tree_size, inclusion_elements, &self.retained_subtrees, &wanted,
-        ).context("Log tree root reconstruction failed")?;
+            positions,
+            leaf_hashes,
+            tree_size,
+            inclusion_elements,
+            &self.retained_subtrees,
+            &wanted,
+        )
+        .context("Log tree root reconstruction failed")?;
 
         if fth_is_updated {
-            let th = fth.tree_head.as_ref()
+            let th = fth
+                .tree_head
+                .as_ref()
                 .ok_or_else(|| anyhow!("FullTreeHead.head_type=updated but TreeHead is missing"))?;
             self.verify_tree_head_signature(th, tree_size, &candidate_root)
                 .context("TreeHead signature verification failed")?;
@@ -1721,14 +2275,19 @@ impl KtClient {
                 root_hash: candidate_root,
                 timestamp: timestamp_opt.unwrap_or(0),
             });
-            self.retained_subtrees = log_math::get_roots(tree_size).into_iter()
+            self.retained_subtrees = log_math::get_roots(tree_size)
+                .into_iter()
                 .filter_map(|n| captured.get(&n).map(|v| (n, v.clone())))
                 .collect();
         } else {
-            let prev = self.state.as_ref()
+            let prev = self
+                .state
+                .as_ref()
                 .ok_or_else(|| anyhow!("SAME head without previous state"))?;
             if candidate_root != prev.root_hash {
-                return Err(anyhow!("SAME head but proofs do not reconstruct the retained root"));
+                return Err(anyhow!(
+                    "SAME head but proofs do not reconstruct the retained root"
+                ));
             }
         }
         Ok(captured)
@@ -1743,20 +2302,26 @@ impl KtClient {
         candidate_root: &[u8],
         captured: &BTreeMap<u64, Vec<u8>>,
     ) -> Result<()> {
-        let ath = fth.auditor_tree_head.as_ref()
+        let ath = fth
+            .auditor_tree_head
+            .as_ref()
             .ok_or_else(|| anyhow!("Missing AuditorTreeHead in third-party-auditing mode"))?;
 
         // step 1
         if let Some((prev_auditor_size, _)) = self.auditor_head {
             if prev_auditor_size < self.config.auditor_start_pos {
-                return Err(anyhow!("Auditor started after the previously verified auditor position"));
+                return Err(anyhow!(
+                    "Auditor started after the previously verified auditor position"
+                ));
             }
         }
         // step 2
         let rightmost_ts = th.timestamp as u64;
         let auditor_ts = ath.timestamp as u64;
         if auditor_ts > rightmost_ts {
-            return Err(anyhow!("Auditor timestamp is ahead of the rightmost log entry"));
+            return Err(anyhow!(
+                "Auditor timestamp is ahead of the rightmost log entry"
+            ));
         }
         if rightmost_ts - auditor_ts > self.config.max_auditor_lag {
             return Err(anyhow!("Auditor tree head exceeds max_auditor_lag"));
@@ -1770,24 +2335,31 @@ impl KtClient {
         let auditor_root = if ath.tree_size == tree_size {
             candidate_root.to_vec()
         } else {
-            let peaks: Option<Vec<Vec<u8>>> = log_math::get_roots(ath.tree_size).into_iter()
+            let peaks: Option<Vec<Vec<u8>>> = log_math::get_roots(ath.tree_size)
+                .into_iter()
                 .map(|n| captured.get(&n).cloned())
                 .collect();
-            let peaks = peaks.ok_or_else(|| anyhow!(
-                "Proof lacks the data to derive the root at the auditor's tree size"
-            ))?;
+            let peaks = peaks.ok_or_else(|| {
+                anyhow!("Proof lacks the data to derive the root at the auditor's tree size")
+            })?;
             LogVerifier::accumulator_from_peaks(ath.tree_size, peaks)?
         };
 
         let tbs = crypto::construct_auditor_tree_head_tbs_public(
-            &self.config, ath.tree_size, auditor_ts, &auditor_root,
-        ).context("AuditorTreeHeadTBS construction failed")?;
-        let apk_bytes = self.config.auditor_public_key.as_deref()
+            &self.config,
+            ath.tree_size,
+            auditor_ts,
+            &auditor_root,
+        )
+        .context("AuditorTreeHeadTBS construction failed")?;
+        let apk_bytes = self
+            .config
+            .auditor_public_key
+            .as_deref()
             .ok_or_else(|| anyhow!("No auditor public key configured"))?;
-        let apk = ServiceVerifyingKey::from_bytes(apk_bytes)
-            .context("Invalid auditor public key")?;
-        verify_data(&apk, &tbs, &ath.signature)
-            .context("Auditor signature verification failed")?;
+        let apk =
+            ServiceVerifyingKey::from_bytes(apk_bytes).context("Invalid auditor public key")?;
+        verify_data(&apk, &tbs, &ath.signature).context("Auditor signature verification failed")?;
 
         self.auditor_head = Some((ath.tree_size, auditor_ts));
         Ok(())
@@ -1830,13 +2402,18 @@ impl KtClient {
             return Ok((prev.tree_size, Some(prev.timestamp), false));
         }
         if fth.head_type == FullTreeHeadType::Updated as i32 {
-            let th = fth.tree_head.as_ref().ok_or_else(|| {
-                anyhow!("FullTreeHead.head_type=updated but TreeHead is missing")
-            })?;
+            let th = fth
+                .tree_head
+                .as_ref()
+                .ok_or_else(|| anyhow!("FullTreeHead.head_type=updated but TreeHead is missing"))?;
             // §11.4 step 2.1: an updated head must be strictly newer than the advertised size
             if let Some(prev) = &self.state {
                 if th.tree_size <= prev.tree_size {
-                    return Err(anyhow!("Updated head does not advance the tree: {} <= {}", th.tree_size, prev.tree_size));
+                    return Err(anyhow!(
+                        "Updated head does not advance the tree: {} <= {}",
+                        th.tree_size,
+                        prev.tree_size
+                    ));
                 }
             }
             return Ok((th.tree_size, Some(th.timestamp as u64), true));
@@ -1850,7 +2427,9 @@ impl KtClient {
             .map(|d| d.as_millis() as u64)
             .unwrap_or(ts);
         if ts > now.saturating_add(self.config.max_ahead) {
-            return Err(anyhow!("Tree head timestamp is too far ahead of local clock"));
+            return Err(anyhow!(
+                "Tree head timestamp is too far ahead of local clock"
+            ));
         }
         if now > ts.saturating_add(self.config.max_behind) {
             return Err(anyhow!("Tree head timestamp is too far behind local clock"));
@@ -1896,26 +2475,40 @@ struct ProofReader<'a> {
 
 impl<'a> ProofReader<'a> {
     fn new(proof: &'a CombinedTreeProof) -> Self {
-        Self { proof, ts_idx: 0, proof_idx: 0, assigned_ts: BTreeMap::new() }
+        Self {
+            proof,
+            ts_idx: 0,
+            proof_idx: 0,
+            assigned_ts: BTreeMap::new(),
+        }
     }
 
     fn timestamp(&mut self, pos: u64) -> Result<u64> {
         if let Some(&ts) = self.assigned_ts.get(&pos) {
             return Ok(ts);
         }
-        let ts = *self.proof.timestamps.get(self.ts_idx)
+        let ts = *self
+            .proof
+            .timestamps
+            .get(self.ts_idx)
             .ok_or_else(|| anyhow!("Timestamp queue exhausted at entry {}", pos))?;
         self.ts_idx += 1;
 
         // §12.3: monotonic by log position
         if let Some((_, &left_ts)) = self.assigned_ts.range(..pos).next_back() {
             if ts < left_ts {
-                return Err(anyhow!("Timestamp for entry {} is older than an entry to its left", pos));
+                return Err(anyhow!(
+                    "Timestamp for entry {} is older than an entry to its left",
+                    pos
+                ));
             }
         }
         if let Some((_, &right_ts)) = self.assigned_ts.range(pos + 1..).next() {
             if ts > right_ts {
-                return Err(anyhow!("Timestamp for entry {} is newer than an entry to its right", pos));
+                return Err(anyhow!(
+                    "Timestamp for entry {} is newer than an entry to its right",
+                    pos
+                ));
             }
         }
         self.assigned_ts.insert(pos, ts);
@@ -1923,7 +2516,10 @@ impl<'a> ProofReader<'a> {
     }
 
     fn prefix_proof(&mut self, _pos: u64) -> Result<&'a PrefixProof> {
-        let pp = self.proof.prefix_proofs.get(self.proof_idx)
+        let pp = self
+            .proof
+            .prefix_proofs
+            .get(self.proof_idx)
             .ok_or_else(|| anyhow!("PrefixProof queue exhausted"))?;
         self.proof_idx += 1;
         Ok(pp)
@@ -1934,10 +2530,16 @@ impl<'a> ProofReader<'a> {
     /// verified proof, or popped from prefix_roots for proof-less entries).
     fn finish(self, entry_roots: &BTreeMap<u64, Vec<u8>>) -> Result<Vec<(u64, u64, Vec<u8>)>> {
         if self.ts_idx != self.proof.timestamps.len() {
-            return Err(anyhow!("{} unused timestamps in proof", self.proof.timestamps.len() - self.ts_idx));
+            return Err(anyhow!(
+                "{} unused timestamps in proof",
+                self.proof.timestamps.len() - self.ts_idx
+            ));
         }
         if self.proof_idx != self.proof.prefix_proofs.len() {
-            return Err(anyhow!("{} unused PrefixProofs in proof", self.proof.prefix_proofs.len() - self.proof_idx));
+            return Err(anyhow!(
+                "{} unused PrefixProofs in proof",
+                self.proof.prefix_proofs.len() - self.proof_idx
+            ));
         }
 
         let mut roots_idx = 0usize;
@@ -1946,7 +2548,10 @@ impl<'a> ProofReader<'a> {
             let root = if let Some(root) = entry_roots.get(&pos) {
                 root.clone()
             } else {
-                let root = self.proof.prefix_roots.get(roots_idx)
+                let root = self
+                    .proof
+                    .prefix_roots
+                    .get(roots_idx)
                     .ok_or_else(|| anyhow!("Missing prefix root for entry {}", pos))?;
                 roots_idx += 1;
                 root.clone()
@@ -1954,7 +2559,10 @@ impl<'a> ProofReader<'a> {
             out.push((pos, ts, root));
         }
         if roots_idx != self.proof.prefix_roots.len() {
-            return Err(anyhow!("{} unused prefix roots in proof", self.proof.prefix_roots.len() - roots_idx));
+            return Err(anyhow!(
+                "{} unused prefix roots in proof",
+                self.proof.prefix_roots.len() - roots_idx
+            ));
         }
         Ok(out)
     }
@@ -1963,7 +2571,8 @@ impl<'a> ProofReader<'a> {
 fn record_entry_root(map: &mut BTreeMap<u64, Vec<u8>>, entry: u64, root: Vec<u8>) -> Result<()> {
     match map.get(&entry) {
         Some(prev) if prev != &root => Err(anyhow!(
-            "PrefixProofs for entry {} disagree on the prefix-tree root", entry
+            "PrefixProofs for entry {} disagree on the prefix-tree root",
+            entry
         )),
         _ => {
             map.insert(entry, root);
@@ -1990,7 +2599,8 @@ fn decode_search_ladder(
         if idx != results.len() {
             return Err(anyhow!(
                 "PrefixProof has {} results but the ladder only requires {}",
-                results.len(), idx
+                results.len(),
+                idx
             ));
         }
         Ok(out)
@@ -1998,12 +2608,15 @@ fn decode_search_ladder(
 
     macro_rules! probe {
         ($v:expr) => {{
-            let r = results.get(idx).ok_or_else(|| anyhow!(
-                "PrefixProof has fewer results than its ladder requires"
-            ))?;
+            let r = results
+                .get(idx)
+                .ok_or_else(|| anyhow!("PrefixProof has fewer results than its ladder requires"))?;
             idx += 1;
             let inc = r.result_type == 1;
-            out.push(DecodedLookup { version: $v, inclusion: inc });
+            out.push(DecodedLookup {
+                version: $v,
+                inclusion: inc,
+            });
             inc
         }};
     }
@@ -2012,7 +2625,11 @@ fn decode_search_ladder(
     let mut last_included: Option<u32> = None;
     let (mut lower, mut upper) = loop {
         let v64 = (1u64 << k) - 1;
-        let v = if v64 > u32::MAX as u64 { u32::MAX } else { v64 as u32 };
+        let v = if v64 > u32::MAX as u64 {
+            u32::MAX
+        } else {
+            v64 as u32
+        };
 
         if probe!(v) {
             if v > target || v == u32::MAX {

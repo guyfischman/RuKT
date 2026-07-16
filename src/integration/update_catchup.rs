@@ -1,10 +1,10 @@
-use crate::db::RocksDbStore;
-use crate::service::KeyTransparencyImpl;
 use crate::client::KtClient;
 use crate::crypto::{self, CIPHER_SUITE_KT_128_SHA256_ED25519};
+use crate::db::RocksDbStore;
+use crate::service::KeyTransparencyImpl;
 use anyhow::Result;
-use std::sync::Arc;
 use std::collections::HashMap;
+use std::sync::Arc;
 use tempfile::tempdir;
 use tokio::net::TcpListener;
 use tonic::transport::Server;

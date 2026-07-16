@@ -1,9 +1,9 @@
+use crate::crypto::hash::{log_leaf_value, log_parent_value};
 use crate::db::TransparencyStore;
 use crate::tree::log_math;
-use crate::crypto::hash::{log_leaf_value, log_parent_value};
 use anyhow::{Result, anyhow};
-use std::sync::Arc;
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 struct NodeChunk {
     chunk_root_id: u64,
@@ -24,13 +24,20 @@ impl NodeChunk {
         if let Some(bytes) = data {
             let mut cursor = 0;
             for i in (0..15).step_by(2) {
-                if cursor + 32 > bytes.len() { break; }
-                nodes[i] = Some(bytes[cursor..cursor+32].to_vec());
+                if cursor + 32 > bytes.len() {
+                    break;
+                }
+                nodes[i] = Some(bytes[cursor..cursor + 32].to_vec());
                 cursor += 32;
             }
             recompute_intermediates(&mut nodes, &ids);
         }
-        Ok(Self { chunk_root_id: chunk_root, nodes, id_map, dirty: false })
+        Ok(Self {
+            chunk_root_id: chunk_root,
+            nodes,
+            id_map,
+            dirty: false,
+        })
     }
 
     fn serialize(&self) -> Vec<u8> {
@@ -46,7 +53,10 @@ impl NodeChunk {
     }
 
     fn set_value(&mut self, node_id: u64, val: Vec<u8>) -> Result<()> {
-        let idx = *self.id_map.get(&node_id).ok_or_else(|| anyhow!("Node ID not in chunk"))?;
+        let idx = *self
+            .id_map
+            .get(&node_id)
+            .ok_or_else(|| anyhow!("Node ID not in chunk"))?;
         if idx % 2 != 0 {
             return Err(anyhow!("Cannot set intermediate node directly"));
         }
@@ -68,16 +78,16 @@ impl NodeChunk {
 
 fn recompute_intermediates(nodes: &mut [Option<Vec<u8>>; 15], ids: &[u64; 15]) {
     for i in [1, 5, 9, 13] {
-        if let (Some(l), Some(r)) = (&nodes[i-1], &nodes[i+1]) {
-            let l_is_leaf = log_math::is_leaf(ids[i-1]);
-            let r_is_leaf = log_math::is_leaf(ids[i+1]);
+        if let (Some(l), Some(r)) = (&nodes[i - 1], &nodes[i + 1]) {
+            let l_is_leaf = log_math::is_leaf(ids[i - 1]);
+            let r_is_leaf = log_math::is_leaf(ids[i + 1]);
             nodes[i] = Some(log_parent_value(l, l_is_leaf, r, r_is_leaf));
         }
     }
     for i in [3, 11] {
-        if let (Some(l), Some(r)) = (&nodes[i-2], &nodes[i+2]) {
-            let l_is_leaf = log_math::is_leaf(ids[i-2]);
-            let r_is_leaf = log_math::is_leaf(ids[i+2]);
+        if let (Some(l), Some(r)) = (&nodes[i - 2], &nodes[i + 2]) {
+            let l_is_leaf = log_math::is_leaf(ids[i - 2]);
+            let r_is_leaf = log_math::is_leaf(ids[i + 2]);
             nodes[i] = Some(log_parent_value(l, l_is_leaf, r, r_is_leaf));
         }
     }
@@ -108,10 +118,10 @@ impl LogTree {
     fn resolve_node(&self, node_id: u64, tree_size: u64) -> Result<Vec<u8>> {
         self.resolve_node_simple(node_id, tree_size)
     }
-    
+
     pub fn resolve_node_simple(&self, node_id: u64, tree_size: u64) -> Result<Vec<u8>> {
         let cid = log_math::chunk_id(node_id);
-        
+
         let chunk_data = self.store.get_log(cid)?;
         if let Some(data) = chunk_data {
             let chunk = NodeChunk::new(cid, Some(data))?;
@@ -134,31 +144,40 @@ impl LogTree {
         let l_val = self.resolve_node(left, tree_size)?;
         let r_val = self.resolve_node(right, tree_size)?;
 
-        Ok(log_parent_value(&l_val, log_math::is_leaf(left), &r_val, log_math::is_leaf(right)))
+        Ok(log_parent_value(
+            &l_val,
+            log_math::is_leaf(left),
+            &r_val,
+            log_math::is_leaf(right),
+        ))
     }
 
-    pub fn batch_append(&self, start_tree_size: u64, entries: Vec<(u64, Vec<u8>)>) -> Result<Vec<u8>> {
+    pub fn batch_append(
+        &self,
+        start_tree_size: u64,
+        entries: Vec<(u64, Vec<u8>)>,
+    ) -> Result<Vec<u8>> {
         let mut chunk_cache: HashMap<u64, NodeChunk> = HashMap::new();
-        
+
         for (i, (ts, root)) in entries.iter().enumerate() {
             let log_index = start_tree_size + i as u64;
-            let node_id = log_index * 2; 
-            
+            let node_id = log_index * 2;
+
             let leaf_hash = log_leaf_value(*ts, root);
 
             let cid = log_math::chunk_id(node_id);
-            
+
             let chunk = if let Some(c) = chunk_cache.remove(&cid) {
                 c
             } else {
                 let data = self.store.get_log(cid)?;
                 NodeChunk::new(cid, data)?
             };
-            
+
             let mut mutable_chunk = chunk;
             mutable_chunk.set_value(node_id, leaf_hash)?;
             chunk_cache.insert(cid, mutable_chunk);
-            
+
             // 1. Timestamp: Key = log_index | (1 << 63)
             let ts_key = log_index | (1u64 << 63);
             self.store.put_value(ts_key, ts.to_be_bytes().to_vec())?;
@@ -180,7 +199,9 @@ impl LogTree {
 
     pub fn get_timestamp(&self, log_index: u64) -> Result<u64> {
         let ts_key = log_index | (1u64 << 63);
-        let bytes = self.store.get_value(ts_key)?
+        let bytes = self
+            .store
+            .get_value(ts_key)?
             .ok_or_else(|| anyhow!("Timestamp not found for log index {}", log_index))?;
         let mut arr = [0u8; 8];
         arr.copy_from_slice(&bytes);
@@ -189,7 +210,9 @@ impl LogTree {
 
     pub fn get_prefix_root(&self, log_index: u64) -> Result<Vec<u8>> {
         let root_key = log_index | (1u64 << 62);
-        let bytes = self.store.get_value(root_key)?
+        let bytes = self
+            .store
+            .get_value(root_key)?
             .ok_or_else(|| anyhow!("Prefix Root not found for log index {}", log_index))?;
         Ok(bytes)
     }
@@ -203,7 +226,9 @@ impl LogTree {
 
     pub fn get_prefix_ptr(&self, log_index: u64) -> Result<u64> {
         let key = log_index | (1u64 << 61);
-        let bytes = self.store.get_value(key)?
+        let bytes = self
+            .store
+            .get_value(key)?
             .ok_or_else(|| anyhow!("Prefix Ptr not found for log index {}", log_index))?;
         let mut arr = [0u8; 8];
         arr.copy_from_slice(&bytes);
@@ -228,7 +253,11 @@ impl LogTree {
 
     pub fn get_consistency_proof(&self, m: u64, n: u64) -> Result<Vec<Vec<u8>>> {
         if m == 0 || m >= n {
-            return Err(anyhow!("Invalid consistency proof parameters: m={}, n={}", m, n));
+            return Err(anyhow!(
+                "Invalid consistency proof parameters: m={}, n={}",
+                m,
+                n
+            ));
         }
         let node_ids = log_math::consistency_proof(m, n);
         let mut proof = Vec::new();
@@ -253,7 +282,9 @@ impl LogTree {
             skeleton.insert(node_id);
             let mut curr = node_id;
             for _ in 0..64 {
-                if curr == root_id { break; }
+                if curr == root_id {
+                    break;
+                }
                 curr = log_math::parent(curr, tree_size);
                 skeleton.insert(curr);
             }
@@ -261,15 +292,19 @@ impl LogTree {
         // descend along boundary paths without providing their leaves, so the
         // proof carries what a client needs to derive historical sub-roots
         for &boundary in boundaries {
-            if boundary == 0 || boundary > tree_size { continue; }
+            if boundary == 0 || boundary > tree_size {
+                continue;
+            }
             let mut curr = (boundary - 1) * 2;
             for _ in 0..64 {
-                if curr == root_id { break; }
+                if curr == root_id {
+                    break;
+                }
                 curr = log_math::parent(curr, tree_size);
                 skeleton.insert(curr);
             }
         }
-        
+
         // Client State Optimization:
         // If the client has cached roots for 'last_size', we can omit them
         // unless we need to traverse through them to reach a target leaf.
@@ -278,10 +313,10 @@ impl LogTree {
         } else {
             HashSet::new()
         };
-        
+
         let root_id = log_math::merkle_root(tree_size);
         let needed_ids = self.recursive_needed(root_id, tree_size, &skeleton, &retained)?;
-        
+
         let mut proof = Vec::new();
         for id in needed_ids {
             proof.push(self.resolve_node(id, tree_size)?);
@@ -290,11 +325,11 @@ impl LogTree {
     }
 
     fn recursive_needed(
-        &self, 
-        node_id: u64, 
-        tree_size: u64, 
-        skeleton: &HashSet<u64>, 
-        retained: &HashSet<u64>
+        &self,
+        node_id: u64,
+        tree_size: u64,
+        skeleton: &HashSet<u64>,
+        retained: &HashSet<u64>,
     ) -> Result<Vec<u64>> {
         // Optimization: If client has this node cached
         if retained.contains(&node_id) {
@@ -314,7 +349,7 @@ impl LogTree {
         let l = log_math::left_child(node_id);
         let r = log_math::right_child(node_id, tree_size);
         if l == r {
-             return self.recursive_needed(l, tree_size, skeleton, retained);
+            return self.recursive_needed(l, tree_size, skeleton, retained);
         }
         let mut left_res = self.recursive_needed(l, tree_size, skeleton, retained)?;
         let mut right_res = self.recursive_needed(r, tree_size, skeleton, retained)?;

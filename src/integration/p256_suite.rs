@@ -1,11 +1,11 @@
-use crate::db::RocksDbStore;
-use crate::service::KeyTransparencyImpl;
 use crate::crypto::{self, CIPHER_SUITE_KT_128_SHA256_P256};
-use crate::proto::transparency::{LabelValue, UpdateRequest};
+use crate::db::RocksDbStore;
 use crate::proto::kt::key_transparency_service_server::KeyTransparencyService;
+use crate::proto::transparency::{LabelValue, UpdateRequest};
+use crate::service::KeyTransparencyImpl;
 use anyhow::Result;
-use std::sync::Arc;
 use std::collections::HashMap;
+use std::sync::Arc;
 use tempfile::tempdir;
 
 #[tokio::test]

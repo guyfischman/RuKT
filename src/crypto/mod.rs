@@ -1,22 +1,22 @@
-pub mod vrf;
 pub mod hash;
 pub mod signing;
 pub mod tls;
+pub mod vrf;
 
-use anyhow::{Result, Context, anyhow};
-use std::collections::HashMap;
+use self::tls::{Opaqueu8, TlsEncode};
+use anyhow::{Context, Result, anyhow};
 use rand::rngs::OsRng;
-use self::tls::{TlsEncode, Opaqueu8};
+use std::collections::HashMap;
 
 // Re-export specific items from submodules to keep cleaner namespaces
-pub use self::vrf::{ecvrf_prove, ecvrf_verify, get_public_key, expand_vrf_secret, VrfContext};
-pub use self::hash::{generate_random_opening, commit, log_leaf_value, log_parent_value}; 
+pub use self::hash::{commit, generate_random_opening, log_leaf_value, log_parent_value};
 pub use self::signing::{
-    generate_sig_keypair, generate_p256_keypair, 
-    construct_tree_head_tbs, construct_tree_head_tbs_public, construct_auditor_tree_head_tbs, construct_auditor_tree_head_tbs_public, construct_update_tbs,
-    sign_data, verify_data,
-    ServiceSigningKey, ServiceVerifyingKey 
+    ServiceSigningKey, ServiceVerifyingKey, construct_auditor_tree_head_tbs,
+    construct_auditor_tree_head_tbs_public, construct_tree_head_tbs,
+    construct_tree_head_tbs_public, construct_update_tbs, generate_p256_keypair,
+    generate_sig_keypair, sign_data, verify_data,
 };
+pub use self::vrf::{VrfContext, ecvrf_prove, ecvrf_verify, expand_vrf_secret, get_public_key};
 
 pub const DEPLOYMENT_MODE_CONTACT_MONITORING: u8 = 1;
 pub const DEPLOYMENT_MODE_THIRD_PARTY_MANAGEMENT: u8 = 2;
@@ -31,7 +31,7 @@ pub struct PrivateConfig {
     pub cipher_suite: u16,
     pub mode: u8,
     pub sig_key: ServiceSigningKey,
-    pub vrf_key: Vec<u8>, 
+    pub vrf_key: Vec<u8>,
     pub vrf_public_key: Vec<u8>,
     pub vrf_ctx: VrfContext,
     pub prefix_aes_key: Vec<u8>,
@@ -70,9 +70,9 @@ pub struct PublicConfig {
 impl PrivateConfig {
     pub fn new(
         cipher_suite: u16,
-        mode: u8, 
-        sig_key: ServiceSigningKey, 
-        vrf_key: Vec<u8>, 
+        mode: u8,
+        sig_key: ServiceSigningKey,
+        vrf_key: Vec<u8>,
         auditor_keys: HashMap<Vec<u8>, ServiceVerifyingKey>,
         max_ahead: u64,
         max_behind: u64,
@@ -84,24 +84,27 @@ impl PrivateConfig {
         match cipher_suite {
             CIPHER_SUITE_KT_128_SHA256_ED25519 => {
                 if !matches!(sig_key, ServiceSigningKey::Ed25519(_)) {
-                    return Err(anyhow!("Cipher suite mismatch: Expected Ed25519 signing key"));
+                    return Err(anyhow!(
+                        "Cipher suite mismatch: Expected Ed25519 signing key"
+                    ));
                 }
-            },
+            }
             CIPHER_SUITE_KT_128_SHA256_P256 => {
                 if !matches!(sig_key, ServiceSigningKey::P256(_)) {
                     return Err(anyhow!("Cipher suite mismatch: Expected P-256 signing key"));
                 }
-            },
+            }
             _ => return Err(anyhow!("Unsupported cipher suite")),
         }
 
-        let vrf_ctx = expand_vrf_secret(cipher_suite, &vrf_key).context("Failed to expand VRF secret")?;
-        
+        let vrf_ctx =
+            expand_vrf_secret(cipher_suite, &vrf_key).context("Failed to expand VRF secret")?;
+
         let vrf_pk = match &vrf_ctx {
             VrfContext::Ed25519 { y_bytes, .. } => y_bytes.to_vec(),
             VrfContext::P256 { y_bytes, .. } => y_bytes.clone(),
         };
-        
+
         // single-auditor deployments: pick the smallest key for a deterministic TBS
         let auditor_public_key = {
             let mut keys: Vec<&Vec<u8>> = auditor_keys.keys().collect();
@@ -199,7 +202,7 @@ pub fn generate_vrf_keypair(suite: u16) -> (Vec<u8>, Vec<u8>) {
             let sec_bytes = sk.to_bytes().to_vec();
             let pk_bytes = pk.to_sec1_bytes().to_vec();
             (sec_bytes, pk_bytes)
-        },
+        }
         _ => {
             let mut csprng = OsRng;
             let sk = ed25519_dalek::SigningKey::generate(&mut csprng);

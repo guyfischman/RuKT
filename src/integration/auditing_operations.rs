@@ -27,9 +27,23 @@ async fn test_all_operations_verify_auditor_head() -> Result<()> {
     // search (greatest + fixed)
     let mut c = server.client().await?;
     let latest = c.search(b"alice".to_vec(), None).await?;
-    assert!(latest.full_tree_head.as_ref().unwrap().auditor_tree_head.is_some());
+    assert!(
+        latest
+            .full_tree_head
+            .as_ref()
+            .unwrap()
+            .auditor_tree_head
+            .is_some()
+    );
     assert_eq!(latest.version, Some(1));
-    assert_eq!(c.search(b"alice".to_vec(), Some(0)).await?.value.unwrap().value, b"a0".to_vec());
+    assert_eq!(
+        c.search(b"alice".to_vec(), Some(0))
+            .await?
+            .value
+            .unwrap()
+            .value,
+        b"a0".to_vec()
+    );
     // the obligation the search recorded is then monitored (rides a SAME head)
     c.contact_monitor(b"alice".to_vec()).await?;
 
@@ -40,7 +54,9 @@ async fn test_all_operations_verify_auditor_head() -> Result<()> {
 
     // owner monitoring
     let mut c = server.client().await?;
-    let mon = c.owner_monitor(b"alice".to_vec(), vec![], 2, Some(1)).await?;
+    let mon = c
+        .owner_monitor(b"alice".to_vec(), vec![], 2, Some(1))
+        .await?;
     assert!(mon.full_tree_head.unwrap().auditor_tree_head.is_some());
 
     // distinguished-heads walk
