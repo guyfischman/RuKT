@@ -222,6 +222,13 @@ message GetCredentialRequest {
     bytes label = 1;
 }
 
+// Section 14.2
+message GetCredentialUpdateRequest {
+    bytes label = 1;
+    uint64 terminal_position = 2;
+    uint32 terminal_version = 3;
+}
+
 // --- Draft-03 Section 13.2 Auditing ---
 
 message AuditorUpdate {

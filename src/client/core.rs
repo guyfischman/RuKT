@@ -1096,6 +1096,158 @@ impl KtClient {
         Ok(self.client.clone().get_credential(req).await?.into_inner())
     }
 
+    pub async fn get_credential_update(
+        &mut self,
+        label: Vec<u8>,
+        terminal_position: u64,
+        terminal_version: u32,
+    ) -> Result<crate::proto::transparency::CredentialUpdate> {
+        let req = crate::proto::transparency::GetCredentialUpdateRequest {
+            label, terminal_position, terminal_version,
+        };
+        Ok(self.client.clone().get_credential_update(req).await?.into_inner())
+    }
+
+    /// §14.2: transitions a verified provisional credential to a distinguished
+    /// anchor. Returns Ok once the credential's version is covered by a
+    /// distinguished entry the recipient already trusts.
+    pub fn verify_credential_update(
+        &self,
+        cred: &crate::proto::transparency::Credential,
+        update: &crate::proto::transparency::CredentialUpdate,
+    ) -> Result<()> {
+        let terminal = self.credential_terminal(cred)?;
+
+        // step 1
+        let (_, _, anchor_peaks) = self.distinguished_entries.get(&update.position)
+            .ok_or_else(|| anyhow!("CredentialUpdate anchors to an unknown distinguished log entry"))?;
+        // step 2
+        let is_first_right = self.distinguished_entries.keys()
+            .filter(|&&p| p > terminal)
+            .min() == Some(&update.position);
+        if !is_first_right {
+            return Err(anyhow!("CredentialUpdate position is not the first distinguished entry right of the search terminal"));
+        }
+
+        let proof = update.monitor.as_ref().ok_or_else(|| anyhow!("Missing monitor proof"))?;
+        let tree_size = update.position + 1;
+
+        // material for the monitored version, recovered from the credential itself
+        let value = cred.value.as_ref().ok_or_else(|| anyhow!("Missing credential value"))?;
+        let commitment = crate::crypto::hash::commit(&cred.label, cred.version, &value.value, &cred.opening)?;
+        let ladder_step = cred.binary_ladder.iter()
+            .zip(base_binary_ladder(cred.version))
+            .find(|(_, v)| *v == cred.version)
+            .map(|(step, _)| step)
+            .ok_or_else(|| anyhow!("Credential ladder missing the target version"))?;
+        let vrf_input = construct_vrf_input(&cred.label, cred.version)?;
+        let vrf_output = crypto::ecvrf_verify(
+            self.config.cipher_suite, &self.vrf_pk, &vrf_input, &ladder_step.proof,
+        )?.to_vec();
+        let mut material: HashMap<u32, (Vec<u8>, Option<Vec<u8>>)> = HashMap::new();
+        material.insert(cred.version, (vrf_output, Some(commitment)));
+
+        // step 3 (§8.2 replay at position+1 for the single map entry)
+        let rmw = self.config.reasonable_monitoring_window;
+        let mut reader = ProofReader::new(proof);
+        let frontier = log_math::get_frontier(tree_size);
+        for &f in &frontier {
+            reader.timestamp(f)?;
+        }
+        let rightmost_ts = reader.timestamp(tree_size - 1)?;
+
+        let mut bounds = (0u64, rightmost_ts);
+        let mut parent_dist = true;
+        let mut ancestor_dist: HashMap<u64, bool> = HashMap::new();
+        let mut curr = log_math::root(tree_size);
+        while curr != terminal {
+            let ts = reader.timestamp(curr)?;
+            let dist = parent_dist && bounds.1.saturating_sub(bounds.0) >= rmw;
+            ancestor_dist.insert(curr, dist);
+            if !dist { parent_dist = false; break; }
+            if terminal < curr {
+                bounds.1 = ts;
+                curr = log_math::left_child(curr);
+            } else {
+                bounds.0 = ts;
+                curr = match log_math::ibst_right_child(curr, tree_size) {
+                    Some(rc) => rc,
+                    None => break,
+                };
+            }
+        }
+
+        let mut list: Vec<u64> = log_math::ibst_direct_path(terminal, tree_size)
+            .into_iter().filter(|&a| a > terminal).collect();
+        list.sort();
+        if let Some(cut) = list.iter().position(|a| *ancestor_dist.get(a).unwrap_or(&false)) {
+            list.truncate(cut + 1);
+        }
+
+        let mut entry_roots: BTreeMap<u64, Vec<u8>> = BTreeMap::new();
+        for &e in &list {
+            let pp = reader.prefix_proof(e)?;
+            let root = self.verify_monitoring_ladder(&material, pp, cred.version)
+                .with_context(|| format!("CredentialUpdate ladder failed at entry {}", e))?;
+            record_entry_root(&mut entry_roots, e, root)?;
+        }
+
+        // step 4
+        let leaf_data = reader.finish(&entry_roots)?;
+        let positions: Vec<u64> = leaf_data.iter().map(|(p, _, _)| *p).collect();
+        let leaf_hashes: Vec<Vec<u8>> = leaf_data.iter()
+            .map(|(_, ts, root)| crate::crypto::hash::log_leaf_value(*ts, root))
+            .collect();
+        let inclusion = proof.inclusion.as_ref().ok_or_else(|| anyhow!("Missing inclusion proof"))?;
+
+        let (candidate_root, _) = LogVerifier::calculate_root_capturing(
+            &positions, &leaf_hashes, tree_size, &inclusion.elements,
+            &BTreeMap::new(), &std::collections::HashSet::new(),
+        ).context("CredentialUpdate view reconstruction failed")?;
+
+        let anchor_root = LogVerifier::accumulator_from_peaks(tree_size, anchor_peaks.clone())?;
+        if candidate_root != anchor_root {
+            return Err(anyhow!("CredentialUpdate does not reconstruct the retained distinguished root"));
+        }
+
+        Ok(())
+    }
+
+    /// Re-derives the terminal log entry of a provisional credential's search
+    /// (the §6.3 leftmost entry containing the greatest version).
+    pub fn credential_terminal(&self, cred: &crate::proto::transparency::Credential) -> Result<u64> {
+        let th = cred.tree_head.as_ref().ok_or_else(|| anyhow!("Provisional credential missing TreeHead"))?;
+        let proof = cred.search.as_ref().ok_or_else(|| anyhow!("Provisional credential missing search proof"))?;
+        let value = cred.value.as_ref().ok_or_else(|| anyhow!("Missing credential value"))?;
+        let target_commitment = crate::crypto::hash::commit(&cred.label, cred.version, &value.value, &cred.opening)?;
+
+        let mut wire_index: HashMap<u32, usize> = HashMap::new();
+        for (i, &v) in base_binary_ladder(cred.version).iter().enumerate() {
+            wire_index.insert(v, i);
+        }
+        let mut vrf_cache: HashMap<u32, Vec<u8>> = HashMap::new();
+        let mut material: HashMap<u32, Option<Vec<u8>>> = HashMap::new();
+
+        let mut reader = ProofReader::new(proof);
+        let frontier = log_math::get_frontier(th.tree_size);
+        for &f in &frontier {
+            reader.timestamp(f)?;
+        }
+        let rightmost = *frontier.last().unwrap();
+        let mut first_equal: Option<u64> = None;
+        for &entry in &frontier {
+            let pp = reader.prefix_proof(entry)?;
+            let (_, relation) = self.verify_ladder_proof(
+                &cred.label, pp, cred.version, &mut wire_index, &mut vrf_cache,
+                &cred.binary_ladder, &target_commitment, true, entry == rightmost, &mut material,
+            )?;
+            if relation == std::cmp::Ordering::Equal && first_equal.is_none() {
+                first_equal = Some(entry);
+            }
+        }
+        Ok(first_equal.unwrap_or(rightmost))
+    }
+
     // §14: offline verification against the retained distinguished entries; a
     // failure MUST NOT trigger a tree head refresh
     pub fn verify_credential(&self, cred: &crate::proto::transparency::Credential) -> Result<()> {

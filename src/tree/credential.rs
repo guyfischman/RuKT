@@ -1,16 +1,38 @@
 use super::Tree;
 use crate::proto::transparency::{
-    Credential, CredentialType, GetCredentialRequest,
+    Credential, CredentialType, CredentialUpdate, GetCredentialRequest, GetCredentialUpdateRequest,
     BinaryLadderStep,
-    InclusionProof,
-    PrefixProof 
+    MonitorMapEntry,
+    PrefixProof
 };
 use crate::tree::log_math;
 use crate::tree::binary_ladder::search_binary_ladder;
 use anyhow::{Result, anyhow};
-use futures::future::BoxFuture; 
+use futures::future::BoxFuture;
 
 impl Tree {
+    // §14.2: proves the provisional credential's terminal entry is now covered by
+    // the first distinguished entry to its right, via a §8.2 monitor proof
+    pub async fn get_credential_update(&self, req: &GetCredentialUpdateRequest) -> Result<CredentialUpdate> {
+        let tree_size = self.latest.as_ref().map(|th| th.tree_size).unwrap_or(0);
+        if tree_size == 0 {
+            return Err(anyhow!("Log is empty"));
+        }
+
+        let distinguished = self.find_distinguished_nodes(tree_size).await?;
+        let position = *distinguished.iter()
+            .find(|&&d| d > req.terminal_position)
+            .ok_or_else(|| anyhow!("No distinguished log entry to the right of the terminal entry yet"))?;
+
+        // the monitor proof is computed against the tree as it was at position+1
+        let entries = vec![MonitorMapEntry {
+            position: req.terminal_position,
+            version: req.terminal_version,
+        }];
+        let monitor = self.traverse_contact_monitoring(position + 1, &req.label, &entries, 0).await?;
+
+        Ok(CredentialUpdate { position, monitor: Some(monitor) })
+    }
     pub async fn get_credential(&self, req: &GetCredentialRequest) -> Result<Credential> {
         let tree_size = self.latest.as_ref().map(|th| th.tree_size).unwrap_or(0);
         if tree_size == 0 {

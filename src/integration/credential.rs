@@ -92,5 +92,16 @@ async fn test_credential_offline_verification() -> Result<()> {
     bad_prov.value.as_mut().unwrap().value = b"forged".to_vec();
     assert!(recipient.verify_credential(&bad_prov).is_err());
 
+    // §14.2: once a distinguished entry covers the credential's version, a
+    // CredentialUpdate transitions it to a standard anchor
+    for i in 0..4 {
+        sender.update(format!("filler_{}", i).into_bytes(), b"f".to_vec()).await?;
+    }
+    let terminal = sender.credential_terminal(&prov)?;
+    let update = sender.get_credential_update(fresh.clone(), terminal, prov.version).await?;
+
+    recipient.distinguished(None).await?;
+    recipient.verify_credential_update(&prov, &update)?;
+
     Ok(())
 }

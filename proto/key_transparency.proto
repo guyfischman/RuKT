@@ -44,6 +44,7 @@ service KeyTransparencyService {
   
   // Draft-03 Section 12.4
   rpc GetCredential(transparency.GetCredentialRequest) returns (transparency.Credential) {}
+  rpc GetCredentialUpdate(transparency.GetCredentialUpdateRequest) returns (transparency.CredentialUpdate) {}
 }
 
 service KeyTransparencyAuditorService {

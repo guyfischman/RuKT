@@ -9,7 +9,7 @@ use crate::proto::transparency::{
     OwnerMonitorRequest, OwnerMonitorResponse,
     DistinguishedRequest, DistinguishedResponse,
     AuditorTreeHead,
-    GetCredentialRequest, Credential
+    GetCredentialRequest, GetCredentialUpdateRequest, Credential, CredentialUpdate
 };
 use crate::db::TransparencyStore;
 use crate::crypto::{
@@ -234,11 +234,21 @@ impl KeyTransparencyService for KeyTransparencyImpl {
     async fn get_credential(&self, request: Request<GetCredentialRequest>) -> Result<Response<Credential>, Status> {
         let req = request.into_inner();
         let tree_guard = self.tree.read().await; // CHANGED: Read lock
-        
+
         let cred = tree_guard.get_credential(&req).await
             .map_err(map_anyhow_to_status)?;
-            
+
         Ok(Response::new(cred))
+    }
+
+    async fn get_credential_update(&self, request: Request<GetCredentialUpdateRequest>) -> Result<Response<CredentialUpdate>, Status> {
+        let req = request.into_inner();
+        let tree_guard = self.tree.read().await;
+
+        let update = tree_guard.get_credential_update(&req).await
+            .map_err(map_anyhow_to_status)?;
+
+        Ok(Response::new(update))
     }
 }
 // End src/service.rs
