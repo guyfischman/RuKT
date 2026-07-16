@@ -29,7 +29,10 @@ service KeyTransparencyService {
   // User endpoints
   rpc Search(transparency.SearchRequest) returns (transparency.SearchResponse) {}
   rpc Update(transparency.UpdateRequest) returns (transparency.UpdateResponse) {}
-  rpc Monitor(transparency.MonitorRequest) returns (transparency.MonitorResponse) {}
+  rpc ContactMonitor(transparency.ContactMonitorRequest) returns (transparency.ContactMonitorResponse) {}
+  rpc OwnerInit(transparency.OwnerInitRequest) returns (transparency.OwnerInitResponse) {}
+  rpc OwnerMonitor(transparency.OwnerMonitorRequest) returns (transparency.OwnerMonitorResponse) {}
+  rpc Distinguished(transparency.DistinguishedRequest) returns (transparency.DistinguishedResponse) {}
   
   // Draft-03 Section 12.4
   rpc GetCredential(transparency.GetCredentialRequest) returns (transparency.Credential) {}

@@ -137,31 +137,65 @@ message UpdateResponse {
     CombinedTreeProof update = 6;
 }
 
+// Section 13.2
 message MonitorMapEntry {
     uint64 position = 1;
     uint32 version = 2;
 }
 
-message MonitorLabel {
-    bytes label = 1;
-    repeated MonitorMapEntry entries = 2;
-    optional uint64 rightmost = 3;
-}
-
-message MonitorRequest {
+// Section 13.2
+message ContactMonitorRequest {
     optional uint64 last = 1;
-    repeated MonitorLabel labels = 2;
-    Consistency consistency = 3;
+    bytes label = 2;
+    repeated MonitorMapEntry entries = 3;
 }
 
-message MonitorLabelVersions {
-    repeated uint32 versions = 1;
+// Section 13.2
+message ContactMonitorResponse {
+    FullTreeHead full_tree_head = 1;
+    CombinedTreeProof monitor = 2;
 }
 
-message MonitorResponse {
-    FullTreeHead tree_head = 1;
-    repeated MonitorLabelVersions label_versions = 2;
-    CombinedTreeProof monitor = 3;
+// Section 13.3
+message OwnerInitRequest {
+    optional uint64 last = 1;
+    bytes label = 2;
+    uint64 start = 3;
+}
+
+// Section 13.3
+message OwnerInitResponse {
+    FullTreeHead full_tree_head = 1;
+    repeated uint32 greatest_versions = 2;
+    repeated BinaryLadderStep binary_ladder = 3;
+    CombinedTreeProof init = 4;
+}
+
+// Section 13.4
+message OwnerMonitorRequest {
+    optional uint64 last = 1;
+    bytes label = 2;
+    repeated MonitorMapEntry entries = 3;
+    uint64 start = 4;
+    optional uint32 greatest_version = 5;
+}
+
+// Section 13.4
+message OwnerMonitorResponse {
+    FullTreeHead full_tree_head = 1;
+    CombinedTreeProof monitor = 2;
+}
+
+// Section 13.6
+message DistinguishedRequest {
+    optional uint64 last = 1;
+    optional uint64 stop = 2;
+}
+
+// Section 13.6
+message DistinguishedResponse {
+    FullTreeHead full_tree_head = 1;
+    CombinedTreeProof distinguished = 2;
 }
 
 enum CredentialType {

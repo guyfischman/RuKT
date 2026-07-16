@@ -2,8 +2,11 @@ use tonic::transport::Channel;
 use crate::proto::kt::key_transparency_service_client::KeyTransparencyServiceClient;
 use crate::proto::transparency::{
     SearchRequest, UpdateRequest, LabelValue,
-    MonitorRequest, MonitorLabel, Consistency,
-    UpdateResponse, SearchResponse, MonitorResponse,
+    ContactMonitorRequest, ContactMonitorResponse,
+    OwnerInitRequest, OwnerInitResponse,
+    OwnerMonitorRequest, OwnerMonitorResponse,
+    MonitorMapEntry, Consistency, CombinedTreeProof,
+    UpdateResponse, SearchResponse,
     FullTreeHead, FullTreeHeadType, PrefixProof,
 };
 use std::collections::HashMap;
@@ -83,23 +86,56 @@ impl KtClient {
         Ok(resp)
     }
 
-    pub async fn monitor(&mut self, user: Vec<u8>, position: u64, version: u32) -> Result<MonitorResponse> {
-        let req = MonitorRequest {
+    pub async fn contact_monitor(&mut self, user: Vec<u8>, entries: Vec<(u64, u32)>) -> Result<ContactMonitorResponse> {
+        let req = ContactMonitorRequest {
             last: self.state.as_ref().map(|s| s.tree_size),
-            labels: vec![MonitorLabel {
-                label: user.clone(),
-                entries: vec![crate::proto::transparency::MonitorMapEntry {
-                    position,
-                    version,
-                }],
-                rightmost: None,
-            }],
-            consistency: self.get_consistency_req(),
+            label: user,
+            entries: entries.into_iter()
+                .map(|(position, version)| MonitorMapEntry { position, version })
+                .collect(),
         };
 
-        let resp = self.client.clone().monitor(req).await?.into_inner();
+        let resp = self.client.clone().contact_monitor(req).await?.into_inner();
 
-        self.verify_monitor_response(&resp).await?;
+        self.verify_monitor_proof(resp.full_tree_head.as_ref(), resp.monitor.as_ref())?;
+
+        Ok(resp)
+    }
+
+    pub async fn owner_init(&mut self, user: Vec<u8>, start: u64) -> Result<OwnerInitResponse> {
+        let req = OwnerInitRequest {
+            last: self.state.as_ref().map(|s| s.tree_size),
+            label: user,
+            start,
+        };
+
+        let resp = self.client.clone().owner_init(req).await?.into_inner();
+
+        self.verify_monitor_proof(resp.full_tree_head.as_ref(), resp.init.as_ref())?;
+
+        Ok(resp)
+    }
+
+    pub async fn owner_monitor(
+        &mut self,
+        user: Vec<u8>,
+        entries: Vec<(u64, u32)>,
+        start: u64,
+        greatest_version: Option<u32>,
+    ) -> Result<OwnerMonitorResponse> {
+        let req = OwnerMonitorRequest {
+            last: self.state.as_ref().map(|s| s.tree_size),
+            label: user,
+            entries: entries.into_iter()
+                .map(|(position, version)| MonitorMapEntry { position, version })
+                .collect(),
+            start,
+            greatest_version,
+        };
+
+        let resp = self.client.clone().owner_monitor(req).await?.into_inner();
+
+        self.verify_monitor_proof(resp.full_tree_head.as_ref(), resp.monitor.as_ref())?;
 
         Ok(resp)
     }
@@ -313,19 +349,21 @@ impl KtClient {
         Ok(())
     }
 
-    async fn verify_monitor_response(&mut self, resp: &MonitorResponse) -> Result<()> {
-        let fth = resp.tree_head.as_ref().ok_or(anyhow!("Missing FullTreeHead"))?;
+    fn verify_monitor_proof(
+        &mut self,
+        fth: Option<&FullTreeHead>,
+        proof: Option<&CombinedTreeProof>,
+    ) -> Result<()> {
+        let fth = fth.ok_or(anyhow!("Missing FullTreeHead"))?;
 
-        // 1. Verify Tree Head State
         if let Some(th) = &fth.tree_head {
             if let Some(state) = &self.state {
                 if th.tree_size < state.tree_size {
-                    return Err(anyhow!("Server rolled back tree size in Monitor response"));
+                    return Err(anyhow!("Server rolled back tree size in monitor response"));
                 }
             }
-             // Update state if newer
-             if self.state.is_none() || th.tree_size > self.state.as_ref().unwrap().tree_size {
-                 self.state = Some(TrustedState {
+            if self.state.is_none() || th.tree_size > self.state.as_ref().unwrap().tree_size {
+                self.state = Some(TrustedState {
                     tree_size: th.tree_size,
                     root_hash: vec![0u8; 32],
                     timestamp: th.timestamp as u64,
@@ -333,23 +371,17 @@ impl KtClient {
             }
         }
 
-        // 2. Verify CombinedTreeProof structure (Draft Section 11.3)
-        if let Some(monitor_proof) = &resp.monitor {
-            // Verify timestamps monotonicity
-            let mut prev_ts = 0;
-            for &ts in &monitor_proof.timestamps {
-                if ts < prev_ts {
-                    return Err(anyhow!("Monitor timestamps are not monotonic"));
-                }
-                prev_ts = ts;
+        let proof = proof.ok_or(anyhow!("Missing monitor proof"))?;
+        // §12.3
+        let mut prev_ts = 0;
+        for &ts in &proof.timestamps {
+            if ts < prev_ts {
+                return Err(anyhow!("Monitor timestamps are not monotonic"));
             }
-
-            // Must have inclusion proof for consistency
-            if monitor_proof.inclusion.is_none() {
-                return Err(anyhow!("Missing inclusion proof in monitor response"));
-            }
-        } else {
-             return Err(anyhow!("Missing monitor proof"));
+            prev_ts = ts;
+        }
+        if proof.inclusion.is_none() {
+            return Err(anyhow!("Missing inclusion proof in monitor response"));
         }
 
         Ok(())

@@ -1,6 +1,6 @@
 use crate::db::RocksDbStore;
 use crate::service::KeyTransparencyImpl;
-use crate::proto::transparency::{UpdateRequest, LabelValue, MonitorRequest, MonitorLabel, MonitorMapEntry};
+use crate::proto::transparency::{UpdateRequest, LabelValue, ContactMonitorRequest, OwnerInitRequest, MonitorMapEntry};
 use crate::proto::kt::key_transparency_service_server::KeyTransparencyService;
 use crate::crypto::{self, CIPHER_SUITE_KT_128_SHA256_ED25519};
 use anyhow::Result;
@@ -36,41 +36,31 @@ async fn test_monitoring_flow() -> Result<()> {
     }
 
     // Contact Monitoring
-    let req_contact = MonitorRequest {
+    let req_contact = ContactMonitorRequest {
         last: None,
-        labels: vec![MonitorLabel {
-            label: user_id.clone(),
-            entries: vec![MonitorMapEntry {
-                position: 0,
-                version: 0,
-            }],
-            rightmost: None, 
+        label: user_id.clone(),
+        entries: vec![MonitorMapEntry {
+            position: 0,
+            version: 0,
         }],
-        consistency: None,
     };
 
-    let resp_contact = service.monitor(tonic::Request::new(req_contact)).await?.into_inner();
+    let resp_contact = service.contact_monitor(tonic::Request::new(req_contact)).await?.into_inner();
     assert!(resp_contact.monitor.is_some());
     let monitor_proof = resp_contact.monitor.unwrap();
     assert!(!monitor_proof.prefix_proofs.is_empty());
     assert!(monitor_proof.inclusion.is_some());
 
-    // Owner Monitoring
-    let req_owner = MonitorRequest {
+    // Owner Initialization
+    let req_owner = OwnerInitRequest {
         last: None,
-        labels: vec![MonitorLabel {
-            label: user_id.clone(),
-            entries: vec![],
-            rightmost: Some(0), 
-        }],
-        consistency: None,
+        label: user_id.clone(),
+        start: 0,
     };
 
-    let resp_owner = service.monitor(tonic::Request::new(req_owner)).await?.into_inner();
-    assert!(resp_owner.monitor.is_some());
-    assert_eq!(resp_owner.label_versions.len(), 1);
-    let versions = &resp_owner.label_versions[0].versions;
-    assert!(!versions.is_empty());
-    
+    let resp_owner = service.owner_init(tonic::Request::new(req_owner)).await?.into_inner();
+    assert!(resp_owner.init.is_some());
+    assert!(!resp_owner.greatest_versions.is_empty());
+
     Ok(())
 }

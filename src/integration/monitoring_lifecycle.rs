@@ -2,7 +2,7 @@ use crate::db::RocksDbStore;
 use crate::service::KeyTransparencyImpl;
 use crate::proto::transparency::{
     UpdateRequest, LabelValue,
-    MonitorRequest, MonitorLabel, MonitorMapEntry
+    ContactMonitorRequest, OwnerInitRequest, MonitorMapEntry
 };
 use crate::proto::kt::key_transparency_service_server::KeyTransparencyService;
 use crate::crypto::{self, CIPHER_SUITE_KT_128_SHA256_ED25519};
@@ -50,20 +50,16 @@ async fn test_contact_monitoring_conformant() -> Result<()> {
     // 3. Contact Monitoring Request
     // User last saw 'user_a' at position 0. Current head is 3.
     // Logic should trace path from 0 -> Head.
-    let req = MonitorRequest {
+    let req = ContactMonitorRequest {
         last: Some(1), // Client thinks tree size is 1
-        labels: vec![MonitorLabel {
-            label: user_a.clone(),
-            entries: vec![MonitorMapEntry {
-                position: 0,
-                version: 0,
-            }],
-            rightmost: None, // Contact mode
+        label: user_a.clone(),
+        entries: vec![MonitorMapEntry {
+            position: 0,
+            version: 0,
         }],
-        consistency: None,
     };
 
-    let resp = service.monitor(tonic::Request::new(req)).await?.into_inner();
+    let resp = service.contact_monitor(tonic::Request::new(req)).await?.into_inner();
 
     // Verify Response Structure (Draft Section 11.3)
     let proof = resp.monitor.expect("Missing monitor proof");
@@ -118,28 +114,20 @@ async fn test_owner_monitoring_conformant() -> Result<()> {
         values: vec![LabelValue { value: b"v2".to_vec() }],
     })).await?;
 
-    // 3. Owner Monitoring Request
+    // 3. Owner Initialization Request
     // User verifies up to index 0. Wants to know what happened since.
-    let req = MonitorRequest {
-        last: Some(1), 
-        labels: vec![MonitorLabel {
-            label: user_me.clone(),
-            entries: vec![],
-            rightmost: Some(0), // Owner mode: last verified distinguished node
-        }],
-        consistency: None,
+    let req = OwnerInitRequest {
+        last: Some(1),
+        label: user_me.clone(),
+        start: 0,
     };
 
-    let resp = service.monitor(tonic::Request::new(req)).await?.into_inner();
+    let resp = service.owner_init(tonic::Request::new(req)).await?.into_inner();
 
-    // Verify
-    assert!(!resp.label_versions.is_empty());
-    let vers = &resp.label_versions[0];
-    
     // Should find version '1' (which is v2, 0-indexed was v1) at index 1
-    assert!(vers.versions.contains(&1), "Should detect new version 1");
-    
-    let proof = resp.monitor.unwrap();
+    assert!(resp.greatest_versions.contains(&1), "Should detect new version 1");
+
+    let proof = resp.init.unwrap();
     assert!(proof.inclusion.is_some());
     assert!(!proof.prefix_proofs.is_empty());
 
@@ -173,23 +161,19 @@ async fn test_contact_monitoring_ibst_path_fix() -> Result<()> {
     }
 
     // 2. Perform Contact Monitoring for the user inserted at position 25
-    let req = MonitorRequest {
-        last: Some(50), 
-        labels: vec![MonitorLabel {
-            label: target_user.clone(),
-            entries: vec![MonitorMapEntry {
-                position: 25,
-                version: 0,
-            }],
-            rightmost: None, // Contact mode
+    let req = ContactMonitorRequest {
+        last: Some(50),
+        label: target_user.clone(),
+        entries: vec![MonitorMapEntry {
+            position: 25,
+            version: 0,
         }],
-        consistency: None,
     };
 
     // Before the fix, this panicked with "Timestamp not found for log index XXX".
     // After the fix, it should succeed.
-    let resp = service.monitor(tonic::Request::new(req)).await;
-    
+    let resp = service.contact_monitor(tonic::Request::new(req)).await;
+
     assert!(resp.is_ok(), "Monitor request failed: {:?}", resp.err());
     
     let inner_resp = resp.unwrap().into_inner();

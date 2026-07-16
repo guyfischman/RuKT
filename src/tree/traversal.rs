@@ -1,5 +1,5 @@
 use super::Tree;
-use crate::proto::transparency::{CombinedTreeProof, MonitorLabelVersions, BinaryLadderStep, UpdateValue};
+use crate::proto::transparency::{CombinedTreeProof, MonitorMapEntry, BinaryLadderStep, UpdateValue};
 use crate::tree::walker::TraversalSession;
 use crate::tree::log_math;
 use crate::tree::binary_ladder::{fixed_version_binary_ladder, greatest_version_binary_ladder, monitor_binary_ladder};
@@ -170,59 +170,106 @@ impl Tree {
         })
     }
 
-    pub async fn traverse_monitoring(
+    // §8.2
+    async fn visit_contact_entries(
         &self,
+        session: &mut TraversalSession<'_>,
+        entries: &[MonitorMapEntry],
+        distinguished_set: &HashSet<u64>,
         tree_size: u64,
-        req: &crate::proto::transparency::MonitorRequest
-    ) -> Result<(CombinedTreeProof, Vec<MonitorLabelVersions>)> {
-        
-        let mut session = TraversalSession::new(self, b""); 
-        let mut label_versions_list = Vec::new();
+    ) -> Result<()> {
+        for entry in entries {
+            let mut path = vec![entry.position];
+            path.extend(log_math::ibst_direct_path(entry.position, tree_size));
+            path.retain(|&idx| idx >= entry.position);
+            path.sort();
 
-        session.visit_frontier(tree_size).await?;
-
-        let distinguished_nodes = self.find_distinguished_nodes(tree_size).await?;
-        let distinguished_set: HashSet<u64> = distinguished_nodes.into_iter().collect();
-
-        for label_req in &req.labels {
-            session.set_label(&label_req.label);
-
-            for entry in &label_req.entries {
-                let mut path = vec![entry.position];
-                path.extend(log_math::ibst_direct_path(entry.position, tree_size));
-                path.retain(|&idx| idx >= entry.position);
-                path.sort();
-
-                for &log_id in &path {
-                    let ladder = monitor_binary_ladder(entry.version, &[]);
-                    session.visit(log_id, &ladder, None, tree_size).await?;
-                    if distinguished_set.contains(&log_id) { break; }
-                }
-            }
-
-            if let Some(rightmost) = label_req.rightmost {
-                let mut versions_out = MonitorLabelVersions { versions: vec![] };
-                let history = self.store.get_label_history(&label_req.label)?;
-                let root_idx = log_math::root(tree_size);
-                let rightmost_ts = self.log.get_timestamp(tree_size - 1)?;
-                let limit = self.config.max_response_entries;
-
-                let (nodes, _) = self.owner_monitoring_traversal_collect(
-                    root_idx, 0, rightmost_ts, tree_size, rightmost, &history, limit
-                ).await?;
-
-                for (node_idx, ver) in nodes {
-                    versions_out.versions.push(ver);
-                    let ladder = greatest_version_binary_ladder(ver, ver, true, &[], &[], &[]);
-                    session.visit(node_idx, &ladder, None, tree_size).await?;
-                }
-                label_versions_list.push(versions_out);
-            } else {
-                label_versions_list.push(MonitorLabelVersions { versions: vec![] });
+            for &log_id in &path {
+                let ladder = monitor_binary_ladder(entry.version, &[]);
+                session.visit(log_id, &ladder, None, tree_size).await?;
+                if distinguished_set.contains(&log_id) { break; }
             }
         }
+        Ok(())
+    }
 
-        let last = req.last.unwrap_or(0);
-        Ok((session.finalize(tree_size, last)?.0, label_versions_list))
+    // §8.3 second algorithm
+    async fn visit_owner_updates(
+        &self,
+        session: &mut TraversalSession<'_>,
+        label: &[u8],
+        start: u64,
+        tree_size: u64,
+    ) -> Result<Vec<u32>> {
+        let history = self.store.get_label_history(label)?;
+        let root_idx = log_math::root(tree_size);
+        let rightmost_ts = self.log.get_timestamp(tree_size - 1)?;
+        let limit = self.config.max_response_entries;
+
+        let (nodes, _) = self.owner_monitoring_traversal_collect(
+            root_idx, 0, rightmost_ts, tree_size, start, &history, limit
+        ).await?;
+
+        let mut versions = Vec::new();
+        for (node_idx, ver) in nodes {
+            versions.push(ver);
+            let ladder = greatest_version_binary_ladder(ver, ver, true, &[], &[], &[]);
+            session.visit(node_idx, &ladder, None, tree_size).await?;
+        }
+        Ok(versions)
+    }
+
+    pub async fn traverse_contact_monitoring(
+        &self,
+        tree_size: u64,
+        label: &[u8],
+        entries: &[MonitorMapEntry],
+        last: u64,
+    ) -> Result<CombinedTreeProof> {
+        let mut session = TraversalSession::new(self, label);
+        session.visit_frontier(tree_size).await?;
+
+        let distinguished_set: HashSet<u64> =
+            self.find_distinguished_nodes(tree_size).await?.into_iter().collect();
+        self.visit_contact_entries(&mut session, entries, &distinguished_set, tree_size).await?;
+
+        Ok(session.finalize(tree_size, last)?.0)
+    }
+
+    pub async fn traverse_owner_init(
+        &self,
+        tree_size: u64,
+        label: &[u8],
+        start: u64,
+        last: u64,
+    ) -> Result<(CombinedTreeProof, Vec<BinaryLadderStep>, Vec<u32>)> {
+        let mut session = TraversalSession::new(self, label);
+        session.visit_frontier(tree_size).await?;
+
+        let mut versions = self.visit_owner_updates(&mut session, label, start, tree_size).await?;
+        // §13.3: greatest_versions are reported in descending order
+        versions.reverse();
+
+        let (proof, ladder, _, _) = session.finalize(tree_size, last)?;
+        Ok((proof, ladder, versions))
+    }
+
+    pub async fn traverse_owner_monitor(
+        &self,
+        tree_size: u64,
+        label: &[u8],
+        entries: &[MonitorMapEntry],
+        start: u64,
+        last: u64,
+    ) -> Result<CombinedTreeProof> {
+        let mut session = TraversalSession::new(self, label);
+        session.visit_frontier(tree_size).await?;
+
+        let distinguished_set: HashSet<u64> =
+            self.find_distinguished_nodes(tree_size).await?.into_iter().collect();
+        self.visit_contact_entries(&mut session, entries, &distinguished_set, tree_size).await?;
+        self.visit_owner_updates(&mut session, label, start, tree_size).await?;
+
+        Ok(session.finalize(tree_size, last)?.0)
     }
 }

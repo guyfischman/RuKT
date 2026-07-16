@@ -1,6 +1,6 @@
 use crate::db::RocksDbStore;
 use crate::service::KeyTransparencyImpl;
-use crate::proto::transparency::{UpdateRequest, LabelValue, MonitorRequest, MonitorLabel, SearchRequest};
+use crate::proto::transparency::{UpdateRequest, LabelValue, OwnerInitRequest, SearchRequest};
 use crate::proto::kt::key_transparency_service_server::KeyTransparencyService;
 use crate::crypto::{self, CIPHER_SUITE_KT_128_SHA256_ED25519};
 use anyhow::Result;
@@ -63,24 +63,20 @@ async fn test_pagination_full_lifecycle() -> Result<()> {
     // 5. User comes online. Wants to catch up from Index 0 to Index 5.
     // Loop until we catch up to the server's head.
     loop {
-        let req = MonitorRequest {
+        let req = OwnerInitRequest {
             last: None,
-            labels: vec![MonitorLabel {
-                label: user_id.clone(),
-                entries: vec![],
-                rightmost: Some(local_rightmost),
-            }],
-            consistency: None,
+            label: user_id.clone(),
+            start: local_rightmost,
         };
-        
-        let resp = service.monitor(tonic::Request::new(req)).await?.into_inner();
-        
-        let global_tree_size = resp.tree_head.as_ref().unwrap().tree_head.as_ref().unwrap().tree_size;
+
+        let resp = service.owner_init(tonic::Request::new(req)).await?.into_inner();
+
+        let global_tree_size = resp.full_tree_head.as_ref().unwrap().tree_head.as_ref().unwrap().tree_size;
         let global_rightmost = global_tree_size - 1;
-        
-        let new_versions = &resp.label_versions[0].versions;
-        let proof = resp.monitor.unwrap();
-        
+
+        let new_versions = &resp.greatest_versions;
+        let proof = resp.init.unwrap();
+
         println!("Client at {}. Global at {}. Received {} items.", local_rightmost, global_rightmost, new_versions.len());
 
         // Assert Server respected pagination limit

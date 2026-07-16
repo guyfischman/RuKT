@@ -4,7 +4,10 @@ use crate::proto::kt::{AuditRequest, AuditResponse, TreeSizeResponse};
 use crate::proto::transparency::{
     SearchRequest, SearchResponse,
     UpdateRequest, UpdateResponse,
-    MonitorRequest, MonitorResponse,
+    ContactMonitorRequest, ContactMonitorResponse,
+    OwnerInitRequest, OwnerInitResponse,
+    OwnerMonitorRequest, OwnerMonitorResponse,
+    DistinguishedRequest, DistinguishedResponse,
     AuditorTreeHead,
     GetCredentialRequest, Credential
 };
@@ -140,14 +143,38 @@ impl KeyTransparencyService for KeyTransparencyImpl {
         Ok(Response::new(resp))
     }
 
-    async fn monitor(&self, request: Request<MonitorRequest>) -> Result<Response<MonitorResponse>, Status> {
+    async fn contact_monitor(&self, request: Request<ContactMonitorRequest>) -> Result<Response<ContactMonitorResponse>, Status> {
         let req = request.into_inner();
-        let tree_guard = self.tree.read().await; // CHANGED: Read lock
-            
-        let resp = tree_guard.monitor(&req).await
+        let tree_guard = self.tree.read().await;
+
+        let resp = tree_guard.contact_monitor(&req).await
             .map_err(map_anyhow_to_status)?;
-            
+
         Ok(Response::new(resp))
+    }
+
+    async fn owner_init(&self, request: Request<OwnerInitRequest>) -> Result<Response<OwnerInitResponse>, Status> {
+        let req = request.into_inner();
+        let tree_guard = self.tree.read().await;
+
+        let resp = tree_guard.owner_init(&req).await
+            .map_err(map_anyhow_to_status)?;
+
+        Ok(Response::new(resp))
+    }
+
+    async fn owner_monitor(&self, request: Request<OwnerMonitorRequest>) -> Result<Response<OwnerMonitorResponse>, Status> {
+        let req = request.into_inner();
+        let tree_guard = self.tree.read().await;
+
+        let resp = tree_guard.owner_monitor(&req).await
+            .map_err(map_anyhow_to_status)?;
+
+        Ok(Response::new(resp))
+    }
+
+    async fn distinguished(&self, _request: Request<DistinguishedRequest>) -> Result<Response<DistinguishedResponse>, Status> {
+        Err(Status::unimplemented("Walking distinguished heads (§13.6) is not yet implemented"))
     }
     
     async fn get_credential(&self, request: Request<GetCredentialRequest>) -> Result<Response<Credential>, Status> {

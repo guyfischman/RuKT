@@ -23,7 +23,7 @@ use rukt::bulk;
 use rukt::tree::Tree;
 use rukt::proto::transparency::{
     UpdateRequest, LabelValue, SearchRequest,
-    MonitorRequest, MonitorLabel, MonitorMapEntry, Consistency,
+    ContactMonitorRequest, OwnerInitRequest, MonitorMapEntry, Consistency,
     GetCredentialRequest,
 };
 use rukt::proto::kt::AuditRequest;
@@ -599,19 +599,15 @@ fn bench_protocol_monitor(c: &mut Criterion) {
     group.bench_function("contact_1_label", |b| {
         b.iter(|| {
             rt.block_on(async {
-                let req = tonic::Request::new(MonitorRequest {
+                let req = tonic::Request::new(ContactMonitorRequest {
                     last: None,
-                    labels: vec![MonitorLabel {
-                        label: make_label(0),
-                        entries: vec![MonitorMapEntry {
-                            position: 0,
-                            version: 0,
-                        }],
-                        rightmost: None,
+                    label: make_label(0),
+                    entries: vec![MonitorMapEntry {
+                        position: 0,
+                        version: 0,
                     }],
-                    consistency: None,
                 });
-                service.monitor(req).await.unwrap()
+                service.contact_monitor(req).await.unwrap()
             })
         })
     });
@@ -620,22 +616,17 @@ fn bench_protocol_monitor(c: &mut Criterion) {
     group.bench_function("contact_10_labels", |b| {
         b.iter(|| {
             rt.block_on(async {
-                let labels: Vec<MonitorLabel> = (0..10)
-                    .map(|i| MonitorLabel {
+                for i in 0..10 {
+                    let req = tonic::Request::new(ContactMonitorRequest {
+                        last: None,
                         label: make_label(i),
                         entries: vec![MonitorMapEntry {
                             position: 0,
                             version: 0,
                         }],
-                        rightmost: None,
-                    })
-                    .collect();
-                let req = tonic::Request::new(MonitorRequest {
-                    last: None,
-                    labels,
-                    consistency: None,
-                });
-                service.monitor(req).await.unwrap()
+                    });
+                    service.contact_monitor(req).await.unwrap();
+                }
             })
         })
     });
@@ -644,16 +635,12 @@ fn bench_protocol_monitor(c: &mut Criterion) {
     group.bench_function("owner_monitoring", |b| {
         b.iter(|| {
             rt.block_on(async {
-                let req = tonic::Request::new(MonitorRequest {
+                let req = tonic::Request::new(OwnerInitRequest {
                     last: None,
-                    labels: vec![MonitorLabel {
-                        label: make_label(0),
-                        entries: vec![],
-                        rightmost: Some(0),
-                    }],
-                    consistency: None,
+                    label: make_label(0),
+                    start: 0,
                 });
-                service.monitor(req).await.unwrap()
+                service.owner_init(req).await.unwrap()
             })
         })
     });
@@ -1410,19 +1397,15 @@ fn bench_large_scale_scalability(c: &mut Criterion) {
             |b, _| {
                 b.iter(|| {
                     rt.block_on(async {
-                        let req = tonic::Request::new(MonitorRequest {
+                        let req = tonic::Request::new(ContactMonitorRequest {
                             last: None,
-                            labels: vec![MonitorLabel {
-                                label: make_label(0),
-                                entries: vec![MonitorMapEntry {
-                                    position: 0,
-                                    version: 0,
-                                }],
-                                rightmost: None,
+                            label: make_label(0),
+                            entries: vec![MonitorMapEntry {
+                                position: 0,
+                                version: 0,
                             }],
-                            consistency: None,
                         });
-                        service.monitor(req).await.unwrap()
+                        service.contact_monitor(req).await.unwrap()
                     })
                 })
             },

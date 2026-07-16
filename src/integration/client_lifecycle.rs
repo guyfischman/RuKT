@@ -86,10 +86,10 @@ async fn test_full_client_lifecycle() -> Result<()> {
     // 6. Monitor
     println!("--- Client Monitor ---");
     // Monitor position 0 (v0)
-    let mon_resp = client.monitor(user_id.clone(), 0, 0).await?;
+    let mon_resp = client.contact_monitor(user_id.clone(), vec![(0, 0)]).await?;
     
     // Check FullTreeHead
-    let fth = mon_resp.tree_head.unwrap();
+    let fth = mon_resp.full_tree_head.unwrap();
     match fth.head_type {
         x if x == FullTreeHeadType::Updated as i32 => {
             assert_eq!(fth.tree_head.unwrap().tree_size, 2);
