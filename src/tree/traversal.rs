@@ -309,6 +309,7 @@ impl Tree {
         Ok(session.finalize(tree_size, last)?.0)
     }
 
+    // §8.3 first algorithm / §12.3.5
     pub async fn traverse_owner_init(
         &self,
         tree_size: u64,
@@ -317,14 +318,34 @@ impl Tree {
         last: u64,
     ) -> Result<(CombinedTreeProof, Vec<BinaryLadderStep>, Vec<u32>)> {
         let mut session = TraversalSession::new(self, label);
+        let history = self.store.get_label_history(label)?;
+        let rightmost_ts = self.log.get_timestamp(tree_size - 1)?;
+        let max_life = self.config.maximum_lifetime;
+        let is_expired = |ts: u64| max_life.map_or(false, |ml| rightmost_ts.saturating_sub(ts) >= ml);
+
         session.visit_frontier(tree_size).await?;
 
-        let mut versions = self.visit_owner_updates(&mut session, label, start, tree_size).await?;
+        let mut versions = Vec::new();
+        for node in log_math::owner_init_list(start, tree_size) {
+            if is_expired(self.log.get_timestamp(node)?) { break; }
+            let ver = self.get_max_version_at(&history, node);
+            // step 2: non-increasing greatest versions
+            if let (Some(prev), Some(v)) = (versions.last().copied().flatten(), ver) {
+                if v > prev { return Err(anyhow!("Owner-init greatest versions are not monotonic")); }
+            }
+            versions.push(ver);
+            // step 5: full search ladder targeting this entry's greatest version
+            let target = ver.unwrap_or(0);
+            let ladder = search_binary_ladder(target, target, &[], &[]);
+            session.visit(node, &ladder, None, tree_size).await?;
+        }
+
         // §13.3: greatest_versions are reported in descending order
-        versions.reverse();
+        let mut greatest: Vec<u32> = versions.iter().filter_map(|v| *v).collect();
+        greatest.reverse();
 
         let (proof, ladder, _, _) = session.finalize(tree_size, last)?;
-        Ok((proof, ladder, versions))
+        Ok((proof, ladder, greatest))
     }
 
     // §10.1; "recent" = one of the max_response_entries rightmost distinguished entries

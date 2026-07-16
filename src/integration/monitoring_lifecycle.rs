@@ -97,18 +97,17 @@ async fn test_owner_monitoring_conformant() -> Result<()> {
         values: vec![LabelValue { value: b"v2".to_vec() }],
     })).await?;
 
-    // 3. Owner Initialization Request
-    // User verifies up to index 0. Wants to know what happened since.
+    // 3. Owner Initialization from the distinguished entry at index 1
+    // §8.3 reports the greatest version at the start entry (v2 = version 1)
     let req = OwnerInitRequest {
-        last: Some(1),
+        last: None,
         label: user_me.clone(),
-        start: 0,
+        start: 1,
     };
 
     let resp = service.owner_init(tonic::Request::new(req)).await?.into_inner();
 
-    // Should find version '1' (which is v2, 0-indexed was v1) at index 1
-    assert!(resp.greatest_versions.contains(&1), "Should detect new version 1");
+    assert_eq!(resp.greatest_versions, vec![1], "greatest version at index 1 is 1");
 
     let proof = resp.init.unwrap();
     assert!(proof.inclusion.is_some());

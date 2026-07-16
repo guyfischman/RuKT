@@ -239,6 +239,18 @@ pub fn rightmost_leaf(mut node_id: u64) -> u64 {
 
 /// Returns the direct path (ancestors) of a node in the Implicit Binary Search Tree (IBST).
 /// Unlike the Merkle direct_path, this strictly respects tree_size bounds.
+// §8.3 first algorithm: the start entry, then its ancestors to its left,
+// climbing toward the root (before expiry truncation).
+pub fn owner_init_list(start: u64, n: u64) -> Vec<u64> {
+    let mut list = vec![start];
+    for a in ibst_direct_path(start, n) {
+        if a < start {
+            list.push(a);
+        }
+    }
+    list
+}
+
 pub fn ibst_direct_path(target: u64, n: u64) -> Vec<u64> {
     let mut path = Vec::new();
     let mut curr_size = n;

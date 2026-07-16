@@ -57,16 +57,16 @@ async fn test_monitoring_flow() -> Result<()> {
     assert!(!monitor_proof.prefix_proofs.is_empty());
     assert!(monitor_proof.inclusion.is_some());
 
-    // Owner Initialization
+    // Owner Initialization from the entry where the label was created
     let req_owner = OwnerInitRequest {
         last: None,
         label: user_id.clone(),
-        start: 0,
+        start: 2,
     };
 
     let resp_owner = service.owner_init(tonic::Request::new(req_owner)).await?.into_inner();
     assert!(resp_owner.init.is_some());
-    assert!(!resp_owner.greatest_versions.is_empty());
+    assert_eq!(resp_owner.greatest_versions, vec![0]);
 
     Ok(())
 }

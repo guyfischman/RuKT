@@ -404,15 +404,178 @@ impl KtClient {
     pub async fn owner_init(&mut self, user: Vec<u8>, start: u64) -> Result<OwnerInitResponse> {
         let req = OwnerInitRequest {
             last: self.state.as_ref().map(|s| s.tree_size),
-            label: user,
+            label: user.clone(),
             start,
         };
 
         let resp = self.client.clone().owner_init(req).await?.into_inner();
 
-        self.verify_monitor_proof(resp.full_tree_head.as_ref(), resp.init.as_ref())?;
+        self.verify_owner_init(&user, start, &resp)?;
+        self.save_state()?;
 
         Ok(resp)
+    }
+
+    // §8.3 first algorithm
+    fn verify_owner_init(&mut self, label: &[u8], start: u64, resp: &OwnerInitResponse) -> Result<()> {
+        let fth = resp.full_tree_head.as_ref().ok_or(anyhow!("Missing FullTreeHead"))?;
+        let proof = resp.init.as_ref().ok_or(anyhow!("Missing init proof"))?;
+
+        let (tree_size, timestamp_opt, fth_is_updated) = self.tree_size_for_fth(fth)?;
+        if tree_size == 0 || start >= tree_size {
+            return Err(anyhow!("Invalid start position for owner init"));
+        }
+        if fth_is_updated {
+            if let Some(head_ts) = timestamp_opt {
+                self.check_timestamp_bounds(head_ts).context("TreeHead timestamp out of bounds")?;
+            }
+        }
+
+        // §13.3: greatest_versions descending
+        for w in resp.greatest_versions.windows(2) {
+            if w[0] < w[1] {
+                return Err(anyhow!("greatest_versions are not in descending order"));
+            }
+        }
+
+        let max_life = self.config.maximum_lifetime;
+        let mut reader = ProofReader::new(proof);
+        let frontier = log_math::get_frontier(tree_size);
+        for &f in &frontier {
+            reader.timestamp(f)?;
+        }
+        let rightmost_ts = reader.timestamp(tree_size - 1)?;
+        let is_expired = |ts: u64| max_life.map_or(false, |ml| rightmost_ts.saturating_sub(ts) >= ml);
+
+        let mut wire_index: HashMap<u32, usize> = HashMap::new();
+        let mut vrf_cache: HashMap<u32, Vec<u8>> = HashMap::new();
+        let mut entry_roots: BTreeMap<u64, Vec<u8>> = BTreeMap::new();
+        let mut prev_ver: Option<u32> = None;
+        let mut count_existing = 0usize;
+
+        for node in log_math::owner_init_list(start, tree_size) {
+            if is_expired(reader.timestamp(node)?) { break; }
+
+            let pp = reader.prefix_proof(node)?;
+            let (root, greatest) = self.verify_owner_ladder(
+                label, pp, &mut wire_index, &mut vrf_cache, &resp.binary_ladder,
+            ).with_context(|| format!("Owner-init ladder failed at entry {}", node))?;
+
+            if let (Some(p), Some(t)) = (prev_ver, greatest) {
+                if t > p { return Err(anyhow!("Owner-init versions are not monotonic")); }
+            }
+            prev_ver = greatest.or(prev_ver);
+            if greatest.is_some() { count_existing += 1; }
+            record_entry_root(&mut entry_roots, node, root)?;
+        }
+
+        if count_existing != resp.greatest_versions.len() {
+            return Err(anyhow!(
+                "greatest_versions count {} != {} entries where the label existed",
+                resp.greatest_versions.len(), count_existing
+            ));
+        }
+        if resp.binary_ladder.len() != wire_index.len() {
+            return Err(anyhow!("Owner-init binary ladder has unused steps"));
+        }
+
+        let leaf_data = reader.finish(&entry_roots)?;
+        let positions: Vec<u64> = leaf_data.iter().map(|(p, _, _)| *p).collect();
+        let leaf_hashes: Vec<Vec<u8>> = leaf_data.iter()
+            .map(|(_, ts, root)| crate::crypto::hash::log_leaf_value(*ts, root))
+            .collect();
+        let inclusion = proof.inclusion.as_ref().ok_or_else(|| anyhow!("Missing inclusion proof"))?;
+
+        self.verify_head_and_commit(
+            fth, tree_size, timestamp_opt, fth_is_updated,
+            &positions, &leaf_hashes, &inclusion.elements,
+            &std::collections::HashSet::new(),
+        )?;
+
+        // start begins the owner's monitoring; regular monitoring proceeds from here
+        self.monitoring_map.entry(label.to_vec()).or_default();
+        Ok(())
+    }
+
+    /// §8.3: verifies a full (non-omitting) search ladder whose target is the
+    /// entry's own greatest version, taking commitments from the ladder itself.
+    /// Returns the entry's prefix root and its greatest existing version.
+    fn verify_owner_ladder(
+        &self,
+        label: &[u8],
+        pp: &PrefixProof,
+        wire_index: &mut HashMap<u32, usize>,
+        vrf_cache: &mut HashMap<u32, Vec<u8>>,
+        binary_ladder: &[crate::proto::transparency::BinaryLadderStep],
+    ) -> Result<(Vec<u8>, Option<u32>)> {
+        // an absent label is a single terminating non-inclusion at version 0
+        let greatest: Option<u32> = if pp.results.len() == 1 && pp.results[0].result_type != 1 {
+            None
+        } else {
+            // the ladder proves version n exists and n+1 doesn't; decode by trying
+            // each candidate target until the produced ladder matches the results
+            let mut found = None;
+            for cand in 0..=(pp.results.len() as u32) {
+                if let Ok(d) = decode_search_ladder(&pp.results, cand) {
+                    if d.len() == pp.results.len() {
+                        found = d.iter().filter(|lk| lk.inclusion).map(|lk| lk.version).max();
+                        break;
+                    }
+                }
+            }
+            found
+        };
+
+        let target = greatest.unwrap_or(0);
+        let decoded = decode_search_ladder(&pp.results, target)?;
+        if decoded.len() != pp.results.len() {
+            return Err(anyhow!("Owner ladder does not match target version {}", target));
+        }
+
+        let mut elements_offset = 0usize;
+        let mut computed_root: Option<Vec<u8>> = None;
+
+        for (j, lk) in decoded.iter().enumerate() {
+            // termination consistency: existence beyond the greatest is impossible
+            if lk.inclusion && greatest.map_or(true, |g| lk.version > g) {
+                return Err(anyhow!("Owner ladder shows v={} beyond the claimed greatest", lk.version));
+            }
+
+            let next_slot = wire_index.len();
+            let wi = *wire_index.entry(lk.version).or_insert(next_slot);
+            let step = binary_ladder.get(wi)
+                .ok_or_else(|| anyhow!("Ladder step missing for v={}", lk.version))?;
+
+            if !vrf_cache.contains_key(&lk.version) {
+                let vrf_input = construct_vrf_input(label, lk.version)?;
+                let out = crypto::ecvrf_verify(self.config.cipher_suite, &self.vrf_pk, &vrf_input, &step.proof)
+                    .with_context(|| format!("Owner ladder VRF verify failed at v={}", lk.version))?;
+                vrf_cache.insert(lk.version, out.to_vec());
+            }
+
+            let commitment = if lk.inclusion {
+                Some(step.commitment.clone()
+                    .ok_or_else(|| anyhow!("Inclusion for v={} but ladder has no commitment", lk.version))?)
+            } else {
+                None
+            };
+
+            let (root, consumed) = PrefixVerifier::compute_root_from_result(
+                pp, j, &vrf_cache[&lk.version], commitment.as_deref(), elements_offset,
+            )?;
+            elements_offset += consumed;
+
+            match &computed_root {
+                None => computed_root = Some(root),
+                Some(prev) if prev == &root => {}
+                Some(_) => return Err(anyhow!("Owner ladder results disagree on prefix-tree root")),
+            }
+        }
+
+        if elements_offset != pp.elements.len() {
+            return Err(anyhow!("Owner ladder has unused proof elements"));
+        }
+        Ok((computed_root.ok_or_else(|| anyhow!("Owner ladder contained no results"))?, greatest))
     }
 
     // §13.6: walks the recent distinguished heads and retains them for credential
