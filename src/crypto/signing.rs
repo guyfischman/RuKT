@@ -205,12 +205,14 @@ pub fn construct_tree_head_tbs_public(
     Ok(buf)
 }
 
+// §11.5
 pub fn construct_update_tbs(
+    config: &PrivateConfig,
     label: &[u8],
     version: u32,
     value: &[u8]
 ) -> Result<Vec<u8>> {
-    let mut buf = Vec::new();
+    let mut buf = serialize_configuration(config, None)?;
     if label.len() >= 1 << 8 { return Err(anyhow!("Label too long")); }
     Opaqueu8(label).tls_encode(&mut buf);
     version.tls_encode(&mut buf);

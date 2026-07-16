@@ -78,7 +78,7 @@ impl Tree {
                 continue;
             }
             if let Some(verifier) = &tpm_verifier {
-                let tbs = construct_update_tbs(&update.req.search_key, next_ver, &update.req.value)?;
+                let tbs = construct_update_tbs(&self.config, &update.req.search_key, next_ver, &update.req.value)?;
                 if let Err(e) = verify_data(verifier, &tbs, &update.signature) {
                     results_map[i] = Some(Err(anyhow!("TPM Signature verification failed: {}", e)));
                     continue;
