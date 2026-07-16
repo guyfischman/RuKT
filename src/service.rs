@@ -1,6 +1,6 @@
 // Start src/service.rs
 use crate::proto::kt::key_transparency_service_server::KeyTransparencyService;
-use crate::proto::kt::{AuditRequest, AuditResponse, TreeSizeResponse};
+use crate::proto::kt::{AuditRequest, AuditResponse, AuditBootstrapResponse, TreeSizeResponse};
 use crate::proto::transparency::{
     SearchRequest, SearchResponse,
     UpdateRequest, UpdateResponse,
@@ -109,6 +109,31 @@ impl KeyTransparencyService for KeyTransparencyImpl {
             .map_err(map_anyhow_to_status)?;
 
         Ok(Response::new(AuditResponse { updates, more }))
+    }
+
+    async fn audit_bootstrap(&self, _request: Request<()>) -> Result<Response<AuditBootstrapResponse>, Status> {
+        let tree_guard = self.tree.read().await;
+
+        let th = tree_guard.latest.clone()
+            .ok_or_else(|| Status::failed_precondition("Empty tree"))?;
+        let tree_size = th.tree_size;
+
+        let mut log_peaks = Vec::new();
+        for node in crate::tree::log_math::get_roots(tree_size) {
+            log_peaks.push(tree_guard.log.resolve_node_simple(node, tree_size)
+                .map_err(map_anyhow_to_status)?);
+        }
+        let prefix_root = tree_guard.log.get_prefix_root(tree_size - 1)
+            .map_err(map_anyhow_to_status)?;
+        let timestamp = tree_guard.log.get_timestamp(tree_size - 1)
+            .map_err(map_anyhow_to_status)?;
+
+        Ok(Response::new(AuditBootstrapResponse {
+            tree_head: Some(th),
+            log_peaks,
+            prefix_root,
+            timestamp,
+        }))
     }
 
     async fn set_auditor_head(

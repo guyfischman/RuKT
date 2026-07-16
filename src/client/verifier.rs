@@ -115,10 +115,12 @@ impl LogVerifier {
     }
 }
 
+/// Incrementally maintains the log tree's full-subtree peaks, allowing an
+/// auditor to run from an arbitrary starting size without leaf history.
 #[derive(Debug, Clone)]
 pub struct LogAccumulator {
     pub tree_size: u64,
-    pub peaks: Vec<Vec<u8>>, 
+    peaks: Vec<(u32, Vec<u8>)>,
 }
 
 impl LogAccumulator {
@@ -126,34 +128,62 @@ impl LogAccumulator {
         Self { tree_size: 0, peaks: Vec::new() }
     }
 
-    pub fn append_leaf_naive(&mut self, leaf: Vec<u8>) {
-        self.peaks.push(leaf); 
-        self.tree_size += 1;
-    }
-    
-    pub fn calculate_root_naive(&self) -> Result<Vec<u8>> {
-        if self.tree_size == 0 { return Ok(vec![0u8; 32]); }
-        let leaves: Vec<(u64, Vec<u8>)> = self.peaks.iter().enumerate().map(|(i, h)| (i as u64 * 2, h.clone())).collect();
-        Self::build_from_leaves(crate::tree::log_math::merkle_root(self.tree_size), self.tree_size, &leaves)
+    /// Rebuilds the accumulator from the full-subtree values of a tree of
+    /// `tree_size` leaves, ordered left to right.
+    pub fn from_peaks(tree_size: u64, values: Vec<Vec<u8>>) -> Result<Self> {
+        let roots = crate::tree::log_math::get_roots(tree_size);
+        if roots.len() != values.len() {
+            return Err(anyhow!("Expected {} peaks for tree size {}, got {}", roots.len(), tree_size, values.len()));
+        }
+        let peaks = roots.into_iter().zip(values)
+            .map(|(node, v)| (crate::tree::log_math::level(node), v))
+            .collect();
+        Ok(Self { tree_size, peaks })
     }
 
-    fn build_from_leaves(node_idx: u64, tree_size: u64, leaves: &[(u64, Vec<u8>)]) -> Result<Vec<u8>> {
-        if crate::tree::log_math::is_leaf(node_idx) {
-            let leaf_idx = node_idx / 2;
-            if let Some((_, val)) = leaves.get(leaf_idx as usize) {
-                return Ok(val.clone());
-            } else {
-                return Err(anyhow!("Missing leaf {}", leaf_idx));
-            }
+    pub fn append_leaf(&mut self, leaf: Vec<u8>) {
+        self.peaks.push((0, leaf));
+        self.tree_size += 1;
+        while self.peaks.len() >= 2 {
+            let (rh, _) = self.peaks[self.peaks.len() - 1];
+            let (lh, _) = self.peaks[self.peaks.len() - 2];
+            if lh != rh { break; }
+            let (_, r) = self.peaks.pop().unwrap();
+            let (_, l) = self.peaks.pop().unwrap();
+            let merged = log_parent_value(&l, lh == 0, &r, rh == 0);
+            self.peaks.push((lh + 1, merged));
         }
-        let l = crate::tree::log_math::left_child(node_idx);
-        let r = crate::tree::log_math::right_child(node_idx, tree_size);
-        
-        let l_hash = Self::build_from_leaves(l, tree_size, leaves)?;
-        if l == r { return Ok(l_hash); }
-        let r_hash = Self::build_from_leaves(r, tree_size, leaves)?;
-        
-        Ok(log_parent_value(&l_hash, crate::tree::log_math::is_leaf(l), &r_hash, crate::tree::log_math::is_leaf(r)))
+    }
+
+    pub fn calculate_root(&self) -> Result<Vec<u8>> {
+        if self.tree_size == 0 { return Ok(vec![0u8; 32]); }
+        let mut iter = self.peaks.iter().rev();
+        let mut acc = iter.next().unwrap().1.clone();
+        for (h, v) in iter {
+            // the folded right side sits under a collapsed internal node id
+            acc = log_parent_value(v, *h == 0, &acc, false);
+        }
+        Ok(acc)
+    }
+}
+
+#[cfg(test)]
+mod accumulator_tests {
+    use super::LogAccumulator;
+    use crate::client::verifier::LogVerifier;
+
+    #[test]
+    fn peaks_match_full_reconstruction() {
+        let mut acc = LogAccumulator::new();
+        for n in 1..=20u64 {
+            let leaf = vec![n as u8; 32];
+            acc.append_leaf(leaf);
+
+            let leaves: Vec<Vec<u8>> = (1..=n).map(|i| vec![i as u8; 32]).collect();
+            let indices: Vec<u64> = (0..n).collect();
+            let expected = LogVerifier::calculate_root(&indices, &leaves, n, &[]).unwrap();
+            assert_eq!(acc.calculate_root().unwrap(), expected, "size {}", n);
+        }
     }
 }
 

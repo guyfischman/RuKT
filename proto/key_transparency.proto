@@ -20,10 +20,18 @@ message TreeSizeResponse {
   uint64 tree_size = 1;
 }
 
+message AuditBootstrapResponse {
+  transparency.TreeHead tree_head = 1;
+  repeated bytes log_peaks = 2;
+  bytes prefix_root = 3;
+  uint64 timestamp = 4;
+}
+
 service KeyTransparencyService {
   // Auditor endpoints
   rpc TreeSize(google.protobuf.Empty) returns (TreeSizeResponse) {}
   rpc Audit(AuditRequest) returns (AuditResponse) {}
+  rpc AuditBootstrap(google.protobuf.Empty) returns (AuditBootstrapResponse) {}
   rpc SetAuditorHead(transparency.AuditorTreeHead) returns (google.protobuf.Empty) {}
 
   // User endpoints

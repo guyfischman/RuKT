@@ -79,7 +79,7 @@ async fn test_full_auditor_lifecycle() -> Result<()> {
     let _ = user_client.update(b"user1".to_vec(), b"val1".to_vec()).await?;
 
     println!("--- Auditor Processing ---");
-    let mut auditor: KtAuditor = KtAuditor::connect(uri.clone(), auditor_sk, public_config).await?;
+    let mut auditor: KtAuditor = KtAuditor::connect(uri.clone(), auditor_sk.clone(), public_config.clone()).await?;
     
     // Process update 1
     auditor.process_and_sign().await?;
@@ -94,6 +94,19 @@ async fn test_full_auditor_lifecycle() -> Result<()> {
     
     let returned_ath = fth.auditor_tree_head.expect("Server should return auditor tree head");
     assert_eq!(returned_ath.tree_size, 1);
+
+    // 6. The auditor restarts with no local history and bootstraps from the
+    // operator's current signed head, then audits forward
+    let _ = user_client.update(b"user2".to_vec(), b"val2".to_vec()).await?;
+    let _ = user_client.update(b"user3".to_vec(), b"val3".to_vec()).await?;
+
+    let mut restarted: KtAuditor = KtAuditor::connect(uri.clone(), auditor_sk, public_config).await?;
+    let started_at = restarted.bootstrap().await?;
+    assert_eq!(started_at, 3);
+
+    let _ = user_client.update(b"user4".to_vec(), b"val4".to_vec()).await?;
+    restarted.process_and_sign().await?;
+    assert_eq!(restarted.log_accumulator.tree_size, 4);
 
     println!("Auditor Lifecycle Test Passed");
     Ok(())
