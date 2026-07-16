@@ -37,6 +37,8 @@ struct PersistedState {
     monitoring_map: Vec<(String, Vec<(u64, u32)>)>,
     #[serde(default)]
     version_material: Vec<(String, Vec<(u32, String, Option<String>)>)>,
+    #[serde(default)]
+    distinguished_entries: Vec<(u64, u64, String)>,
 }
 
 pub struct KtClient {
@@ -50,6 +52,8 @@ pub struct KtClient {
     // §8.2 monitoring map plus the vrf outputs and commitments needed to re-verify
     pub monitoring_map: HashMap<Vec<u8>, BTreeMap<u64, u32>>,
     version_material: HashMap<Vec<u8>, HashMap<u32, (Vec<u8>, Option<Vec<u8>>)>>,
+    // §14: recently issued distinguished entries (position -> timestamp, prefix root)
+    pub distinguished_entries: BTreeMap<u64, (u64, Vec<u8>)>,
     state_path: Option<std::path::PathBuf>,
     config: PublicConfig,
 }
@@ -71,6 +75,7 @@ impl KtClient {
             auditor_head: None,
             monitoring_map: HashMap::new(),
             version_material: HashMap::new(),
+            distinguished_entries: BTreeMap::new(),
             state_path: None,
             config,
         })
@@ -108,6 +113,9 @@ impl KtClient {
                     Ok((hex::decode(&l)?, inner))
                 })
                 .collect::<Result<_>>()?;
+            self.distinguished_entries = p.distinguished_entries.into_iter()
+                .map(|(pos, ts, root)| Ok((pos, (ts, hex::decode(&root)?))))
+                .collect::<Result<_>>()?;
         }
         self.state_path = Some(path);
         Ok(())
@@ -130,6 +138,9 @@ impl KtClient {
                     hex::encode(l),
                     vs.iter().map(|(&v, (vrf, comm))| (v, hex::encode(vrf), comm.as_ref().map(hex::encode))).collect(),
                 ))
+                .collect(),
+            distinguished_entries: self.distinguished_entries.iter()
+                .map(|(&pos, (ts, root))| (pos, *ts, hex::encode(root)))
                 .collect(),
         };
         std::fs::write(path, serde_json::to_string(&p)?)?;
@@ -412,6 +423,8 @@ impl KtClient {
         Ok(resp)
     }
 
+    // §13.6: walks the recent distinguished heads and retains them for credential
+    // verification and fork detection
     pub async fn distinguished(&mut self, stop: Option<u64>) -> Result<DistinguishedResponse> {
         let req = DistinguishedRequest {
             last: self.state.as_ref().map(|s| s.tree_size),
@@ -420,9 +433,97 @@ impl KtClient {
 
         let resp = self.client.clone().distinguished(req).await?.into_inner();
 
-        self.verify_monitor_proof(resp.full_tree_head.as_ref(), resp.distinguished.as_ref())?;
+        self.verify_distinguished(stop, &resp)?;
+        self.save_state()?;
 
         Ok(resp)
+    }
+
+    // §10.1 replay; TODO: bound "recent" once the shared limit is configured
+    fn verify_distinguished(&mut self, stop: Option<u64>, resp: &DistinguishedResponse) -> Result<()> {
+        let fth = resp.full_tree_head.as_ref().ok_or(anyhow!("Missing FullTreeHead"))?;
+        let proof = resp.distinguished.as_ref().ok_or(anyhow!("Missing distinguished proof"))?;
+
+        let (tree_size, timestamp_opt, fth_is_updated) = self.tree_size_for_fth(fth)?;
+        if tree_size == 0 {
+            return Err(anyhow!("Empty tree"));
+        }
+        if fth_is_updated {
+            if let Some(head_ts) = timestamp_opt {
+                self.check_timestamp_bounds(head_ts)
+                    .context("TreeHead timestamp out of bounds")?;
+            }
+        }
+        let rightmost_ts = timestamp_opt.ok_or_else(|| anyhow!("Missing head timestamp"))?;
+        let rmw = self.config.reasonable_monitoring_window;
+
+        let mut reader = ProofReader::new(proof);
+        let frontier = log_math::get_frontier(tree_size);
+        for &f in &frontier {
+            reader.timestamp(f)?;
+        }
+
+        let mut walked: Vec<u64> = Vec::new();
+        let mut stack = vec![(log_math::root(tree_size), 0u64, rightmost_ts)];
+        while let Some((curr, lo, hi)) = stack.pop() {
+            // step 1 (§6.1 interval selection)
+            if hi.saturating_sub(lo) < rmw { continue; }
+            let ts = reader.timestamp(curr)?;
+            walked.push(curr);
+            if !log_math::is_leaf(curr) && !stop.map_or(false, |s| curr <= s) {
+                stack.push((log_math::left_child(curr), lo, ts));
+            }
+            if !log_math::is_leaf(curr) {
+                if let Some(rc) = log_math::ibst_right_child(curr, tree_size) {
+                    stack.push((rc, ts, hi));
+                }
+            }
+        }
+
+        let entry_roots = BTreeMap::new();
+        let leaf_data = reader.finish(&entry_roots)?;
+        let positions: Vec<u64> = leaf_data.iter().map(|(p, _, _)| *p).collect();
+        let leaf_hashes: Vec<Vec<u8>> = leaf_data.iter()
+            .map(|(_, ts, root)| crate::crypto::hash::log_leaf_value(*ts, root))
+            .collect();
+        let inclusion = proof.inclusion.as_ref()
+            .ok_or_else(|| anyhow!("Missing inclusion proof"))?;
+
+        let (candidate_root, new_peaks) = LogVerifier::calculate_root_with_retained(
+            &positions, &leaf_hashes, tree_size, &inclusion.elements, &self.retained_subtrees,
+        ).context("Log tree root reconstruction failed")?;
+
+        if fth_is_updated {
+            let th = fth.tree_head.as_ref()
+                .ok_or_else(|| anyhow!("FullTreeHead.head_type=updated but TreeHead is missing"))?;
+            self.verify_tree_head_signature(th, tree_size, &candidate_root)
+                .context("TreeHead signature verification failed")?;
+            if self.config.mode == crypto::DEPLOYMENT_MODE_THIRD_PARTY_AUDITING {
+                self.verify_auditor_tree_head(fth, th, tree_size, &candidate_root)
+                    .context("AuditorTreeHead verification failed")?;
+            }
+            self.state = Some(TrustedState {
+                tree_size,
+                root_hash: candidate_root,
+                timestamp: timestamp_opt.unwrap_or(0),
+            });
+            self.retained_subtrees = new_peaks;
+        } else {
+            let prev = self.state.as_ref()
+                .ok_or_else(|| anyhow!("SAME head without previous state"))?;
+            if candidate_root != prev.root_hash {
+                return Err(anyhow!("SAME head but proofs do not reconstruct the retained root"));
+            }
+        }
+
+        let by_pos: BTreeMap<u64, (u64, Vec<u8>)> = leaf_data.into_iter()
+            .map(|(p, ts, root)| (p, (ts, root)))
+            .collect();
+        self.distinguished_entries = walked.into_iter()
+            .filter_map(|p| by_pos.get(&p).map(|v| (p, v.clone())))
+            .collect();
+
+        Ok(())
     }
 
     pub async fn owner_monitor(
@@ -960,6 +1061,55 @@ impl KtClient {
         }
 
         Ok(terminal.unwrap())
+    }
+
+    pub async fn get_credential(&mut self, label: Vec<u8>) -> Result<crate::proto::transparency::Credential> {
+        let req = crate::proto::transparency::GetCredentialRequest { label };
+        Ok(self.client.clone().get_credential(req).await?.into_inner())
+    }
+
+    // §14: offline verification against the retained distinguished entries; a
+    // failure MUST NOT trigger a tree head refresh
+    pub fn verify_credential(&self, cred: &crate::proto::transparency::Credential) -> Result<()> {
+        use crate::proto::transparency::CredentialType;
+
+        // common step 1
+        let (_, dist_root) = self.distinguished_entries.get(&cred.position)
+            .ok_or_else(|| anyhow!("Credential anchors to an unknown distinguished log entry"))?;
+
+        // common step 2 (§11.5)
+        let value = cred.value.as_ref().ok_or_else(|| anyhow!("Missing credential value"))?;
+
+        // common steps 3-4
+        let target_commitment = crate::crypto::hash::commit(&cred.label, cred.version, &value.value, &cred.opening)
+            .context("Commitment computation failed")?;
+
+        if cred.credential_type != CredentialType::Standard as i32 {
+            // TODO: provisional credentials need per-distinguished-entry retained log subtrees
+            return Err(anyhow!("Provisional credential verification is not yet supported"));
+        }
+
+        // §14.1
+        let pp = cred.distinguished.as_ref()
+            .ok_or_else(|| anyhow!("Standard credential missing distinguished PrefixProof"))?;
+
+        let mut wire_index: HashMap<u32, usize> = HashMap::new();
+        let mut vrf_cache: HashMap<u32, Vec<u8>> = HashMap::new();
+        let mut material: HashMap<u32, Option<Vec<u8>>> = HashMap::new();
+
+        let (root, _) = self.verify_ladder_proof(
+            &cred.label, pp, cred.version, &mut wire_index, &mut vrf_cache,
+            &cred.binary_ladder, &target_commitment, true, true, &mut material,
+        ).context("Credential ladder verification failed")?;
+
+        if cred.binary_ladder.len() != wire_index.len() {
+            return Err(anyhow!("Credential binary ladder has unused steps"));
+        }
+        if &root != dist_root {
+            return Err(anyhow!("Credential does not bind to the retained distinguished entry"));
+        }
+
+        Ok(())
     }
 
     // §11.3

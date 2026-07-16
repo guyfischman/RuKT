@@ -1,39 +1,78 @@
 use crate::db::RocksDbStore;
 use crate::service::KeyTransparencyImpl;
-use crate::proto::transparency::{UpdateRequest, GetCredentialRequest, CredentialType, LabelValue};
-use crate::proto::kt::key_transparency_service_server::KeyTransparencyService;
+use crate::client::KtClient;
+use crate::proto::transparency::CredentialType;
 use crate::crypto::{self, CIPHER_SUITE_KT_128_SHA256_ED25519};
 use anyhow::Result;
 use std::sync::Arc;
 use std::collections::HashMap;
 use tempfile::tempdir;
+use tokio::net::TcpListener;
+use tonic::transport::Server;
 
 #[tokio::test]
-async fn test_credential_flow() -> Result<()> {
+async fn test_credential_offline_verification() -> Result<()> {
     let dir = tempdir()?;
     let db = Arc::new(RocksDbStore::new(dir.path().to_str().unwrap())?);
-    let (signer, _) = crypto::generate_sig_keypair();
-    let (vrf_key, _) = crypto::generate_vrf_keypair(CIPHER_SUITE_KT_128_SHA256_ED25519);
-    
-    let service = KeyTransparencyImpl::new(db, signer, vrf_key, HashMap::new(), None).await?;
+    let (sig_sk, sig_vk) = crypto::generate_sig_keypair();
+    let (vrf_priv, vrf_pub) = crypto::generate_vrf_keypair(CIPHER_SUITE_KT_128_SHA256_ED25519);
+
+    let service = KeyTransparencyImpl::new(db, sig_sk, vrf_priv, HashMap::new(), None).await?;
+
+    let addr: std::net::SocketAddr = "127.0.0.1:0".parse().unwrap();
+    let listener = TcpListener::bind(addr).await?;
+    let local_addr = listener.local_addr()?;
+    tokio::spawn(async move {
+        let incoming = futures::stream::unfold(listener, |listener| async move {
+            let res = listener.accept().await.map(|(s, _)| s);
+            Some((res, listener))
+        });
+        let _ = Server::builder()
+            .add_service(crate::proto::kt::key_transparency_service_server::KeyTransparencyServiceServer::new(service))
+            .serve_with_incoming(incoming)
+            .await;
+    });
+
+    let uri = format!("http://{}", local_addr);
+    let public_config = crypto::PublicConfig {
+        cipher_suite: CIPHER_SUITE_KT_128_SHA256_ED25519,
+        mode: crypto::DEPLOYMENT_MODE_CONTACT_MONITORING,
+        server_sig_pk: sig_vk.to_bytes(),
+        vrf_public_key: vrf_pub,
+        leaf_public_key: None,
+        auditor_public_key: None,
+        auditor_start_pos: 0,
+        max_auditor_lag: 60_000,
+        max_ahead: 5000,
+        max_behind: 5000,
+        reasonable_monitoring_window: 86400000,
+        maximum_lifetime: None,
+    };
     let user = b"cred_user".to_vec();
 
-    service.update(tonic::Request::new(UpdateRequest {
-        last: None,
-        label: user.clone(),
-        greatest_version: None,
-        values: vec![LabelValue { value: b"val".to_vec() }],
-    })).await?;
+    // the sender creates versions and obtains its credential
+    let mut sender: KtClient = KtClient::connect(uri.clone(), public_config.clone()).await?;
+    sender.update(user.clone(), b"val".to_vec()).await?;
+    sender.update(b"noise_1".to_vec(), b"x".to_vec()).await?;
+    sender.update(b"noise_2".to_vec(), b"y".to_vec()).await?;
 
-    let cred = service.get_credential(tonic::Request::new(GetCredentialRequest {
-        label: user.clone(),
-    })).await?.into_inner();
-
+    let cred = sender.get_credential(user.clone()).await?;
     assert_eq!(cred.label, user);
     assert_eq!(cred.version, 0);
-    assert!(cred.value.is_some());
-    assert!(!cred.binary_ladder.is_empty());
     assert_eq!(cred.credential_type, CredentialType::Standard as i32);
-    
+
+    // the recipient learns the recent distinguished heads, then verifies the
+    // credential without contacting the log again
+    let mut recipient: KtClient = KtClient::connect(uri, public_config).await?;
+    recipient.distinguished(None).await?;
+    assert!(recipient.distinguished_entries.contains_key(&cred.position));
+
+    recipient.verify_credential(&cred)?;
+
+    // a tampered value must not verify
+    let mut bad = cred.clone();
+    bad.value.as_mut().unwrap().value = b"forged".to_vec();
+    assert!(recipient.verify_credential(&bad).is_err());
+
     Ok(())
 }

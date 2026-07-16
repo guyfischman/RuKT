@@ -337,25 +337,25 @@ impl Tree {
             .copied()
             .collect();
 
+        // right subtrees are fully processed before left ones (right-first DFS)
         let mut stack = vec![log_math::root(tree_size)];
         while let Some(curr) = stack.pop() {
             // step 1
             if !dset.contains(&curr) { continue; }
             // §12.3.8
             session.visit_timestamp_only(curr)?;
+            // steps 3-5: the left child is only walked past the gates
+            if !log_math::is_leaf(curr)
+                && !stop.map_or(false, |s| curr <= s)
+                && recent.contains(&curr)
+            {
+                stack.push(log_math::left_child(curr));
+            }
             // step 2
             if !log_math::is_leaf(curr) {
                 if let Some(rc) = log_math::ibst_right_child(curr, tree_size) {
                     stack.push(rc);
                 }
-            }
-            // step 3
-            if stop.map_or(false, |s| curr <= s) { continue; }
-            // step 4
-            if !recent.contains(&curr) { continue; }
-            // step 5
-            if !log_math::is_leaf(curr) {
-                stack.push(log_math::left_child(curr));
             }
         }
 
