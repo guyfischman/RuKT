@@ -226,7 +226,7 @@ impl Tree {
         Ok((results_map.into_iter().map(|r| r.unwrap_or_else(|| Err(anyhow!("Internal error")))).collect(), th))
     }
 
-    fn find_log_entry_for_prefix_pos(&self, pos: u64, tree_size: u64) -> Result<u64> {
+    pub(crate) fn find_log_entry_for_prefix_pos(&self, pos: u64, tree_size: u64) -> Result<u64> {
         let (mut lo, mut hi) = (0u64, tree_size - 1);
         while lo < hi {
             let mid = lo + (hi - lo) / 2;

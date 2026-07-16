@@ -5,6 +5,7 @@ pub mod read;
 pub mod write;
 pub mod monitor;
 pub mod audit;
+pub mod prune;
 pub mod binary_ladder;
 pub mod credential;
 pub mod errors;

@@ -28,6 +28,17 @@ use tonic::{Request, Response, Status};
 use tokio::sync::RwLock; // CHANGED: Replaced Mutex with RwLock
 use anyhow::{Result, Context};
 
+/// Application-defined access control for point-in-time operations. The
+/// monitoring endpoints deliberately have no hook: protocol-obligated monitor
+/// queries MUST be permitted regardless of current permissions.
+pub trait AccessPolicy: Send + Sync {
+    fn allow_search(&self, _label: &[u8]) -> bool { true }
+    fn allow_update(&self, _label: &[u8]) -> bool { true }
+}
+
+pub struct AllowAll;
+impl AccessPolicy for AllowAll {}
+
 #[derive(Clone)]
 pub struct KeyTransparencyImpl {
     pub db: Arc<dyn TransparencyStore>,
@@ -35,6 +46,7 @@ pub struct KeyTransparencyImpl {
     pub auditor_keys: Arc<HashMap<Vec<u8>, ServiceVerifyingKey>>,
     pub batcher: Arc<Batcher>,
     pub tree: Arc<RwLock<Tree>>, // CHANGED: Now using RwLock for high-concurrency reads
+    pub access_policy: Arc<dyn AccessPolicy>,
 }
 
 impl KeyTransparencyImpl {
@@ -88,7 +100,12 @@ impl KeyTransparencyImpl {
             auditor_keys: Arc::new(auditor_keys),
             batcher,
             tree: tree_arc,
+            access_policy: Arc::new(AllowAll),
         })
+    }
+
+    pub fn set_access_policy(&mut self, policy: Arc<dyn AccessPolicy>) {
+        self.access_policy = policy;
     }
 }
 
@@ -151,20 +168,26 @@ impl KeyTransparencyService for KeyTransparencyImpl {
 
     async fn search(&self, request: Request<SearchRequest>) -> Result<Response<SearchResponse>, Status> {
         let req = request.into_inner();
+        if !self.access_policy.allow_search(&req.label) {
+            return Err(Status::permission_denied("Search not permitted for this label"));
+        }
         let tree_guard = self.tree.read().await; // CHANGED: Read lock
-            
+
         let resp = tree_guard.search(&req).await
             .map_err(map_anyhow_to_status)?;
-            
+
         Ok(Response::new(resp))
     }
 
     async fn update(&self, request: Request<UpdateRequest>) -> Result<Response<UpdateResponse>, Status> {
         let req = request.into_inner();
+        if !self.access_policy.allow_update(&req.label) {
+            return Err(Status::permission_denied("Update not permitted for this label"));
+        }
         // The batcher handles taking the write lock internally when the batch is ready
         let resp = self.batcher.submit(req).await
             .map_err(map_anyhow_to_status)?;
-            
+
         Ok(Response::new(resp))
     }
 

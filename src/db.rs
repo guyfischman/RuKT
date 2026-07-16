@@ -26,6 +26,7 @@ pub trait TransparencyStore: Send + Sync {
     fn get_value(&self, key: u64) -> Result<Option<Vec<u8>>>;
     fn put_value(&self, key: u64, val: Vec<u8>) -> Result<()>;
     fn put_value_batch(&self, entries: Vec<(u64, Vec<u8>)>) -> Result<()>;
+    fn delete_value(&self, key: u64) -> Result<()>;
 
     fn get_opening(&self, key: u64) -> Result<Option<Vec<u8>>>;
     fn put_opening(&self, key: u64, opening: Vec<u8>) -> Result<()>;
@@ -205,6 +206,12 @@ impl TransparencyStore for RocksDbStore {
         let mut batch = rocksdb::WriteBatch::default();
         for (k, v) in entries { batch.put_cf(cf, k.to_be_bytes(), v); }
         self.db.write(batch)?;
+        Ok(())
+    }
+
+    fn delete_value(&self, key: u64) -> Result<()> {
+        let cf = self.db.cf_handle(Self::CF_VALUE).unwrap();
+        self.db.delete_cf(cf, key.to_be_bytes())?;
         Ok(())
     }
 
