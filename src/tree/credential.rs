@@ -53,12 +53,11 @@ impl Tree {
             let (prefix_proof, ladder_results) = self.generate_ladder_proof(prefix_ptr, tree_size, &req.label, &versions).await?;
 
             let mut steps = Vec::new();
-            for (ver, res) in ladder_results {
+            for (ver, comm) in ladder_results {
                 let (_, vrf_proof) = self.config.vrf_prove(&req.label, ver)?;
-                let comm: Option<Vec<u8>> = res.map(|r| r.commitment);
                 steps.push(BinaryLadderStep {
                     proof: vrf_proof,
-                    commitment: comm,
+                    commitment: if ver == target_ver { None } else { comm },
                 });
             }
 
@@ -101,12 +100,11 @@ impl Tree {
                 builder.add_proof(node, proof_struct);
 
                 if node == *frontier.last().unwrap() {
-                    for (ver, res) in results {
+                    for (ver, comm) in results {
                          let (_, vrf_proof) = self.config.vrf_prove(&req.label, ver)?;
-                         let comm: Option<Vec<u8>> = res.map(|r| r.commitment);
                          binary_ladder_steps.push(BinaryLadderStep {
                              proof: vrf_proof,
-                             commitment: comm,
+                             commitment: if ver == target_ver { None } else { comm },
                          });
                     }
                 }

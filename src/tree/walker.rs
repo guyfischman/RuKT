@@ -83,13 +83,14 @@ impl<'a> TraversalSession<'a> {
 
         self.add_proof(node_idx, proof_struct);
 
-        for (ver, res) in ladder_results {
+        for (ver, comm) in ladder_results {
             if self.ladder_versions_added.insert(ver) {
                 let (_, vrf_proof) = self.tree.config.vrf_prove(self.label, ver)?;
-                let comm = res.map(|r| r.commitment);
-                self.binary_ladder.push(BinaryLadderStep { 
-                    proof: vrf_proof, 
-                    commitment: comm 
+                // §13.1: the target version's commitment is recomputed from opening + value
+                let commitment = if extract_target == Some(ver) { None } else { comm };
+                self.binary_ladder.push(BinaryLadderStep {
+                    proof: vrf_proof,
+                    commitment,
                 });
             }
         }

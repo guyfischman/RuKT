@@ -157,7 +157,7 @@ impl PrefixVerifier {
         Ok(())
     }
 
-    // §10.9: siblings at levels >= depth are implicit ZERO_VALUE stand-ins
+    // §12.2; siblings at levels >= depth are implicit ZERO_VALUE stand-ins
     pub fn compute_root_from_result(
         proof: &PrefixProof,
         result_idx: usize,
@@ -170,21 +170,31 @@ impl PrefixVerifier {
         let result = proof.results.get(result_idx)
             .ok_or_else(|| anyhow!("Result index out of range"))?;
 
-        let mut curr_hash = match result.result_type {
+        let depth = result.depth as usize;
+        let total_levels = INDEX_LENGTH * 8;
+        if depth > total_levels {
+            return Err(anyhow!("PrefixProof: depth exceeds tree height"));
+        }
+
+        // non-inclusion results terminate at an empty node on the searched path; the
+        // diverging leaf's subtree sits in the copath, so both fold identically
+        let (mut curr_hash, start_level): (Vec<u8>, usize) = match result.result_type {
             1 => {
                 let comm = commitment.ok_or_else(|| anyhow!("Inclusion result needs commitment"))?;
-                leaf_hash(vrf_output, comm)
+                (leaf_hash(vrf_output, comm), total_levels)
             }
             2 => {
                 let leaf = result.leaf.as_ref()
                     .ok_or_else(|| anyhow!("NonInclusionLeaf result missing leaf"))?;
-                leaf_hash(&leaf.vrf_output, &leaf.commitment)
+                if leaf.vrf_output == vrf_output {
+                    return Err(anyhow!("NonInclusionLeaf carries the searched key itself"));
+                }
+                (ZERO_VALUE.to_vec(), depth)
             }
-            3 => ZERO_VALUE.to_vec(),
+            3 => (ZERO_VALUE.to_vec(), depth),
             _ => return Err(anyhow!("Unknown PrefixSearchResult.result_type")),
         };
 
-        let depth = result.depth as usize;
         let end = elements_offset.checked_add(depth)
             .ok_or_else(|| anyhow!("Element offset overflow"))?;
         if end > proof.elements.len() {
@@ -192,8 +202,7 @@ impl PrefixVerifier {
         }
         let elements = &proof.elements[elements_offset..end];
 
-        let total_levels = INDEX_LENGTH * 8;
-        for level in (0..total_levels).rev() {
+        for level in (0..start_level).rev() {
             let sibling: &[u8] = if level < depth {
                 &elements[level]
             } else {

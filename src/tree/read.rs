@@ -232,41 +232,37 @@ impl Tree {
         })
     }
     
-    // Moved from traversal.rs to share with Walker
-    pub(crate) async fn generate_ladder_proof(&self, prefix_ptr: u64, _tree_size: u64, label: &[u8], versions: &[u32]) 
-        -> Result<(crate::proto::transparency::PrefixProof, Vec<(u32, Option<crate::tree::prefix::SearchResult>)>)> {
-        
-        let mut keys = Vec::new();
-        for &v in versions {
-            let (idx, _) = self.config.vrf_prove(label, v)?;
-            keys.push(idx.to_vec());
-        }
-        
-        let search_results = self.prefix.multi_search(prefix_ptr, &keys).await?;
-        
+    /// Returns the PrefixProof for the requested versions plus, per version, the
+    /// commitment when the version is included.
+    pub(crate) async fn generate_ladder_proof(&self, prefix_ptr: u64, _tree_size: u64, label: &[u8], versions: &[u32])
+        -> Result<(crate::proto::transparency::PrefixProof, Vec<(u32, Option<Vec<u8>>)>)> {
+
+        let overlay = std::collections::HashMap::new();
         let mut proof_results = Vec::new();
         let mut elements = Vec::new();
         let mut ladder_tuples = Vec::new();
-        
-        for (i, res) in search_results.into_iter().enumerate() {
-            if let Some(r) = res {
-                proof_results.push(crate::proto::transparency::PrefixSearchResult {
-                    result_type: 1, 
-                    leaf: None,
-                    depth: r.depth,
-                });
-                elements.extend(r.inclusion_proof.clone()); 
-                ladder_tuples.push((versions[i], Some(r)));
-            } else {
-                proof_results.push(crate::proto::transparency::PrefixSearchResult {
-                    result_type: 3, 
-                    leaf: None,
-                    depth: 0,
-                });
-                ladder_tuples.push((versions[i], None));
-            }
+
+        for &v in versions {
+            let (idx, _) = self.config.vrf_prove(label, v)?;
+            let res = self.prefix.search_for_proof(prefix_ptr, &idx, &overlay).await?;
+
+            // §12.2
+            let leaf = match res.result_type {
+                2 => Some(crate::proto::transparency::PrefixLeaf {
+                    vrf_output: res.leaf_vrf_output.unwrap_or_default(),
+                    commitment: res.leaf_commitment.unwrap_or_default(),
+                }),
+                _ => None,
+            };
+            proof_results.push(crate::proto::transparency::PrefixSearchResult {
+                result_type: res.result_type,
+                leaf,
+                depth: res.depth,
+            });
+            elements.extend(res.inclusion_proof);
+            ladder_tuples.push((v, res.commitment));
         }
-        
+
         Ok((crate::proto::transparency::PrefixProof { results: proof_results, elements }, ladder_tuples))
     }
 }

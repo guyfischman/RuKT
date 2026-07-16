@@ -284,7 +284,11 @@ impl KtClient {
         }
 
         let mut per_proof_roots: Vec<Vec<u8>> = Vec::with_capacity(proof.prefix_proofs.len());
+        let proof_count = proof.prefix_proofs.len();
         for (proof_idx, prefix_proof) in proof.prefix_proofs.iter().enumerate() {
+            // §6.3 step 2 applies per entry for greatest-version searches; the full
+            // check (every v <= target included) applies at the rightmost entry only
+            let greatest = requested_version.is_none();
             let root = verify_prefix_proof_consistent(
                 prefix_proof,
                 &expected_versions,
@@ -292,6 +296,8 @@ impl KtClient {
                 &resp.binary_ladder,
                 target_idx,
                 &target_commitment,
+                greatest,
+                greatest && proof_idx == proof_count - 1,
             ).with_context(|| format!("Prefix proof #{} verification failed", proof_idx))?;
             per_proof_roots.push(root);
         }
@@ -458,6 +464,8 @@ fn verify_prefix_proof_consistent(
     binary_ladder: &[crate::proto::transparency::BinaryLadderStep],
     target_idx: usize,
     target_commitment: &[u8],
+    require_upper_non_inclusion: bool,
+    require_lower_inclusion: bool,
 ) -> Result<Vec<u8>> {
     if prefix_proof.results.len() != versions.len() {
         return Err(anyhow!(
@@ -466,19 +474,23 @@ fn verify_prefix_proof_consistent(
         ));
     }
 
+    let target_version = versions[target_idx];
     let mut elements_offset = 0usize;
     let mut computed_root: Option<Vec<u8>> = None;
 
-    for (i, _) in versions.iter().enumerate() {
+    for (i, &v) in versions.iter().enumerate() {
         let result = &prefix_proof.results[i];
-        let result_type = result.result_type;
+        let is_inclusion = result.result_type == 1;
 
-        // TODO: stop skipping once generate_ladder_proof emits real non-inclusion proofs
-        if result_type != 1 && result.depth == 0 && result.leaf.is_none() {
-            continue;
+        // §6.3 step 2
+        if require_upper_non_inclusion && v > target_version && is_inclusion {
+            return Err(anyhow!("Inclusion proof for v={} contradicts claimed greatest version {}", v, target_version));
+        }
+        if require_lower_inclusion && v <= target_version && !is_inclusion {
+            return Err(anyhow!("Non-inclusion proof for v={} at the rightmost entry contradicts claimed greatest version {}", v, target_version));
         }
 
-        let commitment_bytes: Option<Vec<u8>> = if result_type == 1 {
+        let commitment_bytes: Option<Vec<u8>> = if is_inclusion {
             if i == target_idx {
                 Some(target_commitment.to_vec())
             } else {
@@ -521,7 +533,5 @@ fn verify_prefix_proof_consistent(
         ));
     }
 
-    computed_root.ok_or_else(|| anyhow!(
-        "PrefixProof produced no verifiable root — server provided no inclusion or real non-inclusion entries"
-    ))
+    computed_root.ok_or_else(|| anyhow!("PrefixProof contained no results"))
 }
