@@ -17,6 +17,7 @@ mod full_tree_head_optimization;
 mod full_update_search;
 pub mod gossip;
 pub mod harness;
+mod interop_vectors;
 mod malicious_auditor;
 mod malicious_server;
 mod monitoring_flow;

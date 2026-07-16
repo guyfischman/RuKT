@@ -1,0 +1,86 @@
+{
+  "description": "Deterministic known-answer vectors for the hashed and signed byte formats of draft-ietf-keytrans-protocol-05. All byte strings are hex. A conforming implementation reproduces every `output` from the documented `input` and section. Mirrored by src/integration/interop_vectors.rs.",
+  "cipher_suite": "KT_128_SHA256_ED25519 (0x0002)",
+  "shared_inputs": {
+    "vrf_seed": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+    "vrf_public_key": "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
+    "commitment_opening": "a0a1a2a3a4a5a6a7a8a9aaabacadaeaf",
+    "label": "alice@example.com"
+  },
+  "vectors": [
+    {
+      "name": "commitment",
+      "section": "11.6",
+      "input": { "label": "alice@example.com", "version": 7, "value": "pk_v7", "opening": "a0a1a2a3a4a5a6a7a8a9aaabacadaeaf" },
+      "formula": "HMAC-SHA256(Kc, opening || opaque_u8(label) || u32(version) || opaque_u32(value))",
+      "output": "ea1df1367cab95d5fe5009826bb7c60d0eb972aeea68b032b4efe08d5e0a37f1"
+    },
+    {
+      "name": "vrf_input",
+      "section": "11.7",
+      "input": { "label": "alice@example.com", "version": 7 },
+      "formula": "opaque_u8(label) || u32(version)",
+      "output": "11616c696365406578616d706c652e636f6d00000007"
+    },
+    {
+      "name": "prefix_tree_leaf",
+      "section": "11.9",
+      "input": { "vrf_output": "1111...(32 bytes of 0x11)", "commitment": "2222...(32 bytes of 0x22)" },
+      "formula": "SHA256(0x02 || vrf_output || commitment)",
+      "output": "c484058e7e2b8fe5bbaefcb523aa443ba4d8b5093038dc1f8147e74823eda8f1"
+    },
+    {
+      "name": "prefix_tree_parent",
+      "section": "11.9",
+      "input": { "left": "3333...(32 bytes of 0x33)", "right": "4444...(32 bytes of 0x44)" },
+      "formula": "SHA256(0x03 || left || right)",
+      "output": "a48926ac669d632e914a9abf64e6a79f33dcc0533aac83bc797c17a53b3385be"
+    },
+    {
+      "name": "log_tree_leaf",
+      "section": "11.8",
+      "input": { "timestamp": 72623859790382856, "prefix_root": "5555...(32 bytes of 0x55)" },
+      "formula": "SHA256(u64(timestamp) || prefix_root)",
+      "output": "be713bd94e9d86e157ec6f0b758b0b70fece954fa5e510b63ea250287eb6af6e"
+    },
+    {
+      "name": "log_tree_parent",
+      "section": "11.8",
+      "input": { "left": "6666...(32 bytes of 0x66)", "left_is_leaf": true, "right": "7777...(32 bytes of 0x77)", "right_is_leaf": false },
+      "formula": "SHA256(0x00_if_left_leaf_else_0x01 || left || 0x00_if_right_leaf_else_0x01 || right)",
+      "output": "2de4c8af25d34b82567bdd7720a4a18fedbe18b44e5d3ca7a7a577638ffe643e"
+    },
+    {
+      "name": "vrf_verify",
+      "section": "11.7",
+      "input": {
+        "vrf_public_key": "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
+        "alpha": "alpha",
+        "proof": "dff00db2d25b269d561655860a367a792f80db505089f56b05264828c725138a975f9396e64973768db68ba4d81e58a6dffcb6ef7d114de30ba51b156c776dcc41f795652f9be62512ff89dcd14f8f03"
+      },
+      "note": "ECVRF-EDWARDS25519-SHA512-TAI. Proofs randomize on the nonce; the output does not.",
+      "output": "5add3d6938a61bb190b777f3555206c224d705aeb8c1498299c0d4539e87aece"
+    },
+    {
+      "name": "tree_head_tbs",
+      "section": "11.2",
+      "input": {
+        "config": {
+          "cipher_suite": 2,
+          "mode": 1,
+          "server_sig_pk": "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
+          "vrf_public_key": "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
+          "leaf_public_key": null,
+          "max_ahead": 10000,
+          "max_behind": 10000,
+          "reasonable_monitoring_window": 86400000,
+          "maximum_lifetime": null
+        },
+        "tree_size": 42,
+        "root": "9999...(32 bytes of 0x99)"
+      },
+      "formula": "serialize(Configuration) || u64(tree_size) || root[32]",
+      "output": "000201002003a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8002003a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b80000000000000000271000000000000027100000000005265c0000000000000000002a9999999999999999999999999999999999999999999999999999999999999999"
+    }
+  ]
+}
