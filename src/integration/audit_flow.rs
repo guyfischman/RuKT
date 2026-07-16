@@ -1,6 +1,6 @@
 use crate::db::RocksDbStore;
 use crate::service::KeyTransparencyImpl;
-use crate::proto::transparency::{UpdateRequest, SignedUpdateRequest};
+use crate::proto::transparency::{UpdateRequest, LabelValue};
 use crate::proto::kt::{AuditRequest, key_transparency_service_server::KeyTransparencyService};
 use crate::crypto;
 use anyhow::Result;
@@ -30,26 +30,18 @@ async fn test_audit_flow_with_signatures() -> Result<()> {
 
     // 1. Submit multiple updates
     let user = b"user".to_vec();
-    service.update(tonic::Request::new(SignedUpdateRequest {
-        request: Some(UpdateRequest {
-            search_key: user.clone(),
-            value: b"val1".to_vec(),
-            consistency: None,
-            expected_pre_update_value: vec![],
-            return_update_response: false,
-        }),
-        signature: vec![],
+    service.update(tonic::Request::new(UpdateRequest {
+        last: None,
+        label: user.clone(),
+        greatest_version: None,
+        values: vec![LabelValue { value: b"val1".to_vec() }],
     })).await?;
 
-    service.update(tonic::Request::new(SignedUpdateRequest {
-        request: Some(UpdateRequest {
-            search_key: user.clone(),
-            value: b"val2".to_vec(),
-            consistency: None,
-            expected_pre_update_value: vec![],
-            return_update_response: false,
-        }),
-        signature: vec![],
+    service.update(tonic::Request::new(UpdateRequest {
+        last: None,
+        label: user.clone(),
+        greatest_version: Some(0),
+        values: vec![LabelValue { value: b"val2".to_vec() }],
     })).await?;
 
     // 2. Audit the log

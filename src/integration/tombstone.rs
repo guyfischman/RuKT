@@ -1,6 +1,6 @@
 use crate::db::RocksDbStore;
 use crate::service::KeyTransparencyImpl;
-use crate::proto::transparency::{UpdateRequest, SearchRequest, SignedUpdateRequest};
+use crate::proto::transparency::{LabelValue, SearchRequest, UpdateRequest};
 use crate::proto::kt::key_transparency_service_server::KeyTransparencyService;
 use crate::crypto::{self, CIPHER_SUITE_KT_128_SHA256_ED25519};
 use anyhow::Result;
@@ -20,50 +20,49 @@ async fn test_tombstone_updates() -> Result<()> {
     let val_1 = b"value_1".to_vec();
     let val_2 = b"value_2".to_vec();
 
-    service.update(tonic::Request::new(SignedUpdateRequest {
-        request: Some(UpdateRequest {
-            search_key: user_id.clone(),
-            value: val_1.clone(),
-            consistency: None,
-            expected_pre_update_value: vec![], 
-            return_update_response: true,
-        }),
-        signature: vec![],
+    service.update(tonic::Request::new(UpdateRequest {
+        last: None,
+        label: user_id.clone(),
+        greatest_version: None,
+        values: vec![LabelValue { value: val_1.clone() }],
     })).await?;
 
-    let wrong_val = b"wrong_value".to_vec();
-    let req_fail = tonic::Request::new(SignedUpdateRequest {
-        request: Some(UpdateRequest {
-            search_key: user_id.clone(),
-            value: val_2.clone(),
-            consistency: None,
-            expected_pre_update_value: wrong_val,
-            return_update_response: true,
-        }),
-        signature: vec![],
+    let req_stale = tonic::Request::new(UpdateRequest {
+        last: None,
+        label: user_id.clone(),
+        greatest_version: None,
+        values: vec![LabelValue { value: val_2.clone() }],
     });
 
-    let result = service.update(req_fail).await;
-    assert!(result.is_err());
+    let result = service.update(req_stale).await;
+    assert!(result.is_err(), "Stale greatest_version must be rejected");
+    assert_eq!(result.unwrap_err().code(), tonic::Code::FailedPrecondition);
+
+    let req_wrong = tonic::Request::new(UpdateRequest {
+        last: None,
+        label: user_id.clone(),
+        greatest_version: Some(5),
+        values: vec![LabelValue { value: val_2.clone() }],
+    });
+
+    let result_wrong = service.update(req_wrong).await;
+    assert!(result_wrong.is_err(), "Wrong greatest_version must be rejected");
+    assert_eq!(result_wrong.unwrap_err().code(), tonic::Code::FailedPrecondition);
 
     let search_resp = service.search(tonic::Request::new(SearchRequest {
         label: user_id.clone(),
         last: None,
         version: None,
     })).await?.into_inner();
-    
+
     let current_val = search_resp.value.unwrap().value;
     assert_eq!(current_val, val_1);
 
-    let req_success = tonic::Request::new(SignedUpdateRequest {
-        request: Some(UpdateRequest {
-            search_key: user_id.clone(),
-            value: val_2.clone(),
-            consistency: None,
-            expected_pre_update_value: val_1.clone(),
-            return_update_response: true,
-        }),
-        signature: vec![],
+    let req_success = tonic::Request::new(UpdateRequest {
+        last: None,
+        label: user_id.clone(),
+        greatest_version: Some(0),
+        values: vec![LabelValue { value: val_2.clone() }],
     });
 
     let _ = service.update(req_success).await?;

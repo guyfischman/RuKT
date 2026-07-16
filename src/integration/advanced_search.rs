@@ -1,6 +1,6 @@
 use crate::db::RocksDbStore;
 use crate::service::KeyTransparencyImpl;
-use crate::proto::transparency::{UpdateRequest, SearchRequest, SignedUpdateRequest};
+use crate::proto::transparency::{UpdateRequest, LabelValue, SearchRequest};
 use crate::proto::kt::key_transparency_service_server::KeyTransparencyService;
 use crate::crypto::{self, CIPHER_SUITE_KT_128_SHA256_ED25519};
 use anyhow::Result;
@@ -19,27 +19,19 @@ async fn test_advanced_search() -> Result<()> {
     let user = b"adv_user".to_vec();
 
     // 1. Insert v0
-    service.update(tonic::Request::new(SignedUpdateRequest {
-        request: Some(UpdateRequest {
-            search_key: user.clone(),
-            value: b"v0".to_vec(),
-            consistency: None,
-            expected_pre_update_value: vec![],
-            return_update_response: false,
-        }),
-        signature: vec![],
+    service.update(tonic::Request::new(UpdateRequest {
+        last: None,
+        label: user.clone(),
+        greatest_version: None,
+        values: vec![LabelValue { value: b"v0".to_vec() }],
     })).await?;
 
     // 2. Insert v1
-    service.update(tonic::Request::new(SignedUpdateRequest {
-        request: Some(UpdateRequest {
-            search_key: user.clone(),
-            value: b"v1".to_vec(),
-            consistency: None,
-            expected_pre_update_value: vec![],
-            return_update_response: false,
-        }),
-        signature: vec![],
+    service.update(tonic::Request::new(UpdateRequest {
+        last: None,
+        label: user.clone(),
+        greatest_version: Some(0),
+        values: vec![LabelValue { value: b"v1".to_vec() }],
     })).await?;
     
     // 3. Greatest-Version Search (v1)

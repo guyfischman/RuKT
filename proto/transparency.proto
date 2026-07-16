@@ -108,26 +108,33 @@ message SearchResponse {
     CombinedTreeProof search = 6;
 }
 
+// Section 13.5
+message LabelValue {
+    bytes value = 1;
+}
+
+// Section 13.5
 message UpdateRequest {
-    bytes search_key = 1;
-    bytes value = 2;
-    Consistency consistency = 3;
-    bytes expected_pre_update_value = 4;
-    bool return_update_response = 5;
+    optional uint64 last = 1;
+    bytes label = 2;
+    optional uint32 greatest_version = 3;
+    repeated LabelValue values = 4;
 }
 
-message SignedUpdateRequest {
-    UpdateRequest request = 1;
-    bytes signature = 2;
+// Section 13.5
+message UpdateInfo {
+    bytes opening = 1;
+    optional bytes suffix_signature = 2;
 }
 
+// Section 13.5
 message UpdateResponse {
-    FullTreeHead tree_head = 1;
-    repeated BinaryLadderStep binary_ladder = 3;
-    CombinedTreeProof search = 4;
-    bytes opening = 5;
-    // Section 12.2
-    uint32 version = 6;
+    FullTreeHead full_tree_head = 1;
+    uint64 position = 2;
+    repeated LabelValue values = 3;
+    repeated UpdateInfo info = 4;
+    repeated BinaryLadderStep binary_ladder = 5;
+    CombinedTreeProof update = 6;
 }
 
 message MonitorMapEntry {

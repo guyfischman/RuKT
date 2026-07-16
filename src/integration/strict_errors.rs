@@ -1,6 +1,6 @@
 use crate::db::RocksDbStore;
 use crate::service::KeyTransparencyImpl;
-use crate::proto::transparency::{UpdateRequest, SearchRequest, SignedUpdateRequest};
+use crate::proto::transparency::{LabelValue, SearchRequest, UpdateRequest};
 use crate::proto::kt::key_transparency_service_server::KeyTransparencyService;
 use crate::crypto::{self, CIPHER_SUITE_KT_128_SHA256_ED25519};
 use anyhow::Result;
@@ -16,7 +16,7 @@ async fn test_strict_errors() -> Result<()> {
     let (signer, _) = crypto::generate_sig_keypair();
     let (vrf_key, _) = crypto::generate_vrf_keypair(CIPHER_SUITE_KT_128_SHA256_ED25519);
     
-    let mut service = KeyTransparencyImpl::new(db.clone(), signer, vrf_key, HashMap::new(), None).await?;
+    let service = KeyTransparencyImpl::new(db.clone(), signer, vrf_key, HashMap::new(), None).await?;
     {
          let mut tree = service.tree.write().await;
          tree.config.maximum_lifetime = Some(10_000); 
@@ -24,26 +24,18 @@ async fn test_strict_errors() -> Result<()> {
 
     let user = b"error_user".to_vec();
 
-    service.update(tonic::Request::new(SignedUpdateRequest {
-        request: Some(UpdateRequest {
-            search_key: user.clone(),
-            value: b"v0".to_vec(),
-            consistency: None,
-            expected_pre_update_value: vec![],
-            return_update_response: false,
-        }),
-        signature: vec![],
+    service.update(tonic::Request::new(UpdateRequest {
+        last: None,
+        label: user.clone(),
+        greatest_version: None,
+        values: vec![LabelValue { value: b"v0".to_vec() }],
     })).await?;
 
-    service.update(tonic::Request::new(SignedUpdateRequest {
-        request: Some(UpdateRequest {
-            search_key: user.clone(),
-            value: b"v1".to_vec(),
-            consistency: None,
-            expected_pre_update_value: vec![],
-            return_update_response: false,
-        }),
-        signature: vec![],
+    service.update(tonic::Request::new(UpdateRequest {
+        last: None,
+        label: user.clone(),
+        greatest_version: Some(0),
+        values: vec![LabelValue { value: b"v1".to_vec() }],
     })).await?;
 
     let req_missing = tonic::Request::new(SearchRequest {

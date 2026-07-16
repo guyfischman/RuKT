@@ -50,7 +50,7 @@ async fn main() -> anyhow::Result<()> {
     println!("Registering user 'bob'...");
     
     let update_resp = client.update(user.clone(), key.clone()).await?;
-    let ts = update_resp.tree_head.unwrap().tree_head.unwrap().tree_size;
+    let ts = update_resp.full_tree_head.unwrap().tree_head.unwrap().tree_size;
     println!("Update successful. New Tree Size: {}", ts);
 
     // 2. Search

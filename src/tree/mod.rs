@@ -13,7 +13,7 @@ pub mod walker;
 
 use crate::db::{TransparencyStore, AuditorTreeHead};
 use crate::proto::transparency::{
-    UpdateRequest, FullTreeHead, TreeHead,
+    FullTreeHead, TreeHead,
 };
 use crate::crypto::PrivateConfig;
 use std::sync::Arc;
@@ -32,8 +32,9 @@ pub struct Tree {
 
 #[derive(Clone)]
 pub struct PreUpdateData {
-    pub req: UpdateRequest,
-    pub signature: Vec<u8>,
+    pub label: Vec<u8>,
+    pub value: Vec<u8>,
+    pub last: u64,
     pub version: u32,
     pub index: [u8; 32],
     pub vrf_proof: Vec<u8>,

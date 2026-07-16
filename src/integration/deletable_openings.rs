@@ -1,6 +1,6 @@
 use crate::db::RocksDbStore;
 use crate::service::KeyTransparencyImpl;
-use crate::proto::transparency::{UpdateRequest, SearchRequest, SignedUpdateRequest};
+use crate::proto::transparency::{UpdateRequest, SearchRequest, LabelValue};
 use crate::proto::kt::key_transparency_service_server::KeyTransparencyService;
 use crate::crypto::{self, CIPHER_SUITE_KT_128_SHA256_ED25519};
 use anyhow::Result;
@@ -20,15 +20,11 @@ async fn test_deletable_openings() -> Result<()> {
     let user = b"forgotten_user".to_vec();
 
     // 1. Insert v0
-    service.update(tonic::Request::new(SignedUpdateRequest {
-        request: Some(UpdateRequest {
-            search_key: user.clone(),
-            value: b"v0".to_vec(),
-            consistency: None,
-            expected_pre_update_value: vec![],
-            return_update_response: false,
-        }),
-        signature: vec![],
+    service.update(tonic::Request::new(UpdateRequest {
+        last: None,
+        label: user.clone(),
+        greatest_version: None,
+        values: vec![LabelValue { value: b"v0".to_vec() }],
     })).await?;
 
     // 2. Search Success (Opening Present)

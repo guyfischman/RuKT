@@ -1,6 +1,6 @@
 use crate::db::RocksDbStore;
 use crate::service::KeyTransparencyImpl;
-use crate::proto::transparency::{UpdateRequest, SignedUpdateRequest, AuditorTreeHead};
+use crate::proto::transparency::{UpdateRequest, LabelValue, AuditorTreeHead};
 use crate::proto::kt::key_transparency_service_server::KeyTransparencyService;
 use crate::crypto::{self, CIPHER_SUITE_KT_128_SHA256_ED25519};
 use anyhow::Result;
@@ -31,15 +31,11 @@ async fn test_malicious_auditor_logic() -> Result<()> {
 
     // 3. Populate Tree (Size 0 -> 2)
     for i in 0..2 {
-        service.update(tonic::Request::new(SignedUpdateRequest {
-            request: Some(UpdateRequest {
-                search_key: format!("user_{}", i).as_bytes().to_vec(),
-                value: b"val".to_vec(),
-                consistency: None,
-                expected_pre_update_value: vec![],
-                return_update_response: false,
-            }),
-            signature: vec![],
+        service.update(tonic::Request::new(UpdateRequest {
+            last: None,
+            label: format!("user_{}", i).as_bytes().to_vec(),
+            greatest_version: None,
+            values: vec![LabelValue { value: b"val".to_vec() }],
         })).await?;
     }
 

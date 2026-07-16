@@ -69,7 +69,7 @@ async fn test_full_client_lifecycle() -> Result<()> {
     
     println!("--- Client Update v0 ---");
     let update_resp = client.update(user_id.clone(), value_v0.clone()).await?;
-    assert_eq!(update_resp.tree_head.unwrap().tree_head.unwrap().tree_size, 1);
+    assert_eq!(update_resp.full_tree_head.unwrap().tree_head.unwrap().tree_size, 1);
     
     // 4. Search (Verify)
     println!("--- Client Search v0 ---");
@@ -81,7 +81,7 @@ async fn test_full_client_lifecycle() -> Result<()> {
     let value_v1 = b"key_material_v1".to_vec();
     println!("--- Client Update v1 ---");
     let update_resp_2 = client.update(user_id.clone(), value_v1.clone()).await?;
-    assert_eq!(update_resp_2.tree_head.unwrap().tree_head.unwrap().tree_size, 2);
+    assert_eq!(update_resp_2.full_tree_head.unwrap().tree_head.unwrap().tree_size, 2);
 
     // 6. Monitor
     println!("--- Client Monitor ---");

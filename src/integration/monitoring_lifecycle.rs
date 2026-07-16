@@ -1,7 +1,7 @@
 use crate::db::RocksDbStore;
 use crate::service::KeyTransparencyImpl;
 use crate::proto::transparency::{
-    UpdateRequest, SignedUpdateRequest, 
+    UpdateRequest, LabelValue,
     MonitorRequest, MonitorLabel, MonitorMapEntry
 };
 use crate::proto::kt::key_transparency_service_server::KeyTransparencyService;
@@ -30,28 +30,20 @@ async fn test_contact_monitoring_conformant() -> Result<()> {
     let user_a = b"user_a".to_vec();
 
     // 1. Initial Update (Log Index 0)
-    service.update(tonic::Request::new(SignedUpdateRequest {
-        request: Some(UpdateRequest {
-            search_key: user_a.clone(),
-            value: b"v1".to_vec(),
-            consistency: None,
-            expected_pre_update_value: vec![],
-            return_update_response: true,
-        }),
-        signature: vec![],
+    service.update(tonic::Request::new(UpdateRequest {
+        last: None,
+        label: user_a.clone(),
+        greatest_version: None,
+        values: vec![LabelValue { value: b"v1".to_vec() }],
     })).await?;
 
     // 2. Other updates to advance tree (Log Indices 1, 2)
     for i in 1..=2 {
-        service.update(tonic::Request::new(SignedUpdateRequest {
-            request: Some(UpdateRequest {
-                search_key: format!("user_dummy_{}", i).as_bytes().to_vec(),
-                value: b"data".to_vec(),
-                consistency: None,
-                expected_pre_update_value: vec![],
-                return_update_response: false,
-            }),
-            signature: vec![],
+        service.update(tonic::Request::new(UpdateRequest {
+            last: None,
+            label: format!("user_dummy_{}", i).as_bytes().to_vec(),
+            greatest_version: None,
+            values: vec![LabelValue { value: b"data".to_vec() }],
         })).await?;
     }
 
@@ -111,27 +103,19 @@ async fn test_owner_monitoring_conformant() -> Result<()> {
     let user_me = b"owner_user".to_vec();
 
     // 1. Initial Update (Index 0)
-    service.update(tonic::Request::new(SignedUpdateRequest {
-        request: Some(UpdateRequest {
-            search_key: user_me.clone(),
-            value: b"v1".to_vec(),
-            consistency: None,
-            expected_pre_update_value: vec![],
-            return_update_response: true,
-        }),
-        signature: vec![],
+    service.update(tonic::Request::new(UpdateRequest {
+        last: None,
+        label: user_me.clone(),
+        greatest_version: None,
+        values: vec![LabelValue { value: b"v1".to_vec() }],
     })).await?;
 
     // 2. Second Update (Index 1)
-    service.update(tonic::Request::new(SignedUpdateRequest {
-        request: Some(UpdateRequest {
-            search_key: user_me.clone(),
-            value: b"v2".to_vec(),
-            consistency: None,
-            expected_pre_update_value: vec![],
-            return_update_response: true,
-        }),
-        signature: vec![],
+    service.update(tonic::Request::new(UpdateRequest {
+        last: None,
+        label: user_me.clone(),
+        greatest_version: Some(0),
+        values: vec![LabelValue { value: b"v2".to_vec() }],
     })).await?;
 
     // 3. Owner Monitoring Request
@@ -180,15 +164,11 @@ async fn test_contact_monitoring_ibst_path_fix() -> Result<()> {
     for i in 0..50 {
         let user = if i == 25 { target_user.clone() } else { format!("user_{}", i).into_bytes() };
         
-        service.update(tonic::Request::new(SignedUpdateRequest {
-            request: Some(UpdateRequest {
-                search_key: user,
-                value: format!("val_{}", i).into_bytes(),
-                consistency: None,
-                expected_pre_update_value: vec![],
-                return_update_response: false,
-            }),
-            signature: vec![],
+        service.update(tonic::Request::new(UpdateRequest {
+            last: None,
+            label: user,
+            greatest_version: None,
+            values: vec![LabelValue { value: format!("val_{}", i).into_bytes() }],
         })).await?;
     }
 

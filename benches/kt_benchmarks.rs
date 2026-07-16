@@ -22,7 +22,7 @@ use rukt::service::KeyTransparencyImpl;
 use rukt::bulk;
 use rukt::tree::Tree;
 use rukt::proto::transparency::{
-    UpdateRequest, SignedUpdateRequest, SearchRequest,
+    UpdateRequest, LabelValue, SearchRequest,
     MonitorRequest, MonitorLabel, MonitorMapEntry, Consistency,
     GetCredentialRequest,
 };
@@ -73,6 +73,15 @@ fn make_large_value(size_bytes: usize) -> Vec<u8> {
     vec![0xAB; size_bytes]
 }
 
+fn update_req(label: Vec<u8>, greatest_version: Option<u32>, value: Vec<u8>) -> UpdateRequest {
+    UpdateRequest {
+        last: None,
+        label,
+        greatest_version,
+        values: vec![LabelValue { value }],
+    }
+}
+
 /// Deterministic pseudo-random version in [1, max_exclusive) for benchmarks.
 /// Avoids v0 (always cheapest — earliest entry, ladder terminates immediately)
 /// while remaining reproducible across runs.
@@ -107,16 +116,7 @@ fn setup_service_with_users(n: usize) -> (KeyTransparencyImpl, Runtime) {
         for i in 0..n {
             let svc_clone = svc.clone();
             handles.push(tokio::spawn(async move {
-                let req = tonic::Request::new(SignedUpdateRequest {
-                    request: Some(UpdateRequest {
-                        search_key: make_label(i),
-                        value: make_value(0),
-                        consistency: None,
-                        expected_pre_update_value: vec![],
-                        return_update_response: true,
-                    }),
-                    signature: vec![],
-                });
+                let req = tonic::Request::new(update_req(make_label(i), None, make_value(0)));
                 let _ = svc_clone.update(req).await;
             }));
         }
@@ -145,16 +145,8 @@ fn setup_service_with_versions(n: usize) -> (KeyTransparencyImpl, Runtime) {
 
         let label = make_label(0);
         for v in 0..n {
-            let req = tonic::Request::new(SignedUpdateRequest {
-                request: Some(UpdateRequest {
-                    search_key: label.clone(),
-                    value: make_value(v),
-                    consistency: None,
-                    expected_pre_update_value: vec![],
-                    return_update_response: true,
-                }),
-                signature: vec![],
-            });
+            let gv = if v == 0 { None } else { Some(v as u32 - 1) };
+            let req = tonic::Request::new(update_req(label.clone(), gv, make_value(v)));
             let _ = svc.update(req).await;
             // Wait for batcher to flush each individually (separate log entries)
             tokio::time::sleep(tokio::time::Duration::from_millis(60)).await;
@@ -476,16 +468,7 @@ fn bench_protocol_update(c: &mut Criterion) {
         b.iter(|| {
             let i = counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             rt.block_on(async {
-                let req = tonic::Request::new(SignedUpdateRequest {
-                    request: Some(UpdateRequest {
-                        search_key: make_label(i),
-                        value: make_value(0),
-                        consistency: None,
-                        expected_pre_update_value: vec![],
-                        return_update_response: true,
-                    }),
-                    signature: vec![],
-                });
+                let req = tonic::Request::new(update_req(make_label(i), None, make_value(0)));
                 service.update(req).await.unwrap()
             })
         })
@@ -497,16 +480,11 @@ fn bench_protocol_update(c: &mut Criterion) {
         b.iter(|| {
             let v = rotation_ctr.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             rt.block_on(async {
-                let req = tonic::Request::new(SignedUpdateRequest {
-                    request: Some(UpdateRequest {
-                        search_key: make_label(0),
-                        value: make_value(v),
-                        consistency: None,
-                        expected_pre_update_value: vec![],
-                        return_update_response: true,
-                    }),
-                    signature: vec![],
-                });
+                let req = tonic::Request::new(update_req(
+                    make_label(0),
+                    Some(v as u32 - 1),
+                    make_value(v),
+                ));
                 service.update(req).await.unwrap()
             })
         })
@@ -766,16 +744,11 @@ fn bench_batch_throughput(c: &mut Criterion) {
                             let svc = service.clone();
                             let idx = base + i;
                             handles.push(tokio::spawn(async move {
-                                let req = tonic::Request::new(SignedUpdateRequest {
-                                    request: Some(UpdateRequest {
-                                        search_key: make_label(idx),
-                                        value: make_value(0),
-                                        consistency: None,
-                                        expected_pre_update_value: vec![],
-                                        return_update_response: true,
-                                    }),
-                                    signature: vec![],
-                                });
+                                let req = tonic::Request::new(update_req(
+                                    make_label(idx),
+                                    None,
+                                    make_value(0),
+                                ));
                                 let _ = svc.update(req).await;
                             }));
                         }
@@ -870,17 +843,11 @@ fn bench_git_forge_scenario(c: &mut Criterion) {
         b.iter(|| {
             let i = counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             rt.block_on(async {
-                let req = tonic::Request::new(SignedUpdateRequest {
-                    request: Some(UpdateRequest {
-                        search_key: make_label(i),
-                        value: b"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExample..."
-                            .to_vec(),
-                        consistency: None,
-                        expected_pre_update_value: vec![],
-                        return_update_response: true,
-                    }),
-                    signature: vec![],
-                });
+                let req = tonic::Request::new(update_req(
+                    make_label(i),
+                    None,
+                    b"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExample...".to_vec(),
+                ));
                 service.update(req).await.unwrap()
             })
         })
@@ -934,16 +901,7 @@ fn bench_enterprise_rotation(c: &mut Criterion) {
         for i in 0..50 {
             let s = svc.clone();
             handles.push(tokio::spawn(async move {
-                let req = tonic::Request::new(SignedUpdateRequest {
-                    request: Some(UpdateRequest {
-                        search_key: make_label(i),
-                        value: make_value(0),
-                        consistency: None,
-                        expected_pre_update_value: vec![],
-                        return_update_response: true,
-                    }),
-                    signature: vec![],
-                });
+                let req = tonic::Request::new(update_req(make_label(i), None, make_value(0)));
                 let _ = s.update(req).await;
             }));
         }
@@ -956,16 +914,11 @@ fn bench_enterprise_rotation(c: &mut Criterion) {
             for i in 0..50 {
                 let s = svc.clone();
                 handles.push(tokio::spawn(async move {
-                    let req = tonic::Request::new(SignedUpdateRequest {
-                        request: Some(UpdateRequest {
-                            search_key: make_label(i),
-                            value: make_value(rotation),
-                            consistency: None,
-                            expected_pre_update_value: vec![],
-                            return_update_response: true,
-                        }),
-                        signature: vec![],
-                    });
+                    let req = tonic::Request::new(update_req(
+                        make_label(i),
+                        Some(rotation as u32 - 1),
+                        make_value(rotation),
+                    ));
                     let _ = s.update(req).await;
                 }));
             }
@@ -1057,16 +1010,8 @@ fn bench_scalability(c: &mut Criterion) {
                 b.iter(|| {
                     let i = counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                     rt.block_on(async {
-                        let req = tonic::Request::new(SignedUpdateRequest {
-                            request: Some(UpdateRequest {
-                                search_key: make_label(i),
-                                value: make_value(0),
-                                consistency: None,
-                                expected_pre_update_value: vec![],
-                                return_update_response: true,
-                            }),
-                            signature: vec![],
-                        });
+                        let req =
+                            tonic::Request::new(update_req(make_label(i), None, make_value(0)));
                         service.update(req).await.unwrap()
                     })
                 })
@@ -1146,16 +1091,11 @@ fn bench_value_sizes(c: &mut Criterion) {
                 b.iter(|| {
                     let i = counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                     rt.block_on(async {
-                        let req = tonic::Request::new(SignedUpdateRequest {
-                            request: Some(UpdateRequest {
-                                search_key: make_label(i),
-                                value: make_large_value(sz),
-                                consistency: None,
-                                expected_pre_update_value: vec![],
-                                return_update_response: true,
-                            }),
-                            signature: vec![],
-                        });
+                        let req = tonic::Request::new(update_req(
+                            make_label(i),
+                            None,
+                            make_large_value(sz),
+                        ));
                         service.update(req).await.unwrap()
                     })
                 })
@@ -1569,16 +1509,7 @@ fn bench_gdpr(c: &mut Criterion) {
         for i in 0..100 {
             let s = svc.clone();
             handles.push(tokio::spawn(async move {
-                let req = tonic::Request::new(SignedUpdateRequest {
-                    request: Some(UpdateRequest {
-                        search_key: make_label(i),
-                        value: make_value(0),
-                        consistency: None,
-                        expected_pre_update_value: vec![],
-                        return_update_response: true,
-                    }),
-                    signature: vec![],
-                });
+                let req = tonic::Request::new(update_req(make_label(i), None, make_value(0)));
                 let _ = s.update(req).await;
             }));
         }

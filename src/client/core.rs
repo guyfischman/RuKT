@@ -1,13 +1,14 @@
 use tonic::transport::Channel;
 use crate::proto::kt::key_transparency_service_client::KeyTransparencyServiceClient;
 use crate::proto::transparency::{
-    SearchRequest, UpdateRequest, SignedUpdateRequest,
+    SearchRequest, UpdateRequest, LabelValue,
     MonitorRequest, MonitorLabel, Consistency,
     UpdateResponse, SearchResponse, MonitorResponse,
     FullTreeHead, FullTreeHeadType, PrefixProof,
 };
+use std::collections::HashMap;
 use crate::crypto::{self, PublicConfig, ServiceVerifyingKey, construct_tree_head_tbs_public, verify_data, construct_vrf_input};
-use crate::client::verifier::{LogVerifier, PrefixVerifier, CommitmentVerifier};
+use crate::client::verifier::{LogVerifier, PrefixVerifier};
 use crate::tree::log_math;
 use crate::tree::binary_ladder::base_binary_ladder;
 use anyhow::{Result, anyhow, Context};
@@ -24,6 +25,7 @@ pub struct KtClient {
     sig_pk: ServiceVerifyingKey,
     vrf_pk: Vec<u8>,
     pub state: Option<TrustedState>,
+    pub label_versions: HashMap<Vec<u8>, u32>,
     config: PublicConfig,
 }
 
@@ -39,27 +41,26 @@ impl KtClient {
             sig_pk,
             vrf_pk,
             state: None,
+            label_versions: HashMap::new(),
             config,
         })
     }
 
     pub async fn update(&mut self, user: Vec<u8>, value: Vec<u8>) -> Result<UpdateResponse> {
+        let greatest_version = self.label_versions.get(&user).copied();
         let req = UpdateRequest {
-            search_key: user.clone(),
-            value: value.clone(),
-            consistency: self.get_consistency_req(),
-            expected_pre_update_value: vec![],
-            return_update_response: true,
+            last: self.get_consistency_req().and_then(|c| c.last),
+            label: user.clone(),
+            greatest_version,
+            values: vec![LabelValue { value: value.clone() }],
         };
 
-        let signed_req = SignedUpdateRequest {
-            request: Some(req),
-            signature: vec![],
-        };
+        let resp = self.client.clone().update(req).await?.into_inner();
 
-        let resp = self.client.clone().update(signed_req).await?.into_inner();
+        self.verify_update_response(&user, greatest_version, &[value], &resp).await?;
 
-        self.verify_update_response(&user, &value, &resp).await?;
+        let new_greatest = greatest_version.map(|v| v + 1).unwrap_or(0);
+        self.label_versions.insert(user, new_greatest);
 
         Ok(resp)
     }
@@ -74,6 +75,10 @@ impl KtClient {
         let resp = self.client.clone().search(req).await?.into_inner();
 
         self.verify_search_response(&user, version, &resp).await?;
+
+        if let (None, Some(greatest)) = (version, resp.version) {
+            self.label_versions.insert(user, greatest);
+        }
 
         Ok(resp)
     }
@@ -106,32 +111,61 @@ impl KtClient {
         None
     }
 
-    async fn verify_update_response(&mut self, label: &[u8], value: &[u8], resp: &UpdateResponse) -> Result<()> {
-        let proof = resp.search.as_ref().ok_or(anyhow!("Missing search proof"))?;
-
-        let ladder = &resp.binary_ladder;
-        if ladder.is_empty() { return Err(anyhow!("Empty binary ladder")); }
-
-        let fth = resp.tree_head.as_ref().ok_or(anyhow!("Missing FullTreeHead"))?;
+    async fn verify_update_response(
+        &mut self,
+        label: &[u8],
+        advertised_greatest: Option<u32>,
+        sent_values: &[Vec<u8>],
+        resp: &UpdateResponse,
+    ) -> Result<()> {
+        let proof = resp.update.as_ref().ok_or(anyhow!("Missing update proof"))?;
+        let fth = resp.full_tree_head.as_ref().ok_or(anyhow!("Missing FullTreeHead"))?;
         let th = fth.tree_head.as_ref().ok_or(anyhow!("Missing TreeHead"))?;
 
         if th.tree_size == 0 {
             return Err(anyhow!("Tree size is 0"));
         }
+        if resp.position >= th.tree_size {
+            return Err(anyhow!("Insertion position {} outside tree of size {}", resp.position, th.tree_size));
+        }
 
-        let vrf_output = crypto::ecvrf_verify(
-            self.config.cipher_suite,
-            &self.vrf_pk,
-            &construct_vrf_input(label, th.tree_size as u32 - 1).unwrap_or(vec![]),
-            &ladder[0].proof
-        ).context("VRF verification failed")?;
-        let _ = vrf_output;
+        if !resp.values.is_empty() {
+            return Err(anyhow!("Server reports newer versions of the label exist; catch-up not yet supported"));
+        }
 
-        let comm = ladder[0].commitment.as_ref().ok_or(anyhow!("Missing commitment"))?;
-        CommitmentVerifier::verify(label, resp.version, value, &resp.opening, comm)?;
+        // §13.5 step 2
+        if resp.info.is_empty() {
+            return Err(anyhow!("Empty UpdateResponse.info"));
+        }
+        if resp.info.len() != sent_values.len() {
+            return Err(anyhow!("info length {} != submitted values {}", resp.info.len(), sent_values.len()));
+        }
+
+        // §13.5 step 4
+        if resp.binary_ladder.len() != sent_values.len() {
+            return Err(anyhow!("Binary ladder length {} != created versions {}", resp.binary_ladder.len(), sent_values.len()));
+        }
+        let start_ver = advertised_greatest.map(|v| v + 1).unwrap_or(0);
+        for (k, step) in resp.binary_ladder.iter().enumerate() {
+            let ver = start_ver + k as u32;
+            let vrf_input = construct_vrf_input(label, ver)
+                .context("VRF input construction failed")?;
+            crypto::ecvrf_verify(self.config.cipher_suite, &self.vrf_pk, &vrf_input, &step.proof)
+                .with_context(|| format!("Update ladder VRF verify failed at v={}", ver))?;
+            if step.commitment.is_some() {
+                return Err(anyhow!("Commitment provided for v={} greater than advertised greatest_version", ver));
+            }
+        }
+
+        for (k, info) in resp.info.iter().enumerate() {
+            let ver = start_ver + k as u32;
+            crate::crypto::hash::commit(label, ver, &sent_values[k], &info.opening)
+                .with_context(|| format!("Commitment recompute failed at v={}", ver))?;
+        }
 
         if proof.prefix_proofs.is_empty() { return Err(anyhow!("Missing prefix proof")); }
 
+        // TODO: §9.1 proof verification, candidate-root reconstruction, head signature
         self.state = Some(TrustedState {
             tree_size: th.tree_size,
             root_hash: vec![0u8; 32],

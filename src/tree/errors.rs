@@ -14,6 +14,9 @@ pub enum KtError {
 
     #[error("Invalid argument: {0}")]
     InvalidArgument(String),
+
+    #[error("greatest_version does not match the current greatest version of the label")]
+    VersionConflict,
 }
 
 impl From<KtError> for Status {
@@ -23,6 +26,7 @@ impl From<KtError> for Status {
             KtError::Unavailable => Status::not_found("Requested version of the label is unavailable"),
             KtError::Internal(msg) => Status::internal(msg),
             KtError::InvalidArgument(msg) => Status::invalid_argument(msg),
+            KtError::VersionConflict => Status::failed_precondition("greatest_version does not match the current greatest version of the label"),
         }
     }
 }
@@ -37,6 +41,7 @@ pub fn map_anyhow_to_status(e: anyhow::Error) -> Status {
             KtError::Unavailable => Status::not_found("Requested version of the label is unavailable"),
             KtError::Internal(msg) => Status::internal(msg.clone()),
             KtError::InvalidArgument(msg) => Status::invalid_argument(msg.clone()),
+            KtError::VersionConflict => Status::failed_precondition("greatest_version does not match the current greatest version of the label"),
         }
     } else {
         // Fallback for generic errors

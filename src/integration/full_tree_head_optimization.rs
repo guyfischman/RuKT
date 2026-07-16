@@ -1,6 +1,6 @@
 use crate::db::RocksDbStore;
 use crate::service::KeyTransparencyImpl;
-use crate::proto::transparency::{UpdateRequest, SearchRequest, Consistency, FullTreeHeadType, SignedUpdateRequest};
+use crate::proto::transparency::{UpdateRequest, LabelValue, SearchRequest, FullTreeHeadType};
 use crate::proto::kt::key_transparency_service_server::KeyTransparencyService;
 use crate::crypto::{self, CIPHER_SUITE_KT_128_SHA256_ED25519};
 use anyhow::Result;
@@ -18,15 +18,11 @@ async fn test_full_tree_head_same_optimization() -> Result<()> {
     let service = KeyTransparencyImpl::new(db, signer, vrf_key, HashMap::new(), None).await?;
     let user = b"user_opt".to_vec();
 
-    service.update(tonic::Request::new(SignedUpdateRequest {
-        request: Some(UpdateRequest {
-            search_key: user.clone(),
-            value: b"v1".to_vec(),
-            consistency: None,
-            expected_pre_update_value: vec![],
-            return_update_response: false,
-        }),
-        signature: vec![],
+    service.update(tonic::Request::new(UpdateRequest {
+        last: None,
+        label: user.clone(),
+        greatest_version: None,
+        values: vec![LabelValue { value: b"v1".to_vec() }],
     })).await?;
 
     let req_cold = tonic::Request::new(SearchRequest {
@@ -51,15 +47,11 @@ async fn test_full_tree_head_same_optimization() -> Result<()> {
     assert_eq!(fth_same.head_type, FullTreeHeadType::Same as i32);
     assert!(fth_same.tree_head.is_none());
     
-    service.update(tonic::Request::new(SignedUpdateRequest {
-        request: Some(UpdateRequest {
-            search_key: user.clone(),
-            value: b"v2".to_vec(),
-            consistency: None,
-            expected_pre_update_value: vec![],
-            return_update_response: false,
-        }),
-        signature: vec![],
+    service.update(tonic::Request::new(UpdateRequest {
+        last: None,
+        label: user.clone(),
+        greatest_version: Some(0),
+        values: vec![LabelValue { value: b"v2".to_vec() }],
     })).await?;
 
     let req_behind = tonic::Request::new(SearchRequest {

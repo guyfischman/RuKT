@@ -1,43 +1,18 @@
 // Start src/tree/write.rs
 use super::{Tree, PreUpdateData, PostUpdateData};
 use crate::proto::transparency::{
-    SignedUpdateRequest, UpdateResponse, CombinedTreeProof,
+    UpdateResponse, CombinedTreeProof,
     TreeHead, Signature as PbSignature,
     InclusionProof, BinaryLadderStep, PrefixProof, PrefixSearchResult,
-    AuditorUpdate, PrefixLeaf
+    AuditorUpdate, PrefixLeaf, UpdateInfo,
 };
-use crate::crypto::{
-    generate_random_opening, commit, construct_tree_head_tbs, construct_update_tbs, sign_data, verify_data,
-    DEPLOYMENT_MODE_THIRD_PARTY_MANAGEMENT, ServiceVerifyingKey
-};
+use crate::crypto::{construct_tree_head_tbs, sign_data};
 use anyhow::{Result, anyhow};
-use std::time::{SystemTime, UNIX_EPOCH, Instant}; // ADDED Instant
+use std::time::{SystemTime, UNIX_EPOCH, Instant};
 use prost::Message;
 use std::collections::HashMap;
 
 impl Tree {
-    pub fn pre_update(&self, req: SignedUpdateRequest, _current_tree_size: u64) -> Result<PreUpdateData> {
-        let inner_req = req.request.ok_or_else(|| anyhow!("Missing inner UpdateRequest"))?;
-        
-        let history = self.store.get_label_history(&inner_req.search_key)?;
-        let next_version = history.last().map(|(v, _)| v + 1).unwrap_or(0);
-
-        let (index, vrf_proof) = self.config.vrf_prove(&inner_req.search_key, next_version)?;
-        
-        let opening = generate_random_opening();
-        let commitment = commit(&inner_req.search_key, next_version, &inner_req.value, &opening)?;
-
-        Ok(PreUpdateData {
-            req: inner_req,
-            signature: req.signature,
-            version: next_version,
-            index,
-            vrf_proof,
-            commitment,
-            opening,
-        })
-    }
-
     pub async fn apply_batch(&mut self, updates: Vec<PreUpdateData>) -> Result<(Vec<Result<PostUpdateData>>, TreeHead)> {
         if updates.is_empty() {
             return Err(anyhow!("Empty batch"));
@@ -46,46 +21,22 @@ impl Tree {
         let start_size = self.latest.as_ref().map(|th| th.tree_size).unwrap_or(0);
         let mut valid_updates = Vec::new();
         let mut results_map: Vec<Option<Result<PostUpdateData>>> = (0..updates.len()).map(|_| None).collect();
-        let mut tpm_verifier: Option<ServiceVerifyingKey> = None;
-        
-        if self.config.mode == DEPLOYMENT_MODE_THIRD_PARTY_MANAGEMENT {
-             if let Some(pk_bytes) = &self.config.leaf_public_key {
-                tpm_verifier = Some(ServiceVerifyingKey::from_bytes(pk_bytes)?);
-            } else {
-                return Err(anyhow!("Server configured for ThirdPartyManagement but no Leaf Public Key provided"));
-            }
-        }
-        
+
         let mut version_overlay: HashMap<Vec<u8>, u32> = HashMap::new();
 
         for (i, update) in updates.iter().enumerate() {
-            let history = self.store.get_label_history(&update.req.search_key)?;
+            let history = self.store.get_label_history(&update.label)?;
             let mut current_ver = history.last().map(|(v, _)| *v).unwrap_or(0);
-            if let Some(v) = version_overlay.get(&update.req.search_key) { current_ver = *v; }
-            let next_ver = if history.is_empty() && !version_overlay.contains_key(&update.req.search_key) { 0 } else { current_ver + 1 };
-            
-            if !update.req.expected_pre_update_value.is_empty() {
-                let last_pos = history.last().map(|(_, p)| *p);
-                let actual = if let Some(p) = last_pos { self.store.get_value(p)?.unwrap_or_default() } else { vec![] };
-                if actual != update.req.expected_pre_update_value {
-                    results_map[i] = Some(Err(anyhow!("Tombstone update failed: expected value mismatch")));
-                    continue;
-                }
-            }
+            if let Some(v) = version_overlay.get(&update.label) { current_ver = *v; }
+            let next_ver = if history.is_empty() && !version_overlay.contains_key(&update.label) { 0 } else { current_ver + 1 };
+
             // vrf index and commitment were derived from update.version; a raced batch must not repair them silently
             if update.version != next_ver {
                 results_map[i] = Some(Err(anyhow!("Version assignment raced: precomputed {} but batch assigns {}", update.version, next_ver)));
                 continue;
             }
-            if let Some(verifier) = &tpm_verifier {
-                let tbs = construct_update_tbs(&self.config, &update.req.search_key, next_ver, &update.req.value)?;
-                if let Err(e) = verify_data(verifier, &tbs, &update.signature) {
-                    results_map[i] = Some(Err(anyhow!("TPM Signature verification failed: {}", e)));
-                    continue;
-                }
-            }
-            version_overlay.insert(update.req.search_key.clone(), next_ver);
-            
+            version_overlay.insert(update.label.clone(), next_ver);
+
             valid_updates.push((i, update.clone(), next_ver));
         }
 
@@ -218,9 +169,9 @@ impl Tree {
 
         for (k, (_, update, ver)) in valid_updates.iter().enumerate() {
             let ptr = search_results[k].log_position;
-            value_batch.push((ptr, update.req.value.clone()));
+            value_batch.push((ptr, update.value.clone()));
             opening_batch.push((ptr, update.opening.clone()));
-            history_batch.push((update.req.search_key.clone(), *ver, ptr));
+            history_batch.push((update.label.clone(), *ver, ptr));
         }
 
         self.store.put_value_batch(value_batch)?;
@@ -265,33 +216,39 @@ impl Tree {
         Ok((results_map.into_iter().map(|r| r.unwrap_or_else(|| Err(anyhow!("Internal error")))).collect(), th))
     }
 
-    pub async fn post_update(&self, pre: PreUpdateData, post: PostUpdateData) -> Result<UpdateResponse> {
+    /// pres: all versions created for one label by one request, ascending, same log entry.
+    pub async fn post_update(&self, pres: &[PreUpdateData], post: PostUpdateData) -> Result<UpdateResponse> {
+        let newest = pres.last().ok_or_else(|| anyhow!("Empty update group"))?;
         let tree_size = post.tree_head.tree_head.as_ref().unwrap().tree_size;
         let insertion_log_index = tree_size - 1;
-        let last = pre.req.consistency.as_ref().and_then(|c| c.last).unwrap_or(0);
-        
-        // search_result.counter is the prefix-leaf write counter, not the label version
-        let new_version = pre.version;
 
         let combined_proof = self.traverse_update_verification(
             tree_size,
             insertion_log_index,
-            &pre.req.search_key,
-            new_version,
-            last
+            &newest.label,
+            newest.version,
+            newest.last,
         ).await?;
 
-        let binary_ladder = vec![BinaryLadderStep {
-            proof: pre.vrf_proof.clone(),
-            commitment: Some(post.search_result.commitment),
-        }];
+        // §13.5: commitments are only sent for versions <= the user's advertised
+        // greatest_version; every version here is newer than that
+        let binary_ladder = pres.iter().map(|p| BinaryLadderStep {
+            proof: p.vrf_proof.clone(),
+            commitment: None,
+        }).collect();
+
+        let info = pres.iter().map(|p| UpdateInfo {
+            opening: p.opening.clone(),
+            suffix_signature: None,
+        }).collect();
 
         Ok(UpdateResponse {
-            tree_head: Some(post.tree_head),
+            full_tree_head: Some(post.tree_head),
+            position: insertion_log_index,
+            values: vec![],
+            info,
             binary_ladder,
-            search: Some(combined_proof),
-            opening: pre.opening,
-            version: new_version,
+            update: Some(combined_proof),
         })
     }
 }

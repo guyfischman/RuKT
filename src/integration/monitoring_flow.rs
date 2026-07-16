@@ -1,6 +1,6 @@
 use crate::db::RocksDbStore;
 use crate::service::KeyTransparencyImpl;
-use crate::proto::transparency::{UpdateRequest, MonitorRequest, MonitorLabel, MonitorMapEntry, SignedUpdateRequest};
+use crate::proto::transparency::{UpdateRequest, LabelValue, MonitorRequest, MonitorLabel, MonitorMapEntry};
 use crate::proto::kt::key_transparency_service_server::KeyTransparencyService;
 use crate::crypto::{self, CIPHER_SUITE_KT_128_SHA256_ED25519};
 use anyhow::Result;
@@ -19,27 +19,19 @@ async fn test_monitoring_flow() -> Result<()> {
     service.config.reasonable_monitoring_window = 0; 
 
     let user_id = b"monitor_user".to_vec();
-    service.update(tonic::Request::new(SignedUpdateRequest {
-        request: Some(UpdateRequest {
-            search_key: user_id.clone(),
-            value: b"monitored_value".to_vec(),
-            consistency: None,
-            expected_pre_update_value: vec![],
-            return_update_response: true,
-        }),
-        signature: vec![],
+    service.update(tonic::Request::new(UpdateRequest {
+        last: None,
+        label: user_id.clone(),
+        greatest_version: None,
+        values: vec![LabelValue { value: b"monitored_value".to_vec() }],
     })).await?;
 
     for i in 0..3 {
-        service.update(tonic::Request::new(SignedUpdateRequest {
-            request: Some(UpdateRequest {
-                search_key: format!("user_b_{}", i).as_bytes().to_vec(),
-                value: b"val_b".to_vec(),
-                consistency: None,
-                expected_pre_update_value: vec![],
-                return_update_response: false,
-            }),
-            signature: vec![],
+        service.update(tonic::Request::new(UpdateRequest {
+            last: None,
+            label: format!("user_b_{}", i).as_bytes().to_vec(),
+            greatest_version: None,
+            values: vec![LabelValue { value: b"val_b".to_vec() }],
         })).await?;
     }
 

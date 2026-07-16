@@ -1,6 +1,6 @@
 use crate::db::RocksDbStore;
 use crate::service::KeyTransparencyImpl;
-use crate::proto::transparency::{UpdateRequest, SearchRequest, Consistency, SignedUpdateRequest};
+use crate::proto::transparency::{UpdateRequest, SearchRequest, LabelValue};
 use crate::proto::kt::key_transparency_service_server::KeyTransparencyService;
 use crate::crypto::{self, CIPHER_SUITE_KT_128_SHA256_ED25519};
 use anyhow::Result;
@@ -19,15 +19,11 @@ async fn test_inclusion_proof_optimization() -> Result<()> {
 
     for i in 0..4 {
         let user = format!("user_{}", i).as_bytes().to_vec();
-        service.update(tonic::Request::new(SignedUpdateRequest {
-            request: Some(UpdateRequest {
-                search_key: user,
-                value: b"val".to_vec(),
-                consistency: None,
-                expected_pre_update_value: vec![],
-                return_update_response: false,
-            }),
-            signature: vec![],
+        service.update(tonic::Request::new(UpdateRequest {
+            last: None,
+            label: user,
+            greatest_version: None,
+            values: vec![LabelValue { value: b"val".to_vec() }],
         })).await?;
     }
 

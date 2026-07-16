@@ -3,7 +3,7 @@ use crate::proto::kt::key_transparency_service_server::KeyTransparencyService;
 use crate::proto::kt::{AuditRequest, AuditResponse, TreeSizeResponse};
 use crate::proto::transparency::{
     SearchRequest, SearchResponse,
-    SignedUpdateRequest, UpdateResponse,
+    UpdateRequest, UpdateResponse,
     MonitorRequest, MonitorResponse,
     AuditorTreeHead,
     GetCredentialRequest, Credential
@@ -131,7 +131,7 @@ impl KeyTransparencyService for KeyTransparencyImpl {
         Ok(Response::new(resp))
     }
 
-    async fn update(&self, request: Request<SignedUpdateRequest>) -> Result<Response<UpdateResponse>, Status> {
+    async fn update(&self, request: Request<UpdateRequest>) -> Result<Response<UpdateResponse>, Status> {
         let req = request.into_inner();
         // The batcher handles taking the write lock internally when the batch is ready
         let resp = self.batcher.submit(req).await

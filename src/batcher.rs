@@ -1,7 +1,7 @@
 use tokio::sync::{mpsc, oneshot, RwLock};
 use tokio::time::{self, Duration};
 use crate::tree::{Tree, PreUpdateData};
-use crate::proto::transparency::{SignedUpdateRequest, UpdateResponse};
+use crate::proto::transparency::{UpdateRequest, UpdateResponse};
 use anyhow::{Result, anyhow};
 use std::sync::Arc;
 use std::time::Instant;
@@ -10,7 +10,7 @@ const MAX_BATCH_SIZE: usize = 4000;
 const BATCH_TIMEOUT: Duration = Duration::from_millis(50);
 
 pub struct UpdateJob {
-    pub req: SignedUpdateRequest,
+    pub req: UpdateRequest,
     pub resp_tx: oneshot::Sender<Result<UpdateResponse>>,
 }
 
@@ -30,7 +30,7 @@ impl Batcher {
         Self { tx }
     }
 
-    pub async fn submit(&self, req: SignedUpdateRequest) -> Result<UpdateResponse> {
+    pub async fn submit(&self, req: UpdateRequest) -> Result<UpdateResponse> {
         let (resp_tx, resp_rx) = oneshot::channel();
         self.tx.send(UpdateJob { req, resp_tx }).await
             .map_err(|_| anyhow!("Batcher worker is down"))?;
@@ -89,27 +89,35 @@ impl BatchWorker {
         let all_jobs: Vec<UpdateJob> = batch.drain(..).collect();
         
         let mut pre_jobs = Vec::new();
-        let mut version_overlay = std::collections::HashMap::new();
+        let mut version_overlay: std::collections::HashMap<Vec<u8>, u32> = std::collections::HashMap::new();
 
         for job in all_jobs {
-            let inner_req = job.req.request.as_ref().unwrap();
-            
-            let current_ver = if let Some(&v) = version_overlay.get(&inner_req.search_key) {
-                v
-            } else {
-                let history = tree_guard.store.get_label_history(&inner_req.search_key).unwrap_or_default();
-                history.last().map(|(v, _)| *v).unwrap_or(0)
-            };
+            let req = &job.req;
 
-            let history_empty = tree_guard.store.get_label_history(&inner_req.search_key).unwrap_or_default().is_empty();
-            let next_ver = if current_ver == 0 && history_empty && !version_overlay.contains_key(&inner_req.search_key) {
-                0
-            } else {
-                current_ver + 1
-            };
-            
-            version_overlay.insert(inner_req.search_key.clone(), next_ver);
-            pre_jobs.push((job.req.clone(), next_ver));
+            let current_greatest: Option<u32> = version_overlay.get(&req.label).copied()
+                .or_else(|| {
+                    tree_guard.store.get_label_history(&req.label).unwrap_or_default()
+                        .last().map(|(v, _)| *v)
+                });
+
+            // §13.5 compare-and-swap on greatest_version
+            if req.greatest_version != current_greatest {
+                // TODO: answer with the already-existing subsequent versions instead of erroring
+                let _ = job.resp_tx.send(Err(anyhow::Error::new(
+                    crate::tree::errors::KtError::VersionConflict,
+                )));
+                continue;
+            }
+            if req.values.is_empty() {
+                let _ = job.resp_tx.send(Err(anyhow!("Empty values: version catch-up queries not yet supported")));
+                continue;
+            }
+
+            let start_ver = current_greatest.map(|v| v + 1).unwrap_or(0);
+            let versions: Vec<u32> = (0..req.values.len() as u32).map(|k| start_ver + k).collect();
+            version_overlay.insert(req.label.clone(), *versions.last().unwrap());
+
+            pre_jobs.push((req.clone(), versions));
             jobs_to_process.push(job);
         }
         let dur_p1 = t1.elapsed();
@@ -122,25 +130,35 @@ impl BatchWorker {
         let t2 = Instant::now();
         let config = tree_guard.config.clone();
         let mut crypto_tasks = Vec::new();
+        let mut job_ranges: Vec<std::ops::Range<usize>> = Vec::with_capacity(pre_jobs.len());
+        let mut offset = 0usize;
 
-        for (req, next_version) in pre_jobs {
-            let cfg = config.clone();
-            crypto_tasks.push(tokio::task::spawn_blocking(move || {
-                let inner = req.request.clone().unwrap();
-                let (index, vrf_proof) = cfg.vrf_prove(&inner.search_key, next_version).unwrap();
-                let opening = crate::crypto::generate_random_opening();
-                let commitment = crate::crypto::commit(&inner.search_key, next_version, &inner.value, &opening).unwrap();
+        for (req, versions) in pre_jobs {
+            job_ranges.push(offset..offset + versions.len());
+            offset += versions.len();
 
-                PreUpdateData {
-                    req: inner,
-                    signature: req.signature.clone(),
-                    version: next_version,
-                    index,
-                    vrf_proof,
-                    commitment,
-                    opening,
-                }
-            }));
+            for (k, version) in versions.into_iter().enumerate() {
+                let cfg = config.clone();
+                let label = req.label.clone();
+                let value = req.values[k].value.clone();
+                let last = req.last.unwrap_or(0);
+                crypto_tasks.push(tokio::task::spawn_blocking(move || {
+                    let (index, vrf_proof) = cfg.vrf_prove(&label, version).unwrap();
+                    let opening = crate::crypto::generate_random_opening();
+                    let commitment = crate::crypto::commit(&label, version, &value, &opening).unwrap();
+
+                    PreUpdateData {
+                        label,
+                        value,
+                        last,
+                        version,
+                        index,
+                        vrf_proof,
+                        commitment,
+                        opening,
+                    }
+                }));
+            }
         }
 
         let mut pre_data_list = Vec::new();
@@ -168,26 +186,34 @@ impl BatchWorker {
             Ok((results, _new_head)) => {
                 let tree_arc = self.tree.clone();
                 let mut proof_tasks = Vec::new();
+                let mut results: Vec<Option<Result<crate::tree::PostUpdateData>>> =
+                    results.into_iter().map(Some).collect();
 
-                for (i, result) in results.into_iter().enumerate() {
-                    let job = jobs_to_process.remove(0); 
-                    let pre = pre_data_list[i].clone();
+                for (job, range) in jobs_to_process.into_iter().zip(job_ranges) {
+                    let pres: Vec<PreUpdateData> = pre_data_list[range.clone()].to_vec();
+                    let mut group: Vec<Result<crate::tree::PostUpdateData>> =
+                        range.map(|i| results[i].take().unwrap()).collect();
+
+                    if let Some(err_idx) = group.iter().position(|r| r.is_err()) {
+                        let e = match group.swap_remove(err_idx) {
+                            Err(e) => e,
+                            Ok(_) => unreachable!(),
+                        };
+                        let _ = job.resp_tx.send(Err(e));
+                        continue;
+                    }
+
+                    let post_data = group.pop().unwrap().unwrap();
                     let t_arc = tree_arc.clone();
 
                     // Spawn a task that acquires a READ lock concurrently
                     proof_tasks.push(tokio::spawn(async move {
-                        match result {
-                            Ok(post_data) => {
-                                // Safe to run concurrently across 2000 tasks
-                                let read_guard = t_arc.read().await;
-                                let resp = read_guard.post_update(pre, post_data).await;
-                                let _ = job.resp_tx.send(resp);
-                            },
-                            Err(e) => { let _ = job.resp_tx.send(Err(e)); }
-                        }
+                        let read_guard = t_arc.read().await;
+                        let resp = read_guard.post_update(&pres, post_data).await;
+                        let _ = job.resp_tx.send(resp);
                     }));
                 }
-                
+
                 // Await all parallel proof generation
                 futures::future::join_all(proof_tasks).await;
             }

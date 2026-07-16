@@ -1,6 +1,6 @@
 use crate::db::RocksDbStore;
 use crate::service::KeyTransparencyImpl;
-use crate::proto::transparency::{UpdateRequest, MonitorRequest, MonitorLabel, SearchRequest, SignedUpdateRequest};
+use crate::proto::transparency::{UpdateRequest, LabelValue, MonitorRequest, MonitorLabel, SearchRequest};
 use crate::proto::kt::key_transparency_service_server::KeyTransparencyService;
 use crate::crypto::{self, CIPHER_SUITE_KT_128_SHA256_ED25519};
 use anyhow::Result;
@@ -29,15 +29,11 @@ async fn test_pagination_full_lifecycle() -> Result<()> {
     let user_id = b"lifecycle_user".to_vec();
 
     // 2. Initial Setup: User creates label (Log Index 0)
-    service.update(tonic::Request::new(SignedUpdateRequest {
-        request: Some(UpdateRequest {
-            search_key: user_id.clone(),
-            value: b"v0".to_vec(),
-            consistency: None,
-            expected_pre_update_value: vec![],
-            return_update_response: false,
-        }),
-        signature: vec![],
+    service.update(tonic::Request::new(UpdateRequest {
+        last: None,
+        label: user_id.clone(),
+        greatest_version: None,
+        values: vec![LabelValue { value: b"v0".to_vec() }],
     })).await?;
 
     // 3. User verifies initial state via Search (TOFU - Trust On First Use)
@@ -55,16 +51,12 @@ async fn test_pagination_full_lifecycle() -> Result<()> {
     let mut local_rightmost = 0u64;
 
     // 4. Activity happens while user is offline (Indices 1..5)
-    for i in 1..=5 {
-        service.update(tonic::Request::new(SignedUpdateRequest {
-            request: Some(UpdateRequest {
-                search_key: user_id.clone(),
-                value: format!("v{}", i).as_bytes().to_vec(),
-                consistency: None,
-                expected_pre_update_value: vec![],
-                return_update_response: false,
-            }),
-            signature: vec![],
+    for i in 1..=5u32 {
+        service.update(tonic::Request::new(UpdateRequest {
+            last: None,
+            label: user_id.clone(),
+            greatest_version: Some(i - 1),
+            values: vec![LabelValue { value: format!("v{}", i).as_bytes().to_vec() }],
         })).await?;
     }
 

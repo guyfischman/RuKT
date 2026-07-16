@@ -1,6 +1,6 @@
 use crate::db::RocksDbStore;
 use crate::service::KeyTransparencyImpl;
-use crate::proto::transparency::{UpdateRequest, SignedUpdateRequest};
+use crate::proto::transparency::{UpdateRequest, LabelValue};
 use crate::proto::kt::key_transparency_service_server::KeyTransparencyService;
 use crate::crypto::{self, CIPHER_SUITE_KT_128_SHA256_ED25519};
 use anyhow::Result;
@@ -20,15 +20,11 @@ async fn test_full_update_search_and_consistency() -> Result<()> {
 
     let user_a = b"alice@example.com".to_vec();
     let key_a = b"alice_key_v1".to_vec();
-    let req_a = tonic::Request::new(SignedUpdateRequest {
-        request: Some(UpdateRequest {
-            search_key: user_a.clone(),
-            value: key_a.clone(),
-            consistency: None,
-            expected_pre_update_value: vec![],
-            return_update_response: true,
-        }),
-        signature: vec![],
+    let req_a = tonic::Request::new(UpdateRequest {
+        last: None,
+        label: user_a.clone(),
+        greatest_version: None,
+        values: vec![LabelValue { value: key_a.clone() }],
     });
     
     let _ = service.update(req_a).await?;
@@ -40,15 +36,11 @@ async fn test_full_update_search_and_consistency() -> Result<()> {
 
     let user_b = b"bob@example.com".to_vec();
     let key_b = b"bob_key_v1".to_vec();
-    let req_b = tonic::Request::new(SignedUpdateRequest {
-        request: Some(UpdateRequest {
-            search_key: user_b.clone(),
-            value: key_b.clone(),
-            consistency: None,
-            expected_pre_update_value: vec![],
-            return_update_response: true,
-        }),
-        signature: vec![],
+    let req_b = tonic::Request::new(UpdateRequest {
+        last: None,
+        label: user_b.clone(),
+        greatest_version: None,
+        values: vec![LabelValue { value: key_b.clone() }],
     });
     let _ = service.update(req_b).await?;
     

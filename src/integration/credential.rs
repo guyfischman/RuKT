@@ -1,6 +1,6 @@
 use crate::db::RocksDbStore;
 use crate::service::KeyTransparencyImpl;
-use crate::proto::transparency::{UpdateRequest, GetCredentialRequest, CredentialType, SignedUpdateRequest};
+use crate::proto::transparency::{UpdateRequest, GetCredentialRequest, CredentialType, LabelValue};
 use crate::proto::kt::key_transparency_service_server::KeyTransparencyService;
 use crate::crypto::{self, CIPHER_SUITE_KT_128_SHA256_ED25519};
 use anyhow::Result;
@@ -18,15 +18,11 @@ async fn test_credential_flow() -> Result<()> {
     let service = KeyTransparencyImpl::new(db, signer, vrf_key, HashMap::new(), None).await?;
     let user = b"cred_user".to_vec();
 
-    service.update(tonic::Request::new(SignedUpdateRequest {
-        request: Some(UpdateRequest {
-            search_key: user.clone(),
-            value: b"val".to_vec(),
-            consistency: None,
-            expected_pre_update_value: vec![],
-            return_update_response: false,
-        }),
-        signature: vec![],
+    service.update(tonic::Request::new(UpdateRequest {
+        last: None,
+        label: user.clone(),
+        greatest_version: None,
+        values: vec![LabelValue { value: b"val".to_vec() }],
     })).await?;
 
     let cred = service.get_credential(tonic::Request::new(GetCredentialRequest {
