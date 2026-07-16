@@ -22,3 +22,4 @@ mod batching_collisions;
 mod malicious_auditor;
 mod binary_ladder_boundaries;
 mod update_verification_compliance;pub mod distinguished_walk;
+pub mod update_catchup;

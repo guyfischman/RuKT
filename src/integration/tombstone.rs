@@ -34,9 +34,12 @@ async fn test_tombstone_updates() -> Result<()> {
         values: vec![LabelValue { value: val_2.clone() }],
     });
 
-    let result = service.update(req_stale).await;
-    assert!(result.is_err(), "Stale greatest_version must be rejected");
-    assert_eq!(result.unwrap_err().code(), tonic::Code::FailedPrecondition);
+    // §13.5: a stale greatest_version is disregarded and answered with the
+    // existing versions instead of creating anything
+    let result = service.update(req_stale).await?.into_inner();
+    assert_eq!(result.values.len(), 1, "Stale update is informed of the existing version");
+    assert_eq!(result.values[0].value, val_1);
+    assert_eq!(result.info.len(), 1);
 
     let req_wrong = tonic::Request::new(UpdateRequest {
         last: None,

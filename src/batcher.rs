@@ -74,6 +74,20 @@ impl BatchWorker {
         }
     }
 
+    async fn process_catchups(&self, jobs: Vec<UpdateJob>) {
+        if jobs.is_empty() { return; }
+        let mut tasks = Vec::new();
+        for job in jobs {
+            let tree_arc = self.tree.clone();
+            tasks.push(tokio::spawn(async move {
+                let read_guard = tree_arc.read().await;
+                let resp = read_guard.catch_up_update(&job.req).await;
+                let _ = job.resp_tx.send(resp);
+            }));
+        }
+        futures::future::join_all(tasks).await;
+    }
+
     async fn process_batch(&mut self, batch: &mut Vec<UpdateJob>) {
         if batch.is_empty() { return; }
         
@@ -91,6 +105,8 @@ impl BatchWorker {
         let mut pre_jobs = Vec::new();
         let mut version_overlay: std::collections::HashMap<Vec<u8>, u32> = std::collections::HashMap::new();
 
+        let mut catchup_jobs = Vec::new();
+
         for job in all_jobs {
             let req = &job.req;
 
@@ -102,14 +118,22 @@ impl BatchWorker {
 
             // §13.5 compare-and-swap on greatest_version
             if req.greatest_version != current_greatest {
-                // TODO: answer with the already-existing subsequent versions instead of erroring
-                let _ = job.resp_tx.send(Err(anyhow::Error::new(
-                    crate::tree::errors::KtError::VersionConflict,
-                )));
+                let behind = match (req.greatest_version, current_greatest) {
+                    (None, Some(_)) => true,
+                    (Some(claimed), Some(actual)) => claimed < actual,
+                    _ => false,
+                };
+                if behind {
+                    catchup_jobs.push(job);
+                } else {
+                    let _ = job.resp_tx.send(Err(anyhow::Error::new(
+                        crate::tree::errors::KtError::VersionConflict,
+                    )));
+                }
                 continue;
             }
             if req.values.is_empty() {
-                let _ = job.resp_tx.send(Err(anyhow!("Empty values: version catch-up queries not yet supported")));
+                let _ = job.resp_tx.send(Err(anyhow!("Empty values: no versions exist beyond the advertised greatest_version")));
                 continue;
             }
 
@@ -122,7 +146,13 @@ impl BatchWorker {
         }
         let dur_p1 = t1.elapsed();
 
-        if jobs_to_process.is_empty() { return; }
+        if jobs_to_process.is_empty() && catchup_jobs.is_empty() { return; }
+
+        if jobs_to_process.is_empty() {
+            drop(tree_guard);
+            self.process_catchups(catchup_jobs).await;
+            return;
+        }
 
         // ==========================================
         // PHASE 2: Parallel Cryptography
@@ -177,6 +207,8 @@ impl BatchWorker {
         // 🔥 DROP THE EXCLUSIVE WRITE LOCK EARLY 🔥
         // This allows all cores to generate user proofs simultaneously
         drop(tree_guard);
+
+        self.process_catchups(catchup_jobs).await;
 
         // ==========================================
         // PHASE 4: Parallel Proof Generation (DB Reads)

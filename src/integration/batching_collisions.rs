@@ -67,19 +67,22 @@ async fn test_multi_label_batching_collisions() -> Result<()> {
         }));
     }
 
-    let mut successes = 0;
-    let mut conflicts = 0;
+    let mut winners = 0;
+    let mut caught_up = 0;
     for h in handles {
-        match h.await? {
-            Ok(_) => successes += 1,
-            Err(status) => {
-                assert_eq!(status.code(), tonic::Code::FailedPrecondition);
-                conflicts += 1;
-            }
+        let resp = h.await??.into_inner();
+        if resp.values.is_empty() {
+            winners += 1;
+        } else {
+            // §13.5: the loser is informed of the winner's version instead of failing
+            assert_eq!(resp.values.len(), 1);
+            assert!(resp.values[0].value.starts_with(b"racer_"));
+            assert_eq!(resp.info.len(), 1);
+            caught_up += 1;
         }
     }
-    assert_eq!(successes, 1, "Exactly one racing update wins");
-    assert_eq!(conflicts, 1, "The loser gets FailedPrecondition");
+    assert_eq!(winners, 1, "Exactly one racing update wins");
+    assert_eq!(caught_up, 1, "The loser is caught up on the winner's version");
 
     let resp_latest = service.search(tonic::Request::new(SearchRequest {
         label: label.clone(),

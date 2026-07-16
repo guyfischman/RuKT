@@ -216,6 +216,62 @@ impl Tree {
         Ok((results_map.into_iter().map(|r| r.unwrap_or_else(|| Err(anyhow!("Internal error")))).collect(), th))
     }
 
+    fn find_log_entry_for_prefix_pos(&self, pos: u64, tree_size: u64) -> Result<u64> {
+        let (mut lo, mut hi) = (0u64, tree_size - 1);
+        while lo < hi {
+            let mid = lo + (hi - lo) / 2;
+            if self.log.get_prefix_ptr(mid)? >= pos { hi = mid; } else { lo = mid + 1; }
+        }
+        Ok(lo)
+    }
+
+    // §13.5: the advertised greatest_version is behind; report the versions created
+    // in the log entry immediately following it instead of inserting anything
+    pub async fn catch_up_update(&self, req: &crate::proto::transparency::UpdateRequest) -> Result<UpdateResponse> {
+        let tree_size = self.latest.as_ref().map(|th| th.tree_size)
+            .ok_or_else(|| anyhow!("Empty tree"))?;
+        let history = self.store.get_label_history(&req.label)?;
+
+        let first_missing = req.greatest_version.map(|g| g + 1).unwrap_or(0);
+        let first_pos = history.iter().find(|(v, _)| *v == first_missing).map(|(_, p)| *p)
+            .ok_or_else(|| anyhow!("Version {} missing from label history", first_missing))?;
+
+        let position = self.find_log_entry_for_prefix_pos(first_pos, tree_size)?;
+        let entry_hi = self.log.get_prefix_ptr(position)?;
+
+        let mut values = Vec::new();
+        let mut info = Vec::new();
+        let mut binary_ladder = Vec::new();
+        let mut new_greatest = first_missing;
+
+        for &(v, p) in history.iter().filter(|(v, p)| *v >= first_missing && *p <= entry_hi) {
+            let value = self.store.get_value(p)?
+                .ok_or_else(|| anyhow!("Value for v={} was pruned", v))?;
+            let opening = self.store.get_opening(p)?
+                .ok_or_else(|| anyhow!("Opening for v={} was pruned", v))?;
+            let (_, vrf_proof) = self.config.vrf_prove(&req.label, v)?;
+
+            values.push(crate::proto::transparency::LabelValue { value });
+            info.push(UpdateInfo { opening, suffix_signature: None });
+            binary_ladder.push(BinaryLadderStep { proof: vrf_proof, commitment: None });
+            new_greatest = v;
+        }
+
+        let combined_proof = self.traverse_update_verification(
+            tree_size, position, &req.label, new_greatest, req.last.unwrap_or(0),
+        ).await?;
+        let fth = self.get_full_tree_head(None)?;
+
+        Ok(UpdateResponse {
+            full_tree_head: Some(fth),
+            position,
+            values,
+            info,
+            binary_ladder,
+            update: Some(combined_proof),
+        })
+    }
+
     /// pres: all versions created for one label by one request, ascending, same log entry.
     pub async fn post_update(&self, pres: &[PreUpdateData], post: PostUpdateData) -> Result<UpdateResponse> {
         let newest = pres.last().ok_or_else(|| anyhow!("Empty update group"))?;

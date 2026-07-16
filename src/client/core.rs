@@ -51,22 +51,29 @@ impl KtClient {
     }
 
     pub async fn update(&mut self, user: Vec<u8>, value: Vec<u8>) -> Result<UpdateResponse> {
-        let greatest_version = self.label_versions.get(&user).copied();
-        let req = UpdateRequest {
-            last: self.get_consistency_req().and_then(|c| c.last),
-            label: user.clone(),
-            greatest_version,
-            values: vec![LabelValue { value: value.clone() }],
-        };
+        // §13.5: a response with non-empty values means our request was disregarded;
+        // absorb the reported versions and retry with the advanced greatest_version
+        for _ in 0..32 {
+            let greatest_version = self.label_versions.get(&user).copied();
+            let req = UpdateRequest {
+                last: self.get_consistency_req().and_then(|c| c.last),
+                label: user.clone(),
+                greatest_version,
+                values: vec![LabelValue { value: value.clone() }],
+            };
 
-        let resp = self.client.clone().update(req).await?.into_inner();
+            let resp = self.client.clone().update(req).await?.into_inner();
 
-        self.verify_update_response(&user, greatest_version, &[value], &resp).await?;
+            self.verify_update_response(&user, greatest_version, &[value.clone()], &resp).await?;
 
-        let new_greatest = greatest_version.map(|v| v + 1).unwrap_or(0);
-        self.label_versions.insert(user, new_greatest);
-
-        Ok(resp)
+            let start = greatest_version.map(|v| v + 1).unwrap_or(0);
+            if resp.values.is_empty() {
+                self.label_versions.insert(user, start);
+                return Ok(resp);
+            }
+            self.label_versions.insert(user.clone(), start + resp.values.len() as u32 - 1);
+        }
+        Err(anyhow!("Update did not converge while catching up on existing versions"))
     }
 
     pub async fn search(&mut self, user: Vec<u8>, version: Option<u32>) -> Result<SearchResponse> {
@@ -179,21 +186,23 @@ impl KtClient {
             return Err(anyhow!("Insertion position {} outside tree of size {}", resp.position, th.tree_size));
         }
 
-        if !resp.values.is_empty() {
-            return Err(anyhow!("Server reports newer versions of the label exist; catch-up not yet supported"));
-        }
-
-        // §13.5 step 2
+        // §13.5 step 2: non-empty response values mean the request was disregarded
+        // and info describes those versions instead of ours
+        let effective_values: Vec<&[u8]> = if resp.values.is_empty() {
+            sent_values.iter().map(|v| v.as_slice()).collect()
+        } else {
+            resp.values.iter().map(|lv| lv.value.as_slice()).collect()
+        };
         if resp.info.is_empty() {
             return Err(anyhow!("Empty UpdateResponse.info"));
         }
-        if resp.info.len() != sent_values.len() {
-            return Err(anyhow!("info length {} != submitted values {}", resp.info.len(), sent_values.len()));
+        if resp.info.len() != effective_values.len() {
+            return Err(anyhow!("info length {} != covered values {}", resp.info.len(), effective_values.len()));
         }
 
         // §13.5 step 4
-        if resp.binary_ladder.len() != sent_values.len() {
-            return Err(anyhow!("Binary ladder length {} != created versions {}", resp.binary_ladder.len(), sent_values.len()));
+        if resp.binary_ladder.len() != effective_values.len() {
+            return Err(anyhow!("Binary ladder length {} != covered versions {}", resp.binary_ladder.len(), effective_values.len()));
         }
         let start_ver = advertised_greatest.map(|v| v + 1).unwrap_or(0);
         for (k, step) in resp.binary_ladder.iter().enumerate() {
@@ -209,7 +218,7 @@ impl KtClient {
 
         for (k, info) in resp.info.iter().enumerate() {
             let ver = start_ver + k as u32;
-            crate::crypto::hash::commit(label, ver, &sent_values[k], &info.opening)
+            crate::crypto::hash::commit(label, ver, effective_values[k], &info.opening)
                 .with_context(|| format!("Commitment recompute failed at v={}", ver))?;
         }
 
