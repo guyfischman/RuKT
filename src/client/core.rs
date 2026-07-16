@@ -258,71 +258,162 @@ impl KtClient {
             })?,
         };
 
-        let expected_versions = base_binary_ladder(target_version);
-        if resp.binary_ladder.len() != expected_versions.len() {
-            return Err(anyhow!(
-                "Binary ladder length mismatch: got {}, expected {} for target v={}",
-                resp.binary_ladder.len(), expected_versions.len(), target_version
-            ));
-        }
+        let greatest = requested_version.is_none();
 
-        let mut vrf_outputs: Vec<Vec<u8>> = Vec::with_capacity(expected_versions.len());
-        for (i, ver) in expected_versions.iter().enumerate() {
-            let vrf_input = construct_vrf_input(label, *ver)
-                .context("VRF input construction failed")?;
-            let out = crypto::ecvrf_verify(
-                self.config.cipher_suite,
-                &self.vrf_pk,
-                &vrf_input,
-                &resp.binary_ladder[i].proof,
-            ).with_context(|| format!("Binary ladder VRF verify failed at v={}", ver))?;
-            vrf_outputs.push(out.to_vec());
-        }
-
-        let target_idx = expected_versions.iter().position(|&v| v == target_version)
-            .ok_or_else(|| anyhow!("Target version {} not in binary ladder", target_version))?;
-        // §12.1: the target-version commitment is normally omitted; a server-sent one must match
-        let target_commitment = crate::crypto::hash::commit(label, target_version, &value.value, &resp.opening)
-            .context("Commitment computation failed")?;
-        if let Some(server_comm) = &resp.binary_ladder[target_idx].commitment {
-            if server_comm != &target_commitment {
+        // §13.1: the wire ladder lists versions in §5 output order for the target
+        let mut wire_index: HashMap<u32, usize> = HashMap::new();
+        if greatest {
+            let base = base_binary_ladder(target_version);
+            if resp.binary_ladder.len() != base.len() {
                 return Err(anyhow!(
-                    "Target-version commitment mismatch: server-supplied does not open to provided value"
+                    "Binary ladder length mismatch: got {}, expected {} for target v={}",
+                    resp.binary_ladder.len(), base.len(), target_version
                 ));
             }
-        }
-
-        // §11.3
-        let mut prev_ts = 0u64;
-        for &ts in &proof.timestamps {
-            if ts < prev_ts {
-                return Err(anyhow!("CombinedTreeProof: timestamps are not monotonic"));
+            for (i, &v) in base.iter().enumerate() {
+                wire_index.insert(v, i);
             }
-            prev_ts = ts;
-        }
-        // §11.3.1
-        if let Some(&rightmost_ts) = proof.timestamps.last() {
-            self.check_timestamp_bounds(rightmost_ts)
-                .context("CombinedTreeProof: rightmost timestamp out of bounds")?;
         }
 
+        // §12.1: the target-version commitment is omitted; a server-sent one must match
+        let target_commitment = crate::crypto::hash::commit(label, target_version, &value.value, &resp.opening)
+            .context("Commitment computation failed")?;
+
+        // §12.3: greatest-search emission order equals log-position order
+        if greatest {
+            let mut prev_ts = 0u64;
+            for &ts in &proof.timestamps {
+                if ts < prev_ts {
+                    return Err(anyhow!("CombinedTreeProof: timestamps are not monotonic"));
+                }
+                prev_ts = ts;
+            }
+        }
+        // §11.4
+        if fth_is_updated {
+            if let Some(head_ts) = timestamp_opt {
+                self.check_timestamp_bounds(head_ts)
+                    .context("TreeHead timestamp out of bounds")?;
+            }
+        }
+
+        let mut vrf_cache: HashMap<u32, Vec<u8>> = HashMap::new();
         let mut per_proof_roots: Vec<Vec<u8>> = Vec::with_capacity(proof.prefix_proofs.len());
         let proof_count = proof.prefix_proofs.len();
+
         for (proof_idx, prefix_proof) in proof.prefix_proofs.iter().enumerate() {
-            // §6.3 step 2 applies per entry for greatest-version searches; the full
-            // check (every v <= target included) applies at the rightmost entry only
-            let greatest = requested_version.is_none();
-            let root = verify_prefix_proof_consistent(
-                prefix_proof,
-                &expected_versions,
-                &vrf_outputs,
-                &resp.binary_ladder,
-                target_idx,
-                &target_commitment,
-                greatest,
-                greatest && proof_idx == proof_count - 1,
-            ).with_context(|| format!("Prefix proof #{} verification failed", proof_idx))?;
-            per_proof_roots.push(root);
+            let is_rightmost = proof_idx == proof_count - 1;
+            let decoded = decode_search_ladder(&prefix_proof.results, target_version)
+                .with_context(|| format!("Prefix proof #{} ladder decode failed", proof_idx))?;
+
+            let mut elements_offset = 0usize;
+            let mut computed_root: Option<Vec<u8>> = None;
+
+            for (j, lk) in decoded.iter().enumerate() {
+                // §6.3 step 2
+                if greatest {
+                    if lk.inclusion && lk.version > target_version {
+                        return Err(anyhow!(
+                            "Inclusion proof for v={} contradicts claimed greatest version {}",
+                            lk.version, target_version
+                        ));
+                    }
+                    if is_rightmost && !lk.inclusion && lk.version <= target_version {
+                        return Err(anyhow!(
+                            "Non-inclusion proof for v={} at the rightmost entry contradicts claimed greatest version {}",
+                            lk.version, target_version
+                        ));
+                    }
+                }
+
+                let next_slot = wire_index.len();
+                let wi = *wire_index.entry(lk.version).or_insert(next_slot);
+                let step = resp.binary_ladder.get(wi)
+                    .ok_or_else(|| anyhow!("Ladder step missing for v={}", lk.version))?;
+
+                if !vrf_cache.contains_key(&lk.version) {
+                    let vrf_input = construct_vrf_input(label, lk.version)
+                        .context("VRF input construction failed")?;
+                    let out = crypto::ecvrf_verify(
+                        self.config.cipher_suite,
+                        &self.vrf_pk,
+                        &vrf_input,
+                        &step.proof,
+                    ).with_context(|| format!("Binary ladder VRF verify failed at v={}", lk.version))?;
+                    vrf_cache.insert(lk.version, out.to_vec());
+                }
+
+                let commitment: Option<Vec<u8>> = if lk.inclusion {
+                    if lk.version == target_version {
+                        if let Some(server_comm) = &step.commitment {
+                            if server_comm != &target_commitment {
+                                return Err(anyhow!(
+                                    "Target-version commitment mismatch: server-supplied does not open to provided value"
+                                ));
+                            }
+                        }
+                        Some(target_commitment.clone())
+                    } else {
+                        Some(step.commitment.clone().ok_or_else(|| anyhow!(
+                            "Inclusion result for v={} but binary ladder has no commitment", lk.version
+                        ))?)
+                    }
+                } else {
+                    if step.commitment.is_some() && lk.version > target_version {
+                        return Err(anyhow!("Commitment provided for non-existent v={}", lk.version));
+                    }
+                    None
+                };
+
+                let (root, consumed) = PrefixVerifier::compute_root_from_result(
+                    prefix_proof,
+                    j,
+                    &vrf_cache[&lk.version],
+                    commitment.as_deref(),
+                    elements_offset,
+                )?;
+                elements_offset += consumed;
+
+                match &computed_root {
+                    None => computed_root = Some(root),
+                    Some(prev) if prev == &root => {}
+                    Some(prev) => {
+                        return Err(anyhow!(
+                            "PrefixProof #{} results disagree on prefix-tree root: {} vs {}",
+                            proof_idx, hex::encode(&root), hex::encode(prev)
+                        ));
+                    }
+                }
+            }
+
+            if elements_offset != prefix_proof.elements.len() {
+                return Err(anyhow!(
+                    "PrefixProof #{}: {} unused proof elements",
+                    proof_idx, prefix_proof.elements.len() - elements_offset
+                ));
+            }
+
+            if greatest && is_rightmost {
+                let base = base_binary_ladder(target_version);
+                let seen: Vec<u32> = decoded.iter().map(|lk| lk.version).collect();
+                if seen != base {
+                    return Err(anyhow!(
+                        "Rightmost entry ladder incomplete: expected full base ladder for v={}",
+                        target_version
+                    ));
+                }
+            }
+
+            per_proof_roots.push(
+                computed_root.ok_or_else(|| anyhow!("PrefixProof #{} contained no results", proof_idx))?
+            );
+        }
+
+        if resp.binary_ladder.len() != wire_index.len() {
+            return Err(anyhow!(
+                "Binary ladder has {} steps but only {} versions were looked up",
+                resp.binary_ladder.len(), wire_index.len()
+            ));
         }
 
         // TODO: fixed-version log-root reconstruction requires simulating the IBST walk
@@ -401,14 +492,7 @@ impl KtClient {
         }
 
         let proof = proof.ok_or(anyhow!("Missing monitor proof"))?;
-        // §12.3
-        let mut prev_ts = 0;
-        for &ts in &proof.timestamps {
-            if ts < prev_ts {
-                return Err(anyhow!("Monitor timestamps are not monotonic"));
-            }
-            prev_ts = ts;
-        }
+        // TODO: position-aware timestamp monotonicity via algorithm simulation (§12.3, Appendix C)
         if proof.inclusion.is_none() {
             return Err(anyhow!("Missing inclusion proof in monitor response"));
         }
@@ -480,81 +564,80 @@ impl KtClient {
     }
 }
 
-fn verify_prefix_proof_consistent(
-    prefix_proof: &PrefixProof,
-    versions: &[u32],
-    vrf_outputs: &[Vec<u8>],
-    binary_ladder: &[crate::proto::transparency::BinaryLadderStep],
-    target_idx: usize,
-    target_commitment: &[u8],
-    require_upper_non_inclusion: bool,
-    require_lower_inclusion: bool,
-) -> Result<Vec<u8>> {
-    if prefix_proof.results.len() != versions.len() {
-        return Err(anyhow!(
-            "PrefixProof results count {} != binary ladder length {}",
-            prefix_proof.results.len(), versions.len()
-        ));
+struct DecodedLookup {
+    version: u32,
+    inclusion: bool,
+}
+
+// §6.2/Appendix B: replay the ladder generation, reading each probe's outcome
+// from the next result's type, to recover which version every result covers
+fn decode_search_ladder(
+    results: &[crate::proto::transparency::PrefixSearchResult],
+    target: u32,
+) -> Result<Vec<DecodedLookup>> {
+    let mut out: Vec<DecodedLookup> = Vec::new();
+    let mut idx = 0usize;
+
+    let finish = |out: Vec<DecodedLookup>, idx: usize| -> Result<Vec<DecodedLookup>> {
+        if idx != results.len() {
+            return Err(anyhow!(
+                "PrefixProof has {} results but the ladder only requires {}",
+                results.len(), idx
+            ));
+        }
+        Ok(out)
+    };
+
+    macro_rules! probe {
+        ($v:expr) => {{
+            let r = results.get(idx).ok_or_else(|| anyhow!(
+                "PrefixProof has fewer results than its ladder requires"
+            ))?;
+            idx += 1;
+            let inc = r.result_type == 1;
+            out.push(DecodedLookup { version: $v, inclusion: inc });
+            inc
+        }};
     }
 
-    let target_version = versions[target_idx];
-    let mut elements_offset = 0usize;
-    let mut computed_root: Option<Vec<u8>> = None;
+    let mut k = 0u32;
+    let mut last_included: Option<u32> = None;
+    let (mut lower, mut upper) = loop {
+        let v64 = (1u64 << k) - 1;
+        let v = if v64 > u32::MAX as u64 { u32::MAX } else { v64 as u32 };
 
-    for (i, &v) in versions.iter().enumerate() {
-        let result = &prefix_proof.results[i];
-        let is_inclusion = result.result_type == 1;
-
-        // §6.3 step 2
-        if require_upper_non_inclusion && v > target_version && is_inclusion {
-            return Err(anyhow!("Inclusion proof for v={} contradicts claimed greatest version {}", v, target_version));
-        }
-        if require_lower_inclusion && v <= target_version && !is_inclusion {
-            return Err(anyhow!("Non-inclusion proof for v={} at the rightmost entry contradicts claimed greatest version {}", v, target_version));
-        }
-
-        let commitment_bytes: Option<Vec<u8>> = if is_inclusion {
-            if i == target_idx {
-                Some(target_commitment.to_vec())
-            } else {
-                Some(
-                    binary_ladder[i].commitment.clone()
-                        .ok_or_else(|| anyhow!(
-                            "Inclusion result for v={} but binary ladder has no commitment",
-                            versions[i]
-                        ))?
-                )
+        if probe!(v) {
+            if v > target || v == u32::MAX {
+                return finish(out, idx);
             }
+            last_included = Some(v);
+            k += 1;
         } else {
-            None
-        };
-
-        let (root, consumed) = PrefixVerifier::compute_root_from_result(
-            prefix_proof,
-            i,
-            &vrf_outputs[i],
-            commitment_bytes.as_deref(),
-            elements_offset,
-        )?;
-        elements_offset += consumed;
-
-        match &computed_root {
-            None => computed_root = Some(root),
-            Some(prev) if prev == &root => {}
-            Some(prev) => {
-                return Err(anyhow!(
-                    "PrefixProof results disagree on prefix-tree root (result {} vs prior): {} vs {}",
-                    i, hex::encode(&root), hex::encode(prev)
-                ));
+            if v <= target {
+                return finish(out, idx);
             }
+            match last_included {
+                Some(l) => break (l, v),
+                // v = 0 non-included always has v <= target
+                None => unreachable!(),
+            }
+        }
+    };
+
+    while lower + 1 < upper {
+        let v = lower + (upper - lower) / 2;
+        if probe!(v) {
+            if v > target {
+                return finish(out, idx);
+            }
+            lower = v;
+        } else {
+            if v <= target {
+                return finish(out, idx);
+            }
+            upper = v;
         }
     }
 
-    if elements_offset != prefix_proof.elements.len() {
-        return Err(anyhow!(
-            "PrefixProof: {} unused proof elements", prefix_proof.elements.len() - elements_offset
-        ));
-    }
-
-    computed_root.ok_or_else(|| anyhow!("PrefixProof contained no results"))
+    finish(out, idx)
 }

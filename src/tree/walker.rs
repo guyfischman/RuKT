@@ -6,23 +6,23 @@ use crate::proto::transparency::{
 use anyhow::Result;
 use std::collections::{HashSet, HashMap};
 
-/// Holds state for a traversal operation to ensure compliance with Draft Section 11.3.
+/// Accumulates a CombinedTreeProof in the order the client-side algorithm will
+/// request its parts (§12.3, Appendix C).
 pub struct TraversalSession<'a> {
     tree: &'a Tree,
     label: &'a [u8],
-    
-    // Draft 11.3 Accumulators
-    visited_nodes: Vec<u64>,
-    visited_set: HashSet<u64>,
+
+    ts_order: Vec<u64>,
+    ts_seen: HashSet<u64>,
     timestamps: HashMap<u64, u64>,
-    prefix_proofs: HashMap<u64, PrefixProof>,
-    prefix_roots: HashMap<u64, Vec<u8>>,
+    prefix_proofs: Vec<(u64, PrefixProof)>,
+    available_roots: HashMap<u64, Vec<u8>>,
 
     // Result Accumulators
     pub binary_ladder: Vec<BinaryLadderStep>,
     pub found_value: Option<UpdateValue>,
     pub found_opening: Vec<u8>,
-    
+
     // Dedup state
     ladder_versions_added: HashSet<u32>,
 }
@@ -32,11 +32,11 @@ impl<'a> TraversalSession<'a> {
         Self {
             tree,
             label,
-            visited_nodes: Vec::new(),
-            visited_set: HashSet::new(),
+            ts_order: Vec::new(),
+            ts_seen: HashSet::new(),
             timestamps: HashMap::new(),
-            prefix_proofs: HashMap::new(),
-            prefix_roots: HashMap::new(),
+            prefix_proofs: Vec::new(),
+            available_roots: HashMap::new(),
             binary_ladder: Vec::new(),
             found_value: None,
             found_opening: Vec::new(),
@@ -51,19 +51,18 @@ impl<'a> TraversalSession<'a> {
     pub async fn visit_frontier(&mut self, tree_size: u64) -> Result<()> {
         let frontier = self.tree.get_frontier_nodes(tree_size, 0);
         for &node in &frontier {
-            let ts = self.tree.log.get_timestamp(node)?;
-            self.add_node(node, ts);
-            if let Ok(root) = self.tree.log.get_prefix_root(node) {
-                self.add_root(node, root);
-            }
+            self.visit_timestamp_only(node)?;
         }
         Ok(())
     }
 
-    // §12.3.3: expired log entries contribute their timestamp but no binary ladder
+    // §12.3: entries touched without a PrefixProof surface their prefix root instead
     pub fn visit_timestamp_only(&mut self, node_idx: u64) -> Result<()> {
         let ts = self.tree.log.get_timestamp(node_idx)?;
         self.add_node(node_idx, ts);
+        if let Ok(root) = self.tree.log.get_prefix_root(node_idx) {
+            self.available_roots.entry(node_idx).or_insert(root);
+        }
         Ok(())
     }
 
@@ -110,50 +109,47 @@ impl<'a> TraversalSession<'a> {
     }
 
     fn add_node(&mut self, idx: u64, ts: u64) {
-        if self.visited_set.insert(idx) {
-            self.visited_nodes.push(idx);
+        if self.ts_seen.insert(idx) {
+            self.ts_order.push(idx);
             self.timestamps.insert(idx, ts);
         }
     }
 
     fn add_proof(&mut self, idx: u64, proof: PrefixProof) {
-        self.prefix_roots.remove(&idx);
-        match self.prefix_proofs.get_mut(&idx) {
-            Some(existing) => {
-                existing.results.extend(proof.results);
-                existing.elements.extend(proof.elements);
-            }
-            None => { self.prefix_proofs.insert(idx, proof); }
-        }
+        self.prefix_proofs.push((idx, proof));
     }
 
-    fn add_root(&mut self, idx: u64, root: Vec<u8>) {
-        if !self.prefix_proofs.contains_key(&idx) {
-            self.prefix_roots.insert(idx, root);
-        }
-    }
-
-    pub fn finalize(mut self, tree_size: u64, consistency_last: u64) -> Result<(CombinedTreeProof, Vec<BinaryLadderStep>, Option<UpdateValue>, Vec<u8>)> {
+    pub fn finalize(self, tree_size: u64, consistency_last: u64) -> Result<(CombinedTreeProof, Vec<BinaryLadderStep>, Option<UpdateValue>, Vec<u8>)> {
         let mut combined = CombinedTreeProof::default();
-        self.visited_nodes.sort(); 
 
-        for &idx in &self.visited_nodes {
-            if let Some(&ts) = self.timestamps.get(&idx) {
-                combined.timestamps.push(ts);
-            }
-            if let Some(proof) = self.prefix_proofs.remove(&idx) {
-                combined.prefix_proofs.push(proof);
-            } else if let Some(root) = self.prefix_roots.remove(&idx) {
-                combined.prefix_roots.push(root);
+        // §12.3: timestamps and proofs in request order
+        for &idx in &self.ts_order {
+            combined.timestamps.push(self.timestamps[&idx]);
+        }
+        let proof_nodes: HashSet<u64> = self.prefix_proofs.iter().map(|(idx, _)| *idx).collect();
+        for (_, proof) in self.prefix_proofs {
+            combined.prefix_proofs.push(proof);
+        }
+
+        // §12.3: prefix roots left-to-right for timestamped entries without a proof
+        let mut rootless: Vec<u64> = self.ts_order.iter().copied()
+            .filter(|idx| !proof_nodes.contains(idx))
+            .collect();
+        rootless.sort();
+        for idx in rootless {
+            if let Some(root) = self.available_roots.get(&idx) {
+                combined.prefix_roots.push(root.clone());
             }
         }
 
+        let mut visited: Vec<u64> = self.ts_order.clone();
+        visited.sort();
         let inc_proof = self.tree.log.get_batch_proof_for_nodes(
-            self.visited_nodes, 
-            tree_size, 
+            visited,
+            tree_size,
             consistency_last
         )?;
-        
+
         combined.inclusion = Some(InclusionProof { elements: inc_proof });
 
         Ok((combined, self.binary_ladder, self.found_value, self.found_opening))

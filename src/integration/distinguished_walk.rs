@@ -39,12 +39,6 @@ async fn test_walk_distinguished_heads() -> Result<()> {
     assert_eq!(proof.timestamps.len(), 7, "With RMW=0 every entry is distinguished and recent");
     assert!(proof.inclusion.is_some());
 
-    let mut prev = 0;
-    for &ts in &proof.timestamps {
-        assert!(ts >= prev, "Timestamps must be monotonic");
-        prev = ts;
-    }
-
     let resp_stopped = service.distinguished(tonic::Request::new(DistinguishedRequest {
         last: None,
         stop: Some(3),

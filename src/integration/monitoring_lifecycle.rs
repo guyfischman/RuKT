@@ -61,18 +61,10 @@ async fn test_contact_monitoring_conformant() -> Result<()> {
 
     let resp = service.contact_monitor(tonic::Request::new(req)).await?.into_inner();
 
-    // Verify Response Structure (Draft Section 11.3)
     let proof = resp.monitor.expect("Missing monitor proof");
-    
+
     // With RMW=0, we expect timestamps for intermediate nodes
     assert!(!proof.timestamps.is_empty(), "Should contain timestamps");
-    
-    // Verify monotonicity locally
-    let mut prev = 0;
-    for t in &proof.timestamps {
-        assert!(*t >= prev, "Timestamps must be monotonic");
-        prev = *t;
-    }
 
     // Ensure we have prefix proofs for the label
     // Since RMW=0, we hit distinguished nodes quickly, so we expect proofs.

@@ -33,7 +33,7 @@ use rukt::crypto::{
     sign_data, verify_data, PrivateConfig,
     CIPHER_SUITE_KT_128_SHA256_ED25519, CIPHER_SUITE_KT_128_SHA256_P256,
 };
-use rukt::tree::binary_ladder::{base_binary_ladder, fixed_version_binary_ladder};
+use rukt::tree::binary_ladder::{base_binary_ladder, search_binary_ladder};
 use std::sync::Arc;
 use std::path::Path;
 use std::collections::HashMap;
@@ -444,7 +444,7 @@ fn bench_binary_ladder(c: &mut Criterion) {
         group.bench_with_input(
             BenchmarkId::new("fixed_version", format!("t{}_n{}", t, n)),
             &(t, n),
-            |b, &(t, n)| b.iter(|| fixed_version_binary_ladder(t, n, &[], &[])),
+            |b, &(t, n)| b.iter(|| search_binary_ladder(t, n, &[], &[])),
         );
     }
 

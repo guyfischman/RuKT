@@ -158,6 +158,7 @@ impl Tree {
         })
     }
 
+    // §6.3; TODO: start at the rightmost distinguished log entry instead of the root
     pub async fn traverse_greatest_search(
         &self,
         tree_size: u64,
@@ -166,17 +167,19 @@ impl Tree {
     ) -> Result<SearchResultData> {
         let mut session = TraversalSession::new(self, label);
         let label_history = self.store.get_label_history(label)?;
-        
-        let mut known_max = 0; 
+
+        session.visit_frontier(tree_size).await?;
+
         let frontier = self.get_frontier_nodes(tree_size, 0);
+        let rightmost = *frontier.last().unwrap();
+        // every entry's ladder targets the claimed greatest version
+        let target = self.get_max_version_at(&label_history, rightmost);
 
         for &node in &frontier {
             let n = self.get_max_version_at(&label_history, node);
-            if n > known_max { known_max = n; }
+            let extract = if node == rightmost { Some(target) } else { None };
+            let versions = search_binary_ladder(target, n, &[], &[]);
 
-            let extract = if node == *frontier.last().unwrap() { Some(known_max) } else { None };
-            let versions = search_binary_ladder(known_max, n, &[], &[]);
-            
             session.visit(node, &versions, extract, tree_size).await?;
         }
 
@@ -186,7 +189,7 @@ impl Tree {
             binary_ladder: ladder,
             value: val,
             opening: op,
-            greatest_version: known_max,
+            greatest_version: target,
         })
     }
 
