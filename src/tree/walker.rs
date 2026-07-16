@@ -60,6 +60,13 @@ impl<'a> TraversalSession<'a> {
         Ok(())
     }
 
+    // §12.3.3: expired log entries contribute their timestamp but no binary ladder
+    pub fn visit_timestamp_only(&mut self, node_idx: u64) -> Result<()> {
+        let ts = self.tree.log.get_timestamp(node_idx)?;
+        self.add_node(node_idx, ts);
+        Ok(())
+    }
+
     /// Visits a specific node, generates required proofs, and optionally extracts value.
     /// `extract_target`: If Some(ver), attempts to retrieve the value/opening for `ver` from DB.
     pub async fn visit(&mut self, node_idx: u64, versions_to_prove: &[u32], extract_target: Option<u32>, tree_size: u64) -> Result<()> {
@@ -110,7 +117,13 @@ impl<'a> TraversalSession<'a> {
 
     fn add_proof(&mut self, idx: u64, proof: PrefixProof) {
         self.prefix_roots.remove(&idx);
-        self.prefix_proofs.insert(idx, proof);
+        match self.prefix_proofs.get_mut(&idx) {
+            Some(existing) => {
+                existing.results.extend(proof.results);
+                existing.elements.extend(proof.elements);
+            }
+            None => { self.prefix_proofs.insert(idx, proof); }
+        }
     }
 
     fn add_root(&mut self, idx: u64, root: Vec<u8>) {

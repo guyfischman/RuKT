@@ -42,10 +42,11 @@ impl Tree {
         Ok(session.finalize(current_tree_size, consistency_last)?.0)
     }
 
+    // §7.2
     pub async fn traverse_fixed_search(
-        &self, 
-        tree_size: u64, 
-        label: &[u8], 
+        &self,
+        tree_size: u64,
+        label: &[u8],
         target_ver: u32,
         consistency_last: u64
     ) -> Result<SearchResultData> {
@@ -53,78 +54,97 @@ impl Tree {
         let label_history = self.store.get_label_history(label)?;
         let rightmost_ts = self.log.get_timestamp(tree_size - 1)?;
         let max_life = self.config.maximum_lifetime;
+        let distinguished = self.find_distinguished_nodes(tree_size).await?;
+
+        let is_expired = |ts: u64| max_life.map_or(false, |ml| rightmost_ts.saturating_sub(ts) >= ml);
+        let is_unexpired_distinguished = |node: u64, ts: u64| {
+            distinguished.binary_search(&node).is_ok() && !is_expired(ts)
+        };
 
         session.visit_frontier(tree_size).await?;
 
         let mut curr = log_math::root(tree_size);
-        let mut candidate_node: Option<u64> = None;
+        let mut expired_on_path = false;
+        let mut encountered_expired = false;
+        let mut left_path: Vec<(u64, u64)> = Vec::new();
+        let mut inspected: Vec<(u64, u32)> = Vec::new();
+        let mut success = false;
 
         loop {
             let ts = self.log.get_timestamp(curr)?;
-            let is_expired = if let Some(ml) = max_life { rightmost_ts.saturating_sub(ts) >= ml } else { false };
-            let n = self.get_max_version_at(&label_history, curr);
 
-            // Update candidate: leftmost (visited) node where n >= target
-            if n >= target_ver {
-                candidate_node = Some(curr);
-            }
+            let right_child = if log_math::is_leaf(curr) { None } else { log_math::ibst_right_child(curr, tree_size) };
 
-            let mut right_child = curr;
-            let mut has_right = false;
-            if !log_math::is_leaf(curr) {
-                if let Some(rc) = log_math::ibst_right_child(curr, tree_size) {
-                    right_child = rc;
-                    has_right = true;
+            // step 1
+            if is_expired(ts) {
+                encountered_expired = true;
+                expired_on_path = true;
+                session.visit_timestamp_only(curr)?;
+                match right_child {
+                    Some(rc) => { left_path.push((curr, ts)); curr = rc; continue; }
+                    None => break,
                 }
             }
 
-            if is_expired {
-                if has_right {
-                     let rc_ts = self.log.get_timestamp(right_child)?;
-                     let rc_expired = if let Some(ml) = max_life { rightmost_ts.saturating_sub(rc_ts) >= ml } else { false };
-                     if !rc_expired {
-                         // Skip expired node, visit right child instead
-                         session.visit(curr, &[], None, tree_size).await?; 
-                         curr = right_child;
-                         continue;
-                     }
+            // step 2
+            let n = self.get_max_version_at(&label_history, curr);
+            let versions = search_binary_ladder(target_ver, n, &[], &[]);
+            let extract = if n == target_ver { Some(target_ver) } else { None };
+            session.visit(curr, &versions, extract, tree_size).await?;
+            inspected.push((curr, n));
+
+            if n < target_ver {
+                // step 3
+                match right_child {
+                    Some(rc) => { left_path.push((curr, ts)); curr = rc; }
+                    None => break,
+                }
+            } else if n > target_ver {
+                // step 4
+                if log_math::is_leaf(curr) { break; }
+                curr = log_math::left_child(curr);
+            } else {
+                // step 5
+                if !expired_on_path
+                    || is_unexpired_distinguished(curr, ts)
+                    || left_path.iter().any(|&(node, node_ts)| is_unexpired_distinguished(node, node_ts))
+                {
+                    success = true;
+                    break;
                 }
                 return Err(anyhow::Error::new(KtError::Expired));
             }
-
-            let versions = search_binary_ladder(target_ver, n, &[], &[]);
-            let found_target = n == target_ver;
-            let extract = if found_target { Some(target_ver) } else { None };
-            
-            session.visit(curr, &versions, extract, tree_size).await?;
-
-            if found_target {
-                break;
-            } else if n < target_ver {
-                if !has_right { break; }
-                curr = right_child;
-            } else { 
-                if log_math::is_leaf(curr) { break; }
-                curr = log_math::left_child(curr);
-            }
         }
 
-        // Step 6: Fallback to leftmost candidate if exact match not found in loop
-        if session.found_value.is_none() {
-            if let Some(cand) = candidate_node {
-                // If candidate is expired, that's an error (Step 6.1)
-                // We checked expiration in loop, but time is relative to rightmost.
-                // Assuming candidate visited in loop was not expired back then.
-                // We re-visit to extract.
-                // We need to prove `target_ver` existence here if it wasn't in the ladder.
-                session.visit(cand, &[target_ver], Some(target_ver), tree_size).await?;
-            } else {
+        // step 6
+        if !success {
+            let identified = inspected.iter()
+                .filter(|&&(_, n)| n > target_ver)
+                .map(|&(node, _)| node)
+                .min();
+            let identified = match identified {
+                Some(node) => node,
+                None => return Err(anyhow::Error::new(KtError::Unavailable)),
+            };
+
+            if encountered_expired {
+                let mut has_unexpired_dist_left = false;
+                for &d in &distinguished {
+                    if d >= identified { break; }
+                    if !is_expired(self.log.get_timestamp(d)?) {
+                        has_unexpired_dist_left = true;
+                        break;
+                    }
+                }
+                if !has_unexpired_dist_left {
+                    return Err(anyhow::Error::new(KtError::Expired));
+                }
+            }
+
+            session.visit(identified, &[target_ver], Some(target_ver), tree_size).await?;
+            if session.found_value.is_none() {
                 return Err(anyhow::Error::new(KtError::Unavailable));
             }
-        }
-
-        if session.found_value.is_none() {
-             return Err(anyhow::Error::new(KtError::Unavailable));
         }
 
         let (proof, ladder, val, op) = session.finalize(tree_size, consistency_last)?;
