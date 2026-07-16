@@ -2,6 +2,7 @@
 use anyhow::{Result, anyhow, Context};
 use sha2::{Sha256, Digest};
 use hmac::{Hmac, Mac};
+use std::collections::{BTreeMap, HashSet};
 use crate::crypto::hash::{log_leaf_value, log_parent_value};
 use crate::crypto::tls::TlsEncode;
 use crate::proto::transparency::{PrefixProof, PrefixSearchResult, PrefixLeaf};
@@ -15,11 +16,27 @@ impl LogVerifier {
         tree_size: u64,
         proof_elements: &[Vec<u8>],
     ) -> Result<Vec<u8>> {
+        Ok(Self::calculate_root_with_retained(
+            node_indices, node_hashes, tree_size, proof_elements, &BTreeMap::new(),
+        )?.0)
+    }
+
+    /// Folds provided leaves, proof elements, and retained full-subtree values into
+    /// the root, returning it plus the full-subtree values of the new tree (§4.2).
+    /// Using retained values where the server omitted them is what proves the new
+    /// head extends the previously verified one.
+    pub fn calculate_root_with_retained(
+        node_indices: &[u64],
+        node_hashes: &[Vec<u8>],
+        tree_size: u64,
+        proof_elements: &[Vec<u8>],
+        retained: &BTreeMap<u64, Vec<u8>>,
+    ) -> Result<(Vec<u8>, BTreeMap<u64, Vec<u8>>)> {
         if node_indices.len() != node_hashes.len() {
             return Err(anyhow!("Mismatch between indices and hashes length"));
         }
         if tree_size == 0 {
-            return Ok(vec![0u8; 32]);
+            return Ok((vec![0u8; 32], BTreeMap::new()));
         }
         let mut nodes: Vec<(u64, Vec<u8>)> = node_indices
             .iter()
@@ -29,7 +46,17 @@ impl LogVerifier {
         nodes.sort_by_key(|(i, _)| *i);
         let mut proof_iter = proof_elements.iter();
         let root = crate::tree::log_math::merkle_root(tree_size);
-        Self::recursive_hash(root, tree_size, &nodes, &mut proof_iter)
+
+        let peak_set: HashSet<u64> = crate::tree::log_math::get_roots(tree_size).into_iter().collect();
+        let mut new_peaks = BTreeMap::new();
+
+        let root_hash = Self::recursive_hash(
+            root, tree_size, &nodes, &mut proof_iter, retained, &peak_set, &mut new_peaks,
+        )?;
+        if proof_iter.next().is_some() {
+            return Err(anyhow!("Unused inclusion proof elements"));
+        }
+        Ok((root_hash, new_peaks))
     }
 
     fn recursive_hash<'a>(
@@ -37,11 +64,21 @@ impl LogVerifier {
         tree_size: u64,
         provided_leaves: &[(u64, Vec<u8>)],
         proof_iter: &mut impl Iterator<Item = &'a Vec<u8>>,
+        retained: &BTreeMap<u64, Vec<u8>>,
+        peak_set: &HashSet<u64>,
+        new_peaks: &mut BTreeMap<u64, Vec<u8>>,
     ) -> Result<Vec<u8>> {
-        if let Ok(idx) = provided_leaves.binary_search_by_key(&node_id, |(k, _)| *k) {
-            return Ok(provided_leaves[idx].1.clone());
+        fn record(peak_set: &HashSet<u64>, new_peaks: &mut BTreeMap<u64, Vec<u8>>, id: u64, val: Vec<u8>) -> Vec<u8> {
+            if peak_set.contains(&id) {
+                new_peaks.insert(id, val.clone());
+            }
+            val
         }
-        
+
+        if let Ok(idx) = provided_leaves.binary_search_by_key(&node_id, |(k, _)| *k) {
+            return Ok(record(peak_set, new_peaks, node_id, provided_leaves[idx].1.clone()));
+        }
+
         let is_ancestor = provided_leaves.iter().any(|(leaf_node_id, _)| {
              let mut curr = *leaf_node_id;
              while curr != node_id {
@@ -52,9 +89,14 @@ impl LogVerifier {
         });
 
         if !is_ancestor {
-             return proof_iter.next()
+            // mirrors the server's omission rule for retained full subtrees
+            if let Some(val) = retained.get(&node_id) {
+                return Ok(record(peak_set, new_peaks, node_id, val.clone()));
+            }
+            let val = proof_iter.next()
                 .cloned()
-                .ok_or_else(|| anyhow!("Ran out of proof elements at node {}", node_id));
+                .ok_or_else(|| anyhow!("Ran out of proof elements at node {}", node_id))?;
+            return Ok(record(peak_set, new_peaks, node_id, val));
         }
 
         if crate::tree::log_math::is_leaf(node_id) {
@@ -63,12 +105,13 @@ impl LogVerifier {
 
         let l = crate::tree::log_math::left_child(node_id);
         let r = crate::tree::log_math::right_child(node_id, tree_size);
-        
-        let l_hash = Self::recursive_hash(l, tree_size, provided_leaves, proof_iter)?;
-        if l == r { return Ok(l_hash); }
 
-        let r_hash = Self::recursive_hash(r, tree_size, provided_leaves, proof_iter)?;
-        Ok(log_parent_value(&l_hash, crate::tree::log_math::is_leaf(l), &r_hash, crate::tree::log_math::is_leaf(r)))
+        let l_hash = Self::recursive_hash(l, tree_size, provided_leaves, proof_iter, retained, peak_set, new_peaks)?;
+        if l == r { return Ok(record(peak_set, new_peaks, node_id, l_hash)); }
+
+        let r_hash = Self::recursive_hash(r, tree_size, provided_leaves, proof_iter, retained, peak_set, new_peaks)?;
+        let val = log_parent_value(&l_hash, crate::tree::log_math::is_leaf(l), &r_hash, crate::tree::log_math::is_leaf(r));
+        Ok(record(peak_set, new_peaks, node_id, val))
     }
 }
 

@@ -1550,6 +1550,7 @@ dependencies = [
  "rayon",
  "rocksdb",
  "serde",
+ "serde_json",
  "sha2",
  "signature",
  "tempfile",

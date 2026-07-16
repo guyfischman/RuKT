@@ -10,7 +10,7 @@ use crate::proto::transparency::{
     UpdateResponse, SearchResponse,
     FullTreeHead, FullTreeHeadType, PrefixProof,
 };
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use crate::crypto::{self, PublicConfig, ServiceVerifyingKey, construct_tree_head_tbs_public, verify_data, construct_vrf_input};
 use crate::client::verifier::{LogVerifier, PrefixVerifier};
 use crate::tree::log_math;
@@ -24,12 +24,26 @@ pub struct TrustedState {
     pub timestamp: u64,
 }
 
+// §13: users retain the most recent verified TreeHead and AuditorTreeHead
+#[derive(serde::Serialize, serde::Deserialize, Default)]
+struct PersistedState {
+    tree_size: u64,
+    root_hash: String,
+    timestamp: u64,
+    auditor_head: Option<(u64, u64)>,
+    label_versions: Vec<(String, u32)>,
+    retained_subtrees: Vec<(u64, String)>,
+}
+
 pub struct KtClient {
     client: KeyTransparencyServiceClient<Channel>,
     sig_pk: ServiceVerifyingKey,
     vrf_pk: Vec<u8>,
     pub state: Option<TrustedState>,
     pub label_versions: HashMap<Vec<u8>, u32>,
+    pub retained_subtrees: BTreeMap<u64, Vec<u8>>,
+    pub auditor_head: Option<(u64, u64)>,
+    state_path: Option<std::path::PathBuf>,
     config: PublicConfig,
 }
 
@@ -46,8 +60,51 @@ impl KtClient {
             vrf_pk,
             state: None,
             label_versions: HashMap::new(),
+            retained_subtrees: BTreeMap::new(),
+            auditor_head: None,
+            state_path: None,
             config,
         })
+    }
+
+    /// Loads any previously persisted state from `path` and saves verified state
+    /// changes back to it from then on.
+    pub fn persist_to(&mut self, path: impl Into<std::path::PathBuf>) -> Result<()> {
+        let path = path.into();
+        if path.exists() {
+            let data = std::fs::read_to_string(&path)?;
+            let p: PersistedState = serde_json::from_str(&data)?;
+            if p.tree_size > 0 {
+                self.state = Some(TrustedState {
+                    tree_size: p.tree_size,
+                    root_hash: hex::decode(&p.root_hash)?,
+                    timestamp: p.timestamp,
+                });
+            }
+            self.auditor_head = p.auditor_head;
+            self.label_versions = p.label_versions.into_iter()
+                .map(|(l, v)| Ok((hex::decode(&l)?, v)))
+                .collect::<Result<_>>()?;
+            self.retained_subtrees = p.retained_subtrees.into_iter()
+                .map(|(n, h)| Ok((n, hex::decode(&h)?)))
+                .collect::<Result<_>>()?;
+        }
+        self.state_path = Some(path);
+        Ok(())
+    }
+
+    fn save_state(&self) -> Result<()> {
+        let Some(path) = &self.state_path else { return Ok(()) };
+        let p = PersistedState {
+            tree_size: self.state.as_ref().map(|s| s.tree_size).unwrap_or(0),
+            root_hash: self.state.as_ref().map(|s| hex::encode(&s.root_hash)).unwrap_or_default(),
+            timestamp: self.state.as_ref().map(|s| s.timestamp).unwrap_or(0),
+            auditor_head: self.auditor_head,
+            label_versions: self.label_versions.iter().map(|(l, v)| (hex::encode(l), *v)).collect(),
+            retained_subtrees: self.retained_subtrees.iter().map(|(n, h)| (*n, hex::encode(h))).collect(),
+        };
+        std::fs::write(path, serde_json::to_string(&p)?)?;
+        Ok(())
     }
 
     pub async fn update(&mut self, user: Vec<u8>, value: Vec<u8>) -> Result<UpdateResponse> {
@@ -69,6 +126,7 @@ impl KtClient {
             let start = greatest_version.map(|v| v + 1).unwrap_or(0);
             if resp.values.is_empty() {
                 self.label_versions.insert(user, start);
+                self.save_state()?;
                 return Ok(resp);
             }
             self.label_versions.insert(user.clone(), start + resp.values.len() as u32 - 1);
@@ -89,6 +147,7 @@ impl KtClient {
 
         if let (None, Some(greatest)) = (version, resp.version) {
             self.label_versions.insert(user, greatest);
+            self.save_state()?;
         }
 
         Ok(resp)
@@ -164,8 +223,7 @@ impl KtClient {
     // --- Helpers ---
 
     fn get_consistency_req(&self) -> Option<Consistency> {
-        // TODO: advertise `last` (§12) once retained subtree roots are cached client-side
-        None
+        self.state.as_ref().map(|s| Consistency { last: Some(s.tree_size), distinguished: None })
     }
 
     async fn verify_update_response(
@@ -224,13 +282,8 @@ impl KtClient {
 
         if proof.prefix_proofs.is_empty() { return Err(anyhow!("Missing prefix proof")); }
 
-        // TODO: §9.1 proof verification, candidate-root reconstruction, head signature
-        self.state = Some(TrustedState {
-            tree_size: th.tree_size,
-            root_hash: vec![0u8; 32],
-            timestamp: th.timestamp as u64,
-        });
-
+        // TODO: §9.1 proof verification and candidate-root reconstruction; until then
+        // updates leave the trusted state alone rather than storing an unverified head
         Ok(())
     }
 
@@ -417,7 +470,7 @@ impl KtClient {
         }
 
         // TODO: fixed-version log-root reconstruction requires simulating the IBST walk
-        if fth_is_updated && requested_version.is_none() {
+        if requested_version.is_none() {
             let frontier = log_math::get_frontier(tree_size);
             if frontier.len() != per_proof_roots.len() {
                 return Err(anyhow!(
@@ -447,28 +500,40 @@ impl KtClient {
             let inclusion = proof.inclusion.as_ref()
                 .ok_or_else(|| anyhow!("Missing inclusion proof"))?;
 
-            let candidate_root = LogVerifier::calculate_root(
+            let (candidate_root, new_peaks) = LogVerifier::calculate_root_with_retained(
                 &visited,
                 &leaf_hashes,
                 tree_size,
                 &inclusion.elements,
+                &self.retained_subtrees,
             ).context("Log tree root reconstruction failed")?;
 
-            let th = fth.tree_head.as_ref()
-                .ok_or_else(|| anyhow!("FullTreeHead.head_type=updated but TreeHead is missing"))?;
-            self.verify_tree_head_signature(th, tree_size, &candidate_root)
-                .context("TreeHead signature verification failed")?;
+            if fth_is_updated {
+                let th = fth.tree_head.as_ref()
+                    .ok_or_else(|| anyhow!("FullTreeHead.head_type=updated but TreeHead is missing"))?;
+                self.verify_tree_head_signature(th, tree_size, &candidate_root)
+                    .context("TreeHead signature verification failed")?;
 
-            if self.config.mode == crypto::DEPLOYMENT_MODE_THIRD_PARTY_AUDITING {
-                self.verify_auditor_tree_head(fth, th, tree_size, &candidate_root)
-                    .context("AuditorTreeHead verification failed")?;
+                if self.config.mode == crypto::DEPLOYMENT_MODE_THIRD_PARTY_AUDITING {
+                    self.verify_auditor_tree_head(fth, th, tree_size, &candidate_root)
+                        .context("AuditorTreeHead verification failed")?;
+                }
+
+                self.state = Some(TrustedState {
+                    tree_size,
+                    root_hash: candidate_root,
+                    timestamp: timestamp_opt.unwrap_or(0),
+                });
+                self.retained_subtrees = new_peaks;
+                self.save_state()?;
+            } else {
+                // SAME: the reconstruction must land exactly on the retained root
+                let prev = self.state.as_ref()
+                    .ok_or_else(|| anyhow!("SAME head without previous state"))?;
+                if candidate_root != prev.root_hash {
+                    return Err(anyhow!("SAME head but proofs do not reconstruct the retained root"));
+                }
             }
-
-            self.state = Some(TrustedState {
-                tree_size,
-                root_hash: candidate_root,
-                timestamp: timestamp_opt.unwrap_or(0),
-            });
         }
 
         Ok(())
@@ -476,7 +541,7 @@ impl KtClient {
 
     // §11.3
     fn verify_auditor_tree_head(
-        &self,
+        &mut self,
         fth: &FullTreeHead,
         th: &crate::proto::transparency::TreeHead,
         tree_size: u64,
@@ -485,7 +550,12 @@ impl KtClient {
         let ath = fth.auditor_tree_head.as_ref()
             .ok_or_else(|| anyhow!("Missing AuditorTreeHead in third-party-auditing mode"))?;
 
-        // TODO: step 1 needs the persisted previous head's auditor tree_size
+        // step 1
+        if let Some((prev_auditor_size, _)) = self.auditor_head {
+            if prev_auditor_size < self.config.auditor_start_pos {
+                return Err(anyhow!("Auditor started after the previously verified auditor position"));
+            }
+        }
         // step 2
         let rightmost_ts = th.timestamp as u64;
         let auditor_ts = ath.timestamp as u64;
@@ -514,6 +584,7 @@ impl KtClient {
         }
         // TODO: reconstruct the root at ath.tree_size from retained subtrees when it lags
 
+        self.auditor_head = Some((ath.tree_size, auditor_ts));
         Ok(())
     }
 
@@ -529,13 +600,6 @@ impl KtClient {
                 if th.tree_size < state.tree_size {
                     return Err(anyhow!("Server rolled back tree size in monitor response"));
                 }
-            }
-            if self.state.is_none() || th.tree_size > self.state.as_ref().unwrap().tree_size {
-                self.state = Some(TrustedState {
-                    tree_size: th.tree_size,
-                    root_hash: vec![0u8; 32],
-                    timestamp: th.timestamp as u64,
-                });
             }
         }
 
@@ -564,9 +628,10 @@ impl KtClient {
             let th = fth.tree_head.as_ref().ok_or_else(|| {
                 anyhow!("FullTreeHead.head_type=updated but TreeHead is missing")
             })?;
+            // §11.4 step 2.1: an updated head must be strictly newer than the advertised size
             if let Some(prev) = &self.state {
-                if th.tree_size < prev.tree_size {
-                    return Err(anyhow!("Server rolled back tree size: {} < {}", th.tree_size, prev.tree_size));
+                if th.tree_size <= prev.tree_size {
+                    return Err(anyhow!("Updated head does not advance the tree: {} <= {}", th.tree_size, prev.tree_size));
                 }
             }
             return Ok((th.tree_size, Some(th.timestamp as u64), true));
