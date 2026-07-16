@@ -13,7 +13,7 @@ pub use self::vrf::{ecvrf_prove, ecvrf_verify, get_public_key, expand_vrf_secret
 pub use self::hash::{generate_random_opening, commit, log_leaf_value, log_parent_value}; 
 pub use self::signing::{
     generate_sig_keypair, generate_p256_keypair, 
-    construct_tree_head_tbs, construct_auditor_tree_head_tbs, construct_auditor_tree_head_tbs_public, construct_update_tbs, 
+    construct_tree_head_tbs, construct_tree_head_tbs_public, construct_auditor_tree_head_tbs, construct_auditor_tree_head_tbs_public, construct_update_tbs,
     sign_data, verify_data,
     ServiceSigningKey, ServiceVerifyingKey 
 };

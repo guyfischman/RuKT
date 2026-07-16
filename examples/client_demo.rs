@@ -1,5 +1,6 @@
 use rukt::client::KtClient;
 use rukt::crypto::{self, ServiceVerifyingKey};
+use rukt::crypto::CIPHER_SUITE_KT_128_SHA256_ED25519;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -23,10 +24,22 @@ async fn main() -> anyhow::Result<()> {
 
     println!("Connecting with trusted keys...");
 
+    // Must match the server's configuration constants in src/service.rs
+    let public_config = crypto::PublicConfig {
+        cipher_suite: CIPHER_SUITE_KT_128_SHA256_ED25519,
+        mode: crypto::DEPLOYMENT_MODE_CONTACT_MONITORING,
+        server_sig_pk: sig_vk.to_bytes(),
+        vrf_public_key: vrf_bytes,
+        leaf_public_key: None,
+        max_ahead: 5000,
+        max_behind: 5000,
+        reasonable_monitoring_window: 86400000,
+        maximum_lifetime: None,
+    };
+
     let mut client = KtClient::connect(
-        "http://0.0.0.0:8081".to_string(), 
-        sig_vk, 
-        vrf_bytes // VRF key is just Vec<u8>
+        "http://0.0.0.0:8081".to_string(),
+        public_config,
     ).await?;
 
     println!("Connected to Key Transparency Server");

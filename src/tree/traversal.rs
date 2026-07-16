@@ -12,6 +12,7 @@ pub struct SearchResultData {
     pub binary_ladder: Vec<BinaryLadderStep>,
     pub value: Option<UpdateValue>,
     pub opening: Vec<u8>,
+    pub greatest_version: u32,
 }
 
 impl Tree {
@@ -133,6 +134,7 @@ impl Tree {
             binary_ladder: ladder,
             value: val,
             opening: op,
+            greatest_version: target_ver,
         })
     }
 
@@ -164,6 +166,7 @@ impl Tree {
             binary_ladder: ladder,
             value: val,
             opening: op,
+            greatest_version: known_max,
         })
     }
 

@@ -103,6 +103,8 @@ message TreeSearchResponse {
     CombinedTreeProof search = 4;
     bytes opening = 5;
     UpdateValue value = 6;
+    // Section 12.1
+    optional uint32 version = 7;
 }
 
 message UpdateRequest {

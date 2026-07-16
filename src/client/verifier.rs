@@ -125,12 +125,12 @@ impl PrefixVerifier {
         proof: &PrefixProof,
     ) -> Result<()> {
         use crate::tree::prefix::hasher::{get_bit, leaf_hash, parent_hash};
-        
+
         if proof.results.is_empty() { return Err(anyhow!("Empty prefix proof results")); }
 
         let result = &proof.results[0];
         let mut curr_hash = leaf_hash(search_key_vrf_output, commitment);
-        
+
         let depth = result.depth as usize;
         let mut element_idx = 0;
 
@@ -155,6 +155,59 @@ impl PrefixVerifier {
             return Err(anyhow!("Prefix tree root mismatch (Inclusion)."));
         }
         Ok(())
+    }
+
+    // §10.9: siblings at levels >= depth are implicit ZERO_VALUE stand-ins
+    pub fn compute_root_from_result(
+        proof: &PrefixProof,
+        result_idx: usize,
+        vrf_output: &[u8],
+        commitment: Option<&[u8]>,
+        elements_offset: usize,
+    ) -> Result<(Vec<u8>, usize)> {
+        use crate::tree::prefix::hasher::{get_bit, leaf_hash, parent_hash, INDEX_LENGTH, ZERO_VALUE};
+
+        let result = proof.results.get(result_idx)
+            .ok_or_else(|| anyhow!("Result index out of range"))?;
+
+        let mut curr_hash = match result.result_type {
+            1 => {
+                let comm = commitment.ok_or_else(|| anyhow!("Inclusion result needs commitment"))?;
+                leaf_hash(vrf_output, comm)
+            }
+            2 => {
+                let leaf = result.leaf.as_ref()
+                    .ok_or_else(|| anyhow!("NonInclusionLeaf result missing leaf"))?;
+                leaf_hash(&leaf.vrf_output, &leaf.commitment)
+            }
+            3 => ZERO_VALUE.to_vec(),
+            _ => return Err(anyhow!("Unknown PrefixSearchResult.result_type")),
+        };
+
+        let depth = result.depth as usize;
+        let end = elements_offset.checked_add(depth)
+            .ok_or_else(|| anyhow!("Element offset overflow"))?;
+        if end > proof.elements.len() {
+            return Err(anyhow!("PrefixProof: insufficient elements for result"));
+        }
+        let elements = &proof.elements[elements_offset..end];
+
+        let total_levels = INDEX_LENGTH * 8;
+        for level in (0..total_levels).rev() {
+            let sibling: &[u8] = if level < depth {
+                &elements[level]
+            } else {
+                &ZERO_VALUE
+            };
+            let bit = get_bit(vrf_output, level);
+            if bit == 1 {
+                curr_hash = parent_hash(sibling, &curr_hash);
+            } else {
+                curr_hash = parent_hash(&curr_hash, sibling);
+            }
+        }
+
+        Ok((curr_hash, depth))
     }
 }
 

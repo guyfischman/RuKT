@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Install protoc
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+      - uses: Swatinem/rust-cache@v2
+      # benches excluded: kt_benchmarks (harness = false) would run the criterion suite under cargo test
+      - name: Test
+        run: cargo test --workspace --lib --bins --tests --examples
+      - name: Build benches
+        run: cargo bench --no-run
+      # non-blocking until the pre-existing warning/format backlog is cleared
+      - name: Format (advisory)
+        run: cargo fmt --all --check
+        continue-on-error: true
+      - name: Clippy (advisory)
+        run: cargo clippy --workspace --all-targets
+        continue-on-error: true

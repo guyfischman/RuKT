@@ -192,6 +192,19 @@ pub fn construct_auditor_tree_head_tbs_public(
     Ok(buf)
 }
 
+pub fn construct_tree_head_tbs_public(
+    config: &PublicConfig,
+    auditor_pk: Option<&[u8]>,
+    tree_size: u64,
+    root_hash: &[u8]
+) -> Result<Vec<u8>> {
+    let mut buf = serialize_configuration_public(config, auditor_pk)?;
+    tree_size.tls_encode(&mut buf);
+    if root_hash.len() != 32 { return Err(anyhow!("Root hash must be 32 bytes")); }
+    FixedOpaque(root_hash).tls_encode(&mut buf);
+    Ok(buf)
+}
+
 pub fn construct_update_tbs(
     label: &[u8],
     version: u32,

@@ -198,18 +198,20 @@ impl Tree {
 
     pub async fn search(&self, req: &crate::proto::transparency::TreeSearchRequest) -> Result<TreeSearchResponse> {
         let tree_size = self.latest.as_ref().map(|th| th.tree_size).unwrap_or(0);
-        
+
         if tree_size == 0 {
-             return Ok(TreeSearchResponse { 
-                 tree_head: Some(self.get_full_tree_head(None)?), 
+             return Ok(TreeSearchResponse {
+                 tree_head: Some(self.get_full_tree_head(None)?),
                  binary_ladder: vec![],
-                 search: Some(crate::proto::transparency::CombinedTreeProof::default()), 
-                 opening: vec![], 
-                 value: None 
+                 search: Some(crate::proto::transparency::CombinedTreeProof::default()),
+                 opening: vec![],
+                 value: None,
+                 version: None,
              });
         }
-        
+
         let last = req.consistency.as_ref().and_then(|c| c.last).unwrap_or(0);
+        let is_greatest = req.version.is_none();
 
         // Delegate to unified traversal logic in traversal.rs
         let result_data = if let Some(target_ver) = req.version {
@@ -226,6 +228,7 @@ impl Tree {
             search: Some(result_data.combined_proof),
             opening: result_data.opening,
             value: result_data.value,
+            version: if is_greatest { Some(result_data.greatest_version) } else { None },
         })
     }
     

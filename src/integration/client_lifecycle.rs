@@ -50,7 +50,18 @@ async fn test_full_client_lifecycle() -> Result<()> {
 
     // 2. Setup Client
     let uri = format!("http://{}", local_addr);
-    let mut client: KtClient = KtClient::connect(uri, sig_vk, vrf_pub).await?;
+    let public_config = crypto::PublicConfig {
+        cipher_suite: CIPHER_SUITE_KT_128_SHA256_ED25519,
+        mode: crypto::DEPLOYMENT_MODE_CONTACT_MONITORING,
+        server_sig_pk: sig_vk.to_bytes(),
+        vrf_public_key: vrf_pub,
+        leaf_public_key: None,
+        max_ahead: 5000,
+        max_behind: 5000,
+        reasonable_monitoring_window: 86400000,
+        maximum_lifetime: None,
+    };
+    let mut client: KtClient = KtClient::connect(uri, public_config).await?;
 
     // 3. Update (Register User)
     let user_id = b"client_user".to_vec();
