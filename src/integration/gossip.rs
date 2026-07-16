@@ -96,5 +96,24 @@ async fn test_gossip_detects_split_view() -> Result<()> {
         _ => panic!("Split view must be detected as a fork"),
     }
 
+    // §10.2: historical root values at distinguished heads are derivable from
+    // the walk and comparable across peers
+    alice.update(b"more_1".to_vec(), b"x".to_vec()).await?;
+    alice.update(b"more_2".to_vec(), b"y".to_vec()).await?;
+    alice.distinguished(None).await?;
+    bob.distinguished(None).await?;
+
+    let alice_roots = alice.distinguished_roots()?;
+    assert!(!alice_roots.is_empty());
+
+    let their_roots = bob.export_distinguished_roots()?;
+    alice.check_gossiped_roots(&their_roots)?;
+
+    // a forged root list with a divergent recent entry must be rejected
+    let mut forged_roots = their_roots.clone();
+    let last = forged_roots.roots.len() - 1;
+    forged_roots.roots[last].1 = hex::encode(vec![0x66u8; 32]);
+    assert!(alice.check_gossiped_roots(&forged_roots).is_err());
+
     Ok(())
 }

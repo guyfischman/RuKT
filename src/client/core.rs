@@ -38,7 +38,7 @@ struct PersistedState {
     #[serde(default)]
     version_material: Vec<(String, Vec<(u32, String, Option<String>)>)>,
     #[serde(default)]
-    distinguished_entries: Vec<(u64, u64, String)>,
+    distinguished_entries: Vec<(u64, u64, String, Vec<String>)>,
     #[serde(default)]
     retained_head: Option<String>,
 }
@@ -54,8 +54,9 @@ pub struct KtClient {
     // §8.2 monitoring map plus the vrf outputs and commitments needed to re-verify
     pub monitoring_map: HashMap<Vec<u8>, BTreeMap<u64, u32>>,
     version_material: HashMap<Vec<u8>, HashMap<u32, (Vec<u8>, Option<Vec<u8>>)>>,
-    // §14: recently issued distinguished entries (position -> timestamp, prefix root)
-    pub distinguished_entries: BTreeMap<u64, (u64, Vec<u8>)>,
+    // §14/§10.2: recently issued distinguished entries
+    // (position -> timestamp, prefix root, log-tree peaks at position+1)
+    pub distinguished_entries: BTreeMap<u64, (u64, Vec<u8>, Vec<Vec<u8>>)>,
     // last verified signed head, kept whole for gossip and fork evidence
     retained_head: Option<Vec<u8>>,
     state_path: Option<std::path::PathBuf>,
@@ -119,7 +120,10 @@ impl KtClient {
                 })
                 .collect::<Result<_>>()?;
             self.distinguished_entries = p.distinguished_entries.into_iter()
-                .map(|(pos, ts, root)| Ok((pos, (ts, hex::decode(&root)?))))
+                .map(|(pos, ts, root, peaks)| {
+                    let peaks = peaks.into_iter().map(|h| Ok(hex::decode(&h)?)).collect::<Result<_>>()?;
+                    Ok((pos, (ts, hex::decode(&root)?, peaks)))
+                })
                 .collect::<Result<_>>()?;
             self.retained_head = p.retained_head.map(|h| hex::decode(&h)).transpose()?;
         }
@@ -146,7 +150,9 @@ impl KtClient {
                 ))
                 .collect(),
             distinguished_entries: self.distinguished_entries.iter()
-                .map(|(&pos, (ts, root))| (pos, *ts, hex::encode(root)))
+                .map(|(&pos, (ts, root, peaks))| {
+                    (pos, *ts, hex::encode(root), peaks.iter().map(hex::encode).collect())
+                })
                 .collect(),
             retained_head: self.retained_head.as_ref().map(hex::encode),
         };
@@ -499,9 +505,20 @@ impl KtClient {
         let inclusion = proof.inclusion.as_ref()
             .ok_or_else(|| anyhow!("Missing inclusion proof"))?;
 
-        let (candidate_root, new_peaks) = LogVerifier::calculate_root_with_retained(
-            &positions, &leaf_hashes, tree_size, &inclusion.elements, &self.retained_subtrees,
+        // §14.2.1: also derive the full subtrees at each walked distinguished
+        // entry; they anchor provisional credentials and §10.2 root values
+        let mut wanted: std::collections::HashSet<u64> =
+            log_math::get_roots(tree_size).into_iter().collect();
+        for &p in &walked {
+            wanted.extend(log_math::get_roots(p + 1));
+        }
+
+        let (candidate_root, captured) = LogVerifier::calculate_root_capturing(
+            &positions, &leaf_hashes, tree_size, &inclusion.elements, &self.retained_subtrees, &wanted,
         ).context("Log tree root reconstruction failed")?;
+        let new_peaks: BTreeMap<u64, Vec<u8>> = log_math::get_roots(tree_size).into_iter()
+            .filter_map(|n| captured.get(&n).map(|v| (n, v.clone())))
+            .collect();
 
         if fth_is_updated {
             let th = fth.tree_head.as_ref()
@@ -533,10 +550,51 @@ impl KtClient {
             .map(|(p, ts, root)| (p, (ts, root)))
             .collect();
         self.distinguished_entries = walked.into_iter()
-            .filter_map(|p| by_pos.get(&p).map(|v| (p, v.clone())))
+            .filter_map(|p| {
+                let (ts, prefix_root) = by_pos.get(&p)?.clone();
+                let peaks: Option<Vec<Vec<u8>>> = log_math::get_roots(p + 1).into_iter()
+                    .map(|n| captured.get(&n).cloned())
+                    .collect();
+                Some((p, (ts, prefix_root, peaks?)))
+            })
             .collect();
 
         Ok(())
+    }
+
+    /// §10.2: the log root values at each retained distinguished head, oldest
+    /// first, for comparison over a partition-resistant channel.
+    pub fn distinguished_roots(&self) -> Result<Vec<(u64, Vec<u8>)>> {
+        let mut out = Vec::with_capacity(self.distinguished_entries.len());
+        for (&pos, (_, _, peaks)) in &self.distinguished_entries {
+            let acc = LogVerifier::accumulator_from_peaks(pos + 1, peaks.clone())?;
+            out.push((pos, acc));
+        }
+        Ok(out)
+    }
+
+    pub fn export_distinguished_roots(&self) -> Result<crate::client::gossip::GossipRoots> {
+        Ok(crate::client::gossip::GossipRoots {
+            roots: self.distinguished_roots()?
+                .into_iter()
+                .map(|(pos, root)| (pos, hex::encode(root)))
+                .collect(),
+        })
+    }
+
+    /// §10.2: both lists, truncated to their common length from the most recent
+    /// end, must be a prefix/suffix of one another with a shared root.
+    pub fn check_gossiped_roots(&self, theirs: &crate::client::gossip::GossipRoots) -> Result<()> {
+        let mine = self.distinguished_roots()?;
+        let n = mine.len().min(theirs.roots.len());
+        if n == 0 {
+            return Err(anyhow!("No overlapping distinguished heads to compare"));
+        }
+        let a: Vec<Vec<u8>> = mine[mine.len() - n..].iter().map(|(_, r)| r.clone()).collect();
+        let b: Vec<Vec<u8>> = theirs.roots[theirs.roots.len() - n..].iter()
+            .map(|(_, r)| Ok(hex::decode(r)?))
+            .collect::<Result<_>>()?;
+        crate::client::verifier::compare_roots(&a, &b)
     }
 
     pub async fn owner_monitor(
@@ -1123,7 +1181,7 @@ impl KtClient {
         use crate::proto::transparency::CredentialType;
 
         // common step 1
-        let (_, dist_root) = self.distinguished_entries.get(&cred.position)
+        let (_, dist_root, _) = self.distinguished_entries.get(&cred.position)
             .ok_or_else(|| anyhow!("Credential anchors to an unknown distinguished log entry"))?;
 
         // common step 2 (§11.5)

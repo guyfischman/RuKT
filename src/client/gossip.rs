@@ -25,9 +25,14 @@ pub struct ForkEvidence {
 
 pub enum GossipOutcome {
     Consistent,
-    // TODO: comparable once historical roots at distinguished heads are retained (§10.2)
     Inconclusive,
     Fork(ForkEvidence),
+}
+
+/// §10.2: log root values at the recent distinguished heads, oldest first.
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
+pub struct GossipRoots {
+    pub roots: Vec<(u64, String)>,
 }
 
 impl GossipHead {
