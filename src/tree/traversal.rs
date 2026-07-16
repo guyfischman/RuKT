@@ -340,9 +340,9 @@ impl Tree {
             session.visit(node, &ladder, None, tree_size).await?;
         }
 
-        // §13.3: greatest_versions are reported in descending order
-        let mut greatest: Vec<u32> = versions.iter().filter_map(|v| *v).collect();
-        greatest.reverse();
+        // §13.3: the init list climbs left-ancestors of decreasing position, so
+        // its existing versions are already non-increasing (descending)
+        let greatest: Vec<u32> = versions.iter().filter_map(|v| *v).collect();
 
         let (proof, ladder, _, _) = session.finalize(tree_size, last)?;
         Ok((proof, ladder, greatest))

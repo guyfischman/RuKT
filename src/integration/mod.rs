@@ -26,3 +26,5 @@ pub mod update_catchup;
 pub mod client_persistence;
 pub mod arch_obligations;
 pub mod gossip;
+pub mod harness;
+mod auditing_operations;
