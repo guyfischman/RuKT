@@ -9,22 +9,19 @@ pub fn get_bit(data: &[u8], n: usize) -> u8 {
     (data[n / 8] >> (7 - (n % 8))) & 1
 }
 
-// Section 10.9: Prefix Tree Leaf
-// leaf.value = Hash(0x01 || vrf_output || commitment)
+// §11.9
 pub fn leaf_hash(vrf_output: &[u8], commitment: &[u8]) -> Vec<u8> {
     let mut h = Sha256::new();
-    h.update(&[0x01]);
-    h.update(vrf_output); 
+    h.update(&[0x02]);
+    h.update(vrf_output);
     h.update(commitment);
     h.finalize().to_vec()
 }
 
-// Section 10.9: Prefix Tree Parent
-// parent.value = Hash(0x02 || left || right)
-// If child missing, use 32 bytes of zeros (ZERO_VALUE).
+// §11.9
 pub fn parent_hash(left: &[u8], right: &[u8]) -> Vec<u8> {
     let mut h = Sha256::new();
-    h.update(&[0x02]);
+    h.update(&[0x03]);
     h.update(left);
     h.update(right);
     h.finalize().to_vec()
