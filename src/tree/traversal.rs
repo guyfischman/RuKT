@@ -64,8 +64,7 @@ impl Tree {
         let max_life = self.config.maximum_lifetime;
         let distinguished = self.find_distinguished_nodes(tree_size).await?;
 
-        let is_expired =
-            |ts: u64| max_life.map_or(false, |ml| rightmost_ts.saturating_sub(ts) >= ml);
+        let is_expired = |ts: u64| max_life.is_some_and(|ml| rightmost_ts.saturating_sub(ts) >= ml);
         let is_unexpired_distinguished =
             |node: u64, ts: u64| distinguished.binary_search(&node).is_ok() && !is_expired(ts);
 
@@ -117,7 +116,7 @@ impl Tree {
             session.visit(curr, &versions, extract, tree_size).await?;
             inspected.push((curr, n));
 
-            if n.map_or(true, |n| n < target_ver) {
+            if n.is_none_or(|n| n < target_ver) {
                 // step 3
                 match right_child {
                     Some(rc) => {
@@ -126,7 +125,7 @@ impl Tree {
                     }
                     None => break,
                 }
-            } else if n.map_or(false, |n| n > target_ver) {
+            } else if n.is_some_and(|n| n > target_ver) {
                 // step 4
                 if log_math::is_leaf(curr) {
                     break;
@@ -151,7 +150,7 @@ impl Tree {
         if !success {
             let identified = inspected
                 .iter()
-                .filter(|&&(_, n)| n.map_or(false, |n| n > target_ver))
+                .filter(|&&(_, n)| n.is_some_and(|n| n > target_ver))
                 .map(|&(node, _)| node)
                 .min();
             let identified = match identified {
@@ -311,40 +310,6 @@ impl Tree {
         Ok(())
     }
 
-    // §8.3 second algorithm
-    async fn visit_owner_updates(
-        &self,
-        session: &mut TraversalSession<'_>,
-        label: &[u8],
-        start: u64,
-        tree_size: u64,
-    ) -> Result<Vec<u32>> {
-        let history = self.store.get_label_history(label)?;
-        let root_idx = log_math::root(tree_size);
-        let rightmost_ts = self.log.get_timestamp(tree_size - 1)?;
-        let limit = self.config.max_response_entries;
-
-        let (nodes, _) = self
-            .owner_monitoring_traversal_collect(
-                root_idx,
-                0,
-                rightmost_ts,
-                tree_size,
-                start,
-                &history,
-                limit,
-            )
-            .await?;
-
-        let mut versions = Vec::new();
-        for (node_idx, ver) in nodes {
-            versions.push(ver);
-            let ladder = search_binary_ladder(ver, ver, &[], &[]);
-            session.visit(node_idx, &ladder, None, tree_size).await?;
-        }
-        Ok(versions)
-    }
-
     pub async fn traverse_contact_monitoring(
         &self,
         tree_size: u64,
@@ -373,8 +338,7 @@ impl Tree {
         let history = self.store.get_label_history(label)?;
         let rightmost_ts = self.log.get_timestamp(tree_size - 1)?;
         let max_life = self.config.maximum_lifetime;
-        let is_expired =
-            |ts: u64| max_life.map_or(false, |ml| rightmost_ts.saturating_sub(ts) >= ml);
+        let is_expired = |ts: u64| max_life.is_some_and(|ml| rightmost_ts.saturating_sub(ts) >= ml);
 
         session.visit_frontier(tree_size).await?;
 
@@ -385,10 +349,10 @@ impl Tree {
             }
             let ver = self.get_max_version_at(&history, node);
             // step 2: non-increasing greatest versions
-            if let (Some(prev), Some(v)) = (versions.last().copied().flatten(), ver) {
-                if v > prev {
-                    return Err(anyhow!("Owner-init greatest versions are not monotonic"));
-                }
+            if let (Some(prev), Some(v)) = (versions.last().copied().flatten(), ver)
+                && v > prev
+            {
+                return Err(anyhow!("Owner-init greatest versions are not monotonic"));
             }
             versions.push(ver);
             // step 5: full search ladder targeting this entry's greatest version
@@ -420,7 +384,7 @@ impl Tree {
         let recent: HashSet<u64> = distinguished
             .iter()
             .rev()
-            .take(self.config.max_response_entries as usize)
+            .take(self.config.max_response_entries)
             .copied()
             .collect();
 
@@ -434,17 +398,14 @@ impl Tree {
             // §12.3.8
             session.visit_timestamp_only(curr)?;
             // steps 3-5: the left child is only walked past the gates
-            if !log_math::is_leaf(curr)
-                && !stop.map_or(false, |s| curr <= s)
-                && recent.contains(&curr)
-            {
+            if !log_math::is_leaf(curr) && stop.is_none_or(|s| curr > s) && recent.contains(&curr) {
                 stack.push(log_math::left_child(curr));
             }
             // step 2
-            if !log_math::is_leaf(curr) {
-                if let Some(rc) = log_math::ibst_right_child(curr, tree_size) {
-                    stack.push(rc);
-                }
+            if !log_math::is_leaf(curr)
+                && let Some(rc) = log_math::ibst_right_child(curr, tree_size)
+            {
+                stack.push(rc);
             }
         }
 
@@ -453,6 +414,7 @@ impl Tree {
 
     // §8.3 second algorithm / §12.3.6: the ordered walk actions. `None` target =
     // timestamp only (a node reaching step 2); `Some(v)` = a step-5 ladder node.
+    #[allow(clippy::too_many_arguments)]
     fn owner_walk_actions(
         &self,
         history: &[(u32, u64)],

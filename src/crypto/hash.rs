@@ -46,7 +46,7 @@ pub fn commit(label: &[u8], version: u32, update_value: &[u8], opening: &[u8]) -
 // prefix_tree_root: 32 bytes
 pub fn log_leaf_value(timestamp: u64, prefix_root: &[u8]) -> Vec<u8> {
     let mut h = Sha256::new();
-    h.update(&timestamp.to_be_bytes());
+    h.update(timestamp.to_be_bytes());
     h.update(prefix_root);
     h.finalize().to_vec()
 }
@@ -64,16 +64,16 @@ pub fn log_parent_value(
     let mut h = Sha256::new();
 
     if left_is_leaf {
-        h.update(&[0x00]);
+        h.update([0x00]);
     } else {
-        h.update(&[0x01]);
+        h.update([0x01]);
     }
     h.update(left);
 
     if right_is_leaf {
-        h.update(&[0x00]);
+        h.update([0x00]);
     } else {
-        h.update(&[0x01]);
+        h.update([0x01]);
     }
     h.update(right);
 

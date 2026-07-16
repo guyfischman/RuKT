@@ -7,7 +7,7 @@ pub mod write;
 
 use self::entry::CachedLogEntry;
 use crate::db::TransparencyStore;
-use crate::proto::prefix_tree::{LogEntry, ParentNode};
+use crate::proto::prefix_tree::ParentNode;
 use dashmap::DashMap;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64; // Import the struct

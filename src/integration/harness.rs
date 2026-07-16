@@ -1,5 +1,5 @@
 use crate::client::{KtAuditor, KtClient};
-use crate::crypto::{self, CIPHER_SUITE_KT_128_SHA256_ED25519, ServiceVerifyingKey};
+use crate::crypto::{self, CIPHER_SUITE_KT_128_SHA256_ED25519};
 use crate::db::RocksDbStore;
 use crate::service::KeyTransparencyImpl;
 use anyhow::Result;
@@ -20,10 +20,6 @@ pub struct TestServer {
 impl TestServer {
     pub async fn contact_monitoring() -> Result<Self> {
         Self::spawn(false, 86_400_000).await
-    }
-
-    pub async fn third_party_auditing() -> Result<Self> {
-        Self::spawn(true, 86_400_000).await
     }
 
     /// RMW = 0 makes every log entry distinguished, exercising the full
@@ -112,9 +108,5 @@ impl TestServer {
         let mut auditor = KtAuditor::connect(self.uri.clone(), signer, self.config.clone()).await?;
         auditor.process_and_sign().await?;
         Ok(())
-    }
-
-    pub fn server_verifying_key(&self) -> Result<ServiceVerifyingKey> {
-        Ok(ServiceVerifyingKey::from_bytes(&self.config.server_sig_pk)?)
     }
 }

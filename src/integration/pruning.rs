@@ -48,7 +48,7 @@ async fn test_pruning_expiration() -> Result<()> {
         }))
         .await?;
 
-    let ts_key_0 = 0 | (1u64 << 63);
+    let ts_key_0 = 1u64 << 63;
     let ts_key_1 = 1 | (1u64 << 63);
     let current_ts_bytes = db.get_value(ts_key_1)?.unwrap();
     let current_ts = u64::from_be_bytes(current_ts_bytes.try_into().unwrap());

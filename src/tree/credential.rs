@@ -1,7 +1,7 @@
 use super::Tree;
 use crate::proto::transparency::{
     BinaryLadderStep, Credential, CredentialType, CredentialUpdate, GetCredentialRequest,
-    GetCredentialUpdateRequest, MonitorMapEntry, PrefixProof,
+    GetCredentialUpdateRequest, MonitorMapEntry,
 };
 use crate::tree::binary_ladder::search_binary_ladder;
 use crate::tree::log_math;
@@ -179,15 +179,15 @@ impl Tree {
                 }
             }
 
-            if !log_math::is_leaf(node_idx) {
-                if let Some(r) = log_math::ibst_right_child(node_idx, tree_size) {
-                    if r < tree_size && r != node_idx {
-                        let mut right_res = self
-                            .recursive_distinguished_wrapper(r, node_ts, right_ts, tree_size)
-                            .await?;
-                        nodes.append(&mut right_res);
-                    }
-                }
+            if !log_math::is_leaf(node_idx)
+                && let Some(r) = log_math::ibst_right_child(node_idx, tree_size)
+                && r < tree_size
+                && r != node_idx
+            {
+                let mut right_res = self
+                    .recursive_distinguished_wrapper(r, node_ts, right_ts, tree_size)
+                    .await?;
+                nodes.append(&mut right_res);
             }
 
             Ok(nodes)

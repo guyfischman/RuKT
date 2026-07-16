@@ -15,7 +15,6 @@
 //   6. Proof Size Analysis (response payload sizes)
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
-use rukt::batcher::Batcher;
 use rukt::bulk;
 use rukt::crypto::{
     self, CIPHER_SUITE_KT_128_SHA256_ED25519, CIPHER_SUITE_KT_128_SHA256_P256, PrivateConfig,
@@ -37,7 +36,6 @@ use std::path::Path;
 use std::sync::Arc;
 use tempfile::tempdir;
 use tokio::runtime::Runtime;
-use tokio::sync::RwLock;
 
 /// Worker thread count for benchmark measurements (kept at 4 for consistency
 /// with all existing data). Golden DB builds use a separate higher-parallelism runtime.
@@ -1511,7 +1509,7 @@ fn bench_gdpr(c: &mut Criterion) {
             .unwrap();
         let current_ts = u64::from_be_bytes(current_ts_bytes.try_into().unwrap());
         let old_ts = current_ts - 20_000;
-        db.put_value(0 | (1u64 << 63), old_ts.to_be_bytes().to_vec())
+        db.put_value(1u64 << 63, old_ts.to_be_bytes().to_vec())
             .unwrap();
     });
     group.bench_function("search_expired_entry", |b| {

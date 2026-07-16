@@ -28,12 +28,12 @@ impl Tree {
                     entry.position, tree_size
                 ))));
             }
-            if let Some(p) = prev {
-                if entry.position <= p {
-                    return Err(anyhow::Error::new(KtError::InvalidArgument(
-                        "Entries must be sorted ascending by position without duplicates".into(),
-                    )));
-                }
+            if let Some(p) = prev
+                && entry.position <= p
+            {
+                return Err(anyhow::Error::new(KtError::InvalidArgument(
+                    "Entries must be sorted ascending by position without duplicates".into(),
+                )));
             }
             prev = Some(entry.position);
         }
@@ -89,13 +89,13 @@ impl Tree {
 
     pub async fn distinguished(&self, req: &DistinguishedRequest) -> Result<DistinguishedResponse> {
         let tree_size = self.monitored_tree_size()?;
-        if let Some(stop) = req.stop {
-            if stop >= tree_size {
-                return Err(anyhow::Error::new(KtError::InvalidArgument(format!(
-                    "Stop position {} outside tree of size {}",
-                    stop, tree_size
-                ))));
-            }
+        if let Some(stop) = req.stop
+            && stop >= tree_size
+        {
+            return Err(anyhow::Error::new(KtError::InvalidArgument(format!(
+                "Stop position {} outside tree of size {}",
+                stop, tree_size
+            ))));
         }
 
         let proof = self
@@ -128,7 +128,7 @@ impl Tree {
                 .get_label_history(&req.label)?
                 .last()
                 .map(|(v, _)| *v);
-            if actual.map_or(true, |a| claimed > a) {
+            if actual.is_none_or(|a| claimed > a) {
                 return Err(anyhow::Error::new(KtError::InvalidArgument(
                     "greatest_version exceeds the label's actual greatest version".into(),
                 )));

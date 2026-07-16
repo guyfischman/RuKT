@@ -1,4 +1,4 @@
-use super::{PostUpdateData, PreUpdateData, Tree};
+use super::Tree;
 use crate::crypto::{ServiceVerifyingKey, construct_auditor_tree_head_tbs, verify_data};
 use crate::db::AuditorTreeHead;
 use crate::proto::transparency::{AuditorTreeHead as PbAuditorTreeHead, AuditorUpdate};

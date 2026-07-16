@@ -169,7 +169,7 @@ async fn test_erasure_and_lifetime_pruning() -> Result<()> {
     assert_eq!(latest.into_inner().value.unwrap().value, b"v1".to_vec());
 
     // lifetime pruning: backdate entry 0 past the maximum lifetime
-    let ts_key_0 = 0 | (1u64 << 63);
+    let ts_key_0 = 1u64 << 63;
     let ts_key_1 = 1 | (1u64 << 63);
     let current_ts_bytes = db.get_value(ts_key_1)?.unwrap();
     let current_ts = u64::from_be_bytes(current_ts_bytes.try_into().unwrap());

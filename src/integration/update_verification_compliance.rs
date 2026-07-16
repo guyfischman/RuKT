@@ -84,7 +84,7 @@ async fn test_update_response_structure_compliance() -> Result<()> {
         "Must contain prefix proofs for verification"
     );
 
-    assert!(update_v1.prefix_proofs.len() >= 1);
+    assert!(!update_v1.prefix_proofs.is_empty());
 
     // Assertion 3: Binary Ladder
     // The update response should contain the binary ladder for the new version

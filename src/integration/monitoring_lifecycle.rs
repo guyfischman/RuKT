@@ -88,7 +88,7 @@ async fn test_owner_monitoring_conformant() -> Result<()> {
     let (signer, _) = crypto::generate_sig_keypair();
     let (vrf_key, _) = crypto::generate_vrf_keypair(CIPHER_SUITE_KT_128_SHA256_ED25519);
 
-    let mut service = KeyTransparencyImpl::new(db, signer, vrf_key, HashMap::new(), None).await?;
+    let service = KeyTransparencyImpl::new(db, signer, vrf_key, HashMap::new(), None).await?;
 
     // Normal RMW to test skipping
     {

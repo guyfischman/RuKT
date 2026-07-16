@@ -26,6 +26,7 @@ pub struct TrustedState {
 
 // §13: users retain the most recent verified TreeHead and AuditorTreeHead
 #[derive(serde::Serialize, serde::Deserialize, Default)]
+#[allow(clippy::type_complexity)]
 struct PersistedState {
     tree_size: u64,
     root_hash: String,
@@ -43,6 +44,7 @@ struct PersistedState {
     retained_head: Option<String>,
 }
 
+#[allow(clippy::type_complexity)]
 pub struct KtClient {
     client: KeyTransparencyServiceClient<Channel>,
     sig_pk: ServiceVerifyingKey,
@@ -229,8 +231,13 @@ impl KtClient {
 
             let resp = self.client.clone().update(req).await?.into_inner();
 
-            self.verify_update_response(&user, greatest_version, &[value.clone()], &resp)
-                .await?;
+            self.verify_update_response(
+                &user,
+                greatest_version,
+                std::slice::from_ref(&value),
+                &resp,
+            )
+            .await?;
 
             let start = greatest_version.map(|v| v + 1).unwrap_or(0);
             if resp.values.is_empty() {
@@ -248,6 +255,7 @@ impl KtClient {
 
     /// Issues a Search RPC and returns the raw response without verifying it.
     /// For adversarial tests that tamper the response before verification.
+    #[allow(dead_code)]
     pub(crate) async fn search_raw(
         &mut self,
         user: Vec<u8>,
@@ -324,11 +332,9 @@ impl KtClient {
         if tree_size == 0 {
             return Err(anyhow!("Cannot monitor an empty tree"));
         }
-        if fth_is_updated {
-            if let Some(head_ts) = timestamp_opt {
-                self.check_timestamp_bounds(head_ts)
-                    .context("TreeHead timestamp out of bounds")?;
-            }
+        if fth_is_updated && let Some(head_ts) = timestamp_opt {
+            self.check_timestamp_bounds(head_ts)
+                .context("TreeHead timestamp out of bounds")?;
         }
 
         let material = self
@@ -343,7 +349,7 @@ impl KtClient {
         for &f in &frontier {
             reader.timestamp(f)?;
         }
-        let rightmost_ts = reader.timestamp(tree_size - 1)?;
+        let _rightmost_ts = reader.timestamp(tree_size - 1)?;
 
         let mut entry_roots: BTreeMap<u64, Vec<u8>> = BTreeMap::new();
         let new_map = self.replay_contact_ladders(
@@ -384,6 +390,7 @@ impl KtClient {
 
     // §8.2 replay for a monitoring map; returns the updated map. Records each
     // walked entry's prefix root into `entry_roots`.
+    #[allow(clippy::too_many_arguments)]
     fn replay_contact_ladders(
         &self,
         _label: &[u8],
@@ -570,11 +577,9 @@ impl KtClient {
         if tree_size == 0 || start >= tree_size {
             return Err(anyhow!("Invalid start position for owner init"));
         }
-        if fth_is_updated {
-            if let Some(head_ts) = timestamp_opt {
-                self.check_timestamp_bounds(head_ts)
-                    .context("TreeHead timestamp out of bounds")?;
-            }
+        if fth_is_updated && let Some(head_ts) = timestamp_opt {
+            self.check_timestamp_bounds(head_ts)
+                .context("TreeHead timestamp out of bounds")?;
         }
 
         // §13.3: greatest_versions descending
@@ -591,8 +596,7 @@ impl KtClient {
             reader.timestamp(f)?;
         }
         let rightmost_ts = reader.timestamp(tree_size - 1)?;
-        let is_expired =
-            |ts: u64| max_life.map_or(false, |ml| rightmost_ts.saturating_sub(ts) >= ml);
+        let is_expired = |ts: u64| max_life.is_some_and(|ml| rightmost_ts.saturating_sub(ts) >= ml);
 
         let mut wire_index: HashMap<u32, usize> = HashMap::new();
         let mut vrf_cache: HashMap<u32, Vec<u8>> = HashMap::new();
@@ -616,10 +620,10 @@ impl KtClient {
                 )
                 .with_context(|| format!("Owner-init ladder failed at entry {}", node))?;
 
-            if let (Some(p), Some(t)) = (prev_ver, greatest) {
-                if t > p {
-                    return Err(anyhow!("Owner-init versions are not monotonic"));
-                }
+            if let (Some(p), Some(t)) = (prev_ver, greatest)
+                && t > p
+            {
+                return Err(anyhow!("Owner-init versions are not monotonic"));
             }
             prev_ver = greatest.or(prev_ver);
             if greatest.is_some() {
@@ -685,15 +689,15 @@ impl KtClient {
             // each candidate target until the produced ladder matches the results
             let mut found = None;
             for cand in 0..=(pp.results.len() as u32) {
-                if let Ok(d) = decode_search_ladder(&pp.results, cand) {
-                    if d.len() == pp.results.len() {
-                        found = d
-                            .iter()
-                            .filter(|lk| lk.inclusion)
-                            .map(|lk| lk.version)
-                            .max();
-                        break;
-                    }
+                if let Ok(d) = decode_search_ladder(&pp.results, cand)
+                    && d.len() == pp.results.len()
+                {
+                    found = d
+                        .iter()
+                        .filter(|lk| lk.inclusion)
+                        .map(|lk| lk.version)
+                        .max();
+                    break;
                 }
             }
             found
@@ -713,7 +717,7 @@ impl KtClient {
 
         for (j, lk) in decoded.iter().enumerate() {
             // termination consistency: existence beyond the greatest is impossible
-            if lk.inclusion && greatest.map_or(true, |g| lk.version > g) {
+            if lk.inclusion && greatest.is_none_or(|g| lk.version > g) {
                 return Err(anyhow!(
                     "Owner ladder shows v={} beyond the claimed greatest",
                     lk.version
@@ -726,7 +730,7 @@ impl KtClient {
                 .get(wi)
                 .ok_or_else(|| anyhow!("Ladder step missing for v={}", lk.version))?;
 
-            if !vrf_cache.contains_key(&lk.version) {
+            if let std::collections::hash_map::Entry::Vacant(e) = vrf_cache.entry(lk.version) {
                 let vrf_input = construct_vrf_input(label, lk.version)?;
                 let out = crypto::ecvrf_verify(
                     self.config.cipher_suite,
@@ -735,7 +739,7 @@ impl KtClient {
                     &step.proof,
                 )
                 .with_context(|| format!("Owner ladder VRF verify failed at v={}", lk.version))?;
-                vrf_cache.insert(lk.version, out.to_vec());
+                e.insert(out.to_vec());
             }
 
             let commitment = if lk.inclusion {
@@ -811,11 +815,9 @@ impl KtClient {
         if tree_size == 0 {
             return Err(anyhow!("Empty tree"));
         }
-        if fth_is_updated {
-            if let Some(head_ts) = timestamp_opt {
-                self.check_timestamp_bounds(head_ts)
-                    .context("TreeHead timestamp out of bounds")?;
-            }
+        if fth_is_updated && let Some(head_ts) = timestamp_opt {
+            self.check_timestamp_bounds(head_ts)
+                .context("TreeHead timestamp out of bounds")?;
         }
         let rightmost_ts = timestamp_opt.ok_or_else(|| anyhow!("Missing head timestamp"))?;
         let rmw = self.config.reasonable_monitoring_window;
@@ -835,13 +837,13 @@ impl KtClient {
             }
             let ts = reader.timestamp(curr)?;
             walked.push(curr);
-            if !log_math::is_leaf(curr) && !stop.map_or(false, |s| curr <= s) {
+            if !log_math::is_leaf(curr) && stop.is_none_or(|s| curr > s) {
                 stack.push((log_math::left_child(curr), lo, ts));
             }
-            if !log_math::is_leaf(curr) {
-                if let Some(rc) = log_math::ibst_right_child(curr, tree_size) {
-                    stack.push((rc, ts, hi));
-                }
+            if !log_math::is_leaf(curr)
+                && let Some(rc) = log_math::ibst_right_child(curr, tree_size)
+            {
+                stack.push((rc, ts, hi));
             }
         }
 
@@ -984,11 +986,9 @@ impl KtClient {
         if tree_size == 0 {
             return Err(anyhow!("Cannot monitor an empty tree"));
         }
-        if fth_is_updated {
-            if let Some(head_ts) = timestamp_opt {
-                self.check_timestamp_bounds(head_ts)
-                    .context("TreeHead timestamp out of bounds")?;
-            }
+        if fth_is_updated && let Some(head_ts) = timestamp_opt {
+            self.check_timestamp_bounds(head_ts)
+                .context("TreeHead timestamp out of bounds")?;
         }
         let bound = greatest_version.unwrap_or(u32::MAX);
 
@@ -1146,7 +1146,7 @@ impl KtClient {
         let (root, greatest) = self
             .verify_owner_ladder(label, pp, wire_index, vrf_cache, binary_ladder)
             .with_context(|| format!("Owner-monitor ladder failed at entry {}", node))?;
-        if greatest.map_or(false, |g| g > bound) {
+        if greatest.is_some_and(|g| g > bound) {
             return Err(anyhow!(
                 "Unexpected version {} exceeds advertised greatest {}",
                 greatest.unwrap(),
@@ -1329,11 +1329,9 @@ impl KtClient {
                 .context("Commitment computation failed")?;
 
         // §11.4
-        if fth_is_updated {
-            if let Some(head_ts) = timestamp_opt {
-                self.check_timestamp_bounds(head_ts)
-                    .context("TreeHead timestamp out of bounds")?;
-            }
+        if fth_is_updated && let Some(head_ts) = timestamp_opt {
+            self.check_timestamp_bounds(head_ts)
+                .context("TreeHead timestamp out of bounds")?;
         }
 
         let mut vrf_cache: HashMap<u32, Vec<u8>> = HashMap::new();
@@ -1443,6 +1441,7 @@ impl KtClient {
     /// Verifies one search binary ladder PrefixProof: VRF per lookup, commitment
     /// rules, per-entry root consistency. Returns the prefix root and how the
     /// entry's greatest version relates to the target.
+    #[allow(clippy::too_many_arguments)]
     fn verify_ladder_proof(
         &self,
         label: &[u8],
@@ -1492,7 +1491,7 @@ impl KtClient {
                 .get(wi)
                 .ok_or_else(|| anyhow!("Ladder step missing for v={}", lk.version))?;
 
-            if !vrf_cache.contains_key(&lk.version) {
+            if let std::collections::hash_map::Entry::Vacant(e) = vrf_cache.entry(lk.version) {
                 let vrf_input = construct_vrf_input(label, lk.version)
                     .context("VRF input construction failed")?;
                 let out = crypto::ecvrf_verify(
@@ -1502,17 +1501,17 @@ impl KtClient {
                     &step.proof,
                 )
                 .with_context(|| format!("Binary ladder VRF verify failed at v={}", lk.version))?;
-                vrf_cache.insert(lk.version, out.to_vec());
+                e.insert(out.to_vec());
             }
 
             let commitment: Option<Vec<u8>> = if lk.inclusion {
                 if lk.version == target_version {
-                    if let Some(server_comm) = &step.commitment {
-                        if server_comm != target_commitment {
-                            return Err(anyhow!(
-                                "Target-version commitment mismatch: server-supplied does not open to provided value"
-                            ));
-                        }
+                    if let Some(server_comm) = &step.commitment
+                        && server_comm != target_commitment
+                    {
+                        return Err(anyhow!(
+                            "Target-version commitment mismatch: server-supplied does not open to provided value"
+                        ));
                     }
                     Some(target_commitment.to_vec())
                 } else {
@@ -1583,6 +1582,7 @@ impl KtClient {
     }
 
     // §7.2 step 6.3
+    #[allow(clippy::too_many_arguments)]
     fn verify_single_lookup(
         &self,
         label: &[u8],
@@ -1606,7 +1606,7 @@ impl KtClient {
         let step = binary_ladder
             .get(wi)
             .ok_or_else(|| anyhow!("Ladder step missing for v={}", version))?;
-        if !vrf_cache.contains_key(&version) {
+        if let std::collections::hash_map::Entry::Vacant(e) = vrf_cache.entry(version) {
             let vrf_input = construct_vrf_input(label, version)?;
             let out = crypto::ecvrf_verify(
                 self.config.cipher_suite,
@@ -1615,7 +1615,7 @@ impl KtClient {
                 &step.proof,
             )
             .with_context(|| format!("VRF verify failed at v={}", version))?;
-            vrf_cache.insert(version, out.to_vec());
+            e.insert(out.to_vec());
         }
 
         let commitment = inclusion.then(|| target_commitment.to_vec());
@@ -1633,6 +1633,7 @@ impl KtClient {
     }
 
     // §7.2
+    #[allow(clippy::too_many_arguments)]
     fn simulate_fixed_search(
         &self,
         label: &[u8],
@@ -1649,8 +1650,7 @@ impl KtClient {
         let rightmost_ts = reader.timestamp(tree_size - 1)?;
         let max_life = self.config.maximum_lifetime;
         let rmw = self.config.reasonable_monitoring_window;
-        let is_expired =
-            |ts: u64| max_life.map_or(false, |ml| rightmost_ts.saturating_sub(ts) >= ml);
+        let is_expired = |ts: u64| max_life.is_some_and(|ml| rightmost_ts.saturating_sub(ts) >= ml);
 
         let mut curr = log_math::root(tree_size);
         // §6.1 selection interval, tracked along the walk
@@ -1925,7 +1925,7 @@ impl KtClient {
         let rightmost_ts = reader.timestamp(tree_size - 1)?;
 
         let mut bounds = (0u64, rightmost_ts);
-        let mut parent_dist = true;
+        let parent_dist = true;
         let mut ancestor_dist: HashMap<u64, bool> = HashMap::new();
         let mut curr = log_math::root(tree_size);
         while curr != terminal {
@@ -1933,7 +1933,6 @@ impl KtClient {
             let dist = parent_dist && bounds.1.saturating_sub(bounds.0) >= rmw;
             ancestor_dist.insert(curr, dist);
             if !dist {
-                parent_dist = false;
                 break;
             }
             if terminal < curr {
@@ -2221,6 +2220,7 @@ impl KtClient {
     /// Shared tail of every verified operation: reconstruct the log root with
     /// retained subtrees (capturing any additionally wanted node values), verify
     /// signatures, and commit the new state.
+    #[allow(clippy::too_many_arguments)]
     fn verify_head_and_commit(
         &mut self,
         fth: &FullTreeHead,
@@ -2237,12 +2237,12 @@ impl KtClient {
         wanted.extend(extra_wanted.iter().copied());
 
         let auditing = self.config.mode == crypto::DEPLOYMENT_MODE_THIRD_PARTY_AUDITING;
-        if auditing {
-            if let Some(ath) = fth.auditor_tree_head.as_ref() {
-                if ath.tree_size > 0 && ath.tree_size < tree_size {
-                    wanted.extend(log_math::get_roots(ath.tree_size));
-                }
-            }
+        if auditing
+            && let Some(ath) = fth.auditor_tree_head.as_ref()
+            && ath.tree_size > 0
+            && ath.tree_size < tree_size
+        {
+            wanted.extend(log_math::get_roots(ath.tree_size));
         }
 
         let (candidate_root, captured) = LogVerifier::calculate_root_capturing(
@@ -2308,12 +2308,12 @@ impl KtClient {
             .ok_or_else(|| anyhow!("Missing AuditorTreeHead in third-party-auditing mode"))?;
 
         // step 1
-        if let Some((prev_auditor_size, _)) = self.auditor_head {
-            if prev_auditor_size < self.config.auditor_start_pos {
-                return Err(anyhow!(
-                    "Auditor started after the previously verified auditor position"
-                ));
-            }
+        if let Some((prev_auditor_size, _)) = self.auditor_head
+            && prev_auditor_size < self.config.auditor_start_pos
+        {
+            return Err(anyhow!(
+                "Auditor started after the previously verified auditor position"
+            ));
         }
         // step 2
         let rightmost_ts = th.timestamp as u64;
@@ -2365,30 +2365,6 @@ impl KtClient {
         Ok(())
     }
 
-    fn verify_monitor_proof(
-        &mut self,
-        fth: Option<&FullTreeHead>,
-        proof: Option<&CombinedTreeProof>,
-    ) -> Result<()> {
-        let fth = fth.ok_or(anyhow!("Missing FullTreeHead"))?;
-
-        if let Some(th) = &fth.tree_head {
-            if let Some(state) = &self.state {
-                if th.tree_size < state.tree_size {
-                    return Err(anyhow!("Server rolled back tree size in monitor response"));
-                }
-            }
-        }
-
-        let proof = proof.ok_or(anyhow!("Missing monitor proof"))?;
-        // TODO: position-aware timestamp monotonicity via algorithm simulation (§12.3, Appendix C)
-        if proof.inclusion.is_none() {
-            return Err(anyhow!("Missing inclusion proof in monitor response"));
-        }
-
-        Ok(())
-    }
-
     // --- FullTreeHead helpers ---
 
     // §11.4
@@ -2407,14 +2383,14 @@ impl KtClient {
                 .as_ref()
                 .ok_or_else(|| anyhow!("FullTreeHead.head_type=updated but TreeHead is missing"))?;
             // §11.4 step 2.1: an updated head must be strictly newer than the advertised size
-            if let Some(prev) = &self.state {
-                if th.tree_size <= prev.tree_size {
-                    return Err(anyhow!(
-                        "Updated head does not advance the tree: {} <= {}",
-                        th.tree_size,
-                        prev.tree_size
-                    ));
-                }
+            if let Some(prev) = &self.state
+                && th.tree_size <= prev.tree_size
+            {
+                return Err(anyhow!(
+                    "Updated head does not advance the tree: {} <= {}",
+                    th.tree_size,
+                    prev.tree_size
+                ));
             }
             return Ok((th.tree_size, Some(th.timestamp as u64), true));
         }
@@ -2495,21 +2471,21 @@ impl<'a> ProofReader<'a> {
         self.ts_idx += 1;
 
         // §12.3: monotonic by log position
-        if let Some((_, &left_ts)) = self.assigned_ts.range(..pos).next_back() {
-            if ts < left_ts {
-                return Err(anyhow!(
-                    "Timestamp for entry {} is older than an entry to its left",
-                    pos
-                ));
-            }
+        if let Some((_, &left_ts)) = self.assigned_ts.range(..pos).next_back()
+            && ts < left_ts
+        {
+            return Err(anyhow!(
+                "Timestamp for entry {} is older than an entry to its left",
+                pos
+            ));
         }
-        if let Some((_, &right_ts)) = self.assigned_ts.range(pos + 1..).next() {
-            if ts > right_ts {
-                return Err(anyhow!(
-                    "Timestamp for entry {} is newer than an entry to its right",
-                    pos
-                ));
-            }
+        if let Some((_, &right_ts)) = self.assigned_ts.range(pos + 1..).next()
+            && ts > right_ts
+        {
+            return Err(anyhow!(
+                "Timestamp for entry {} is newer than an entry to its right",
+                pos
+            ));
         }
         self.assigned_ts.insert(pos, ts);
         Ok(ts)

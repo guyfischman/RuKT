@@ -348,8 +348,8 @@ pub async fn parallel_bulk_populate(
     // Phase 4: Compute partition hash tree
     let t4 = Instant::now();
     let mut partition_hashes: Vec<Vec<u8>> = Vec::with_capacity(n_partitions);
-    for p in 0..n_partitions {
-        if let Some(root_pos) = root_positions[p] {
+    for &partition_root in root_positions.iter().take(n_partitions) {
+        if let Some(root_pos) = partition_root {
             let root_bytes = tree.store.get_prefix(root_pos)?.unwrap();
             let root_entry = Arc::new(LogEntry::decode(&root_bytes[..])?);
             let cached = CachedLogEntry::new(root_entry, &config.prefix_aes_key);

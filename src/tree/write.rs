@@ -2,8 +2,8 @@
 use super::{PostUpdateData, PreUpdateData, Tree};
 use crate::crypto::{construct_tree_head_tbs, sign_data};
 use crate::proto::transparency::{
-    AuditorUpdate, BinaryLadderStep, CombinedTreeProof, InclusionProof, PrefixLeaf, PrefixProof,
-    PrefixSearchResult, Signature as PbSignature, TreeHead, UpdateInfo, UpdateResponse,
+    AuditorUpdate, BinaryLadderStep, PrefixLeaf, PrefixProof, PrefixSearchResult,
+    Signature as PbSignature, TreeHead, UpdateInfo, UpdateResponse,
 };
 use anyhow::{Result, anyhow};
 use prost::Message;
@@ -76,7 +76,7 @@ impl Tree {
         let mut added_leaves = Vec::new();
         let mut combined_audit_proof_elements = Vec::new();
         let mut audit_search_results = Vec::new();
-        let overlay: HashMap<u64, Vec<u8>> = HashMap::new();
+        let _overlay: HashMap<u64, Vec<u8>> = HashMap::new();
         let mut prefix_entries = Vec::new();
 
         // ==========================================
@@ -165,7 +165,7 @@ impl Tree {
             combined_audit_proof_elements.extend(elements);
         }
 
-        let dur_search = t_search.elapsed();
+        let _dur_search = t_search.elapsed();
 
         // ==========================================
         // MICRO-TIMER 2: Prefix Tree Merkle Appends (Reads/Writes)
@@ -175,7 +175,7 @@ impl Tree {
             .prefix
             .batch_insert(start_prefix_version, current_log_ptr, &prefix_entries)
             .await?;
-        let dur_insert = t_insert.elapsed();
+        let _dur_insert = t_insert.elapsed();
 
         // ==========================================
         // MICRO-TIMER 3: Log Tree Appends (Reads/Writes)
@@ -189,7 +189,7 @@ impl Tree {
         let new_log_root = self
             .log
             .batch_append(start_size, vec![(timestamp, final_root_hash)])?;
-        let dur_log = t_log.elapsed();
+        let _dur_log = t_log.elapsed();
 
         // ==========================================
         // MICRO-TIMER 4: Metadata DB Writes
@@ -222,7 +222,7 @@ impl Tree {
         self.store.put_value_batch(value_batch)?;
         self.store.put_opening_batch(opening_batch)?;
         self.store.put_history_batch(history_batch)?;
-        let dur_meta = t_meta.elapsed();
+        let _dur_meta = t_meta.elapsed();
 
         let new_size = start_size + 1;
         let auditor_pk_bytes =

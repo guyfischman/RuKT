@@ -29,6 +29,7 @@ async fn test_client_rejects_tampered_search_responses() -> Result<()> {
         .await
         .expect("honest response must verify");
 
+    #[allow(clippy::type_complexity)]
     let mutations: Vec<(&str, Box<dyn Fn(&mut SearchResponse)>)> = vec![
         (
             "value bytes",

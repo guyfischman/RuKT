@@ -68,6 +68,7 @@ pub struct PublicConfig {
 }
 
 impl PrivateConfig {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         cipher_suite: u16,
         mode: u8,

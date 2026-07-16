@@ -111,7 +111,7 @@ pub fn right_child(x: u64, n: u64) -> u64 {
 fn leftmost_leaf_index(mut x: u64) -> u64 {
     while !is_leaf(x) {
         let k = level(x);
-        x = x ^ (1 << (k - 1)); // Go left
+        x ^= 1 << (k - 1); // Go left
     }
     x / 2
 }
@@ -223,11 +223,11 @@ fn sub_proof(m: u64, n: u64, b: bool) -> Vec<u64> {
     if m <= k {
         let mut proof = sub_proof(m, k, b);
         proof.push(right_child(root(n), n)); // Using Merkle right_child (u64)
-        return proof;
+        proof
     } else {
         let mut proof = sub_proof(m - k, n - k, false);
-        for i in 0..proof.len() {
-            proof[i] += 2 * k;
+        for node in &mut proof {
+            *node += 2 * k;
         }
         let mut res = vec![left_child(root(n))];
         res.extend(proof);

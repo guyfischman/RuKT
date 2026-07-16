@@ -1,11 +1,10 @@
 // Start src/client/verifier.rs
-use crate::crypto::hash::{log_leaf_value, log_parent_value};
-use crate::crypto::tls::TlsEncode;
-use crate::proto::transparency::{PrefixLeaf, PrefixProof, PrefixSearchResult};
-use anyhow::{Context, Result, anyhow};
-use hmac::{Hmac, Mac};
-use sha2::{Digest, Sha256};
+use crate::crypto::hash::log_parent_value;
+use crate::proto::transparency::{PrefixLeaf, PrefixProof};
+use anyhow::{Result, anyhow};
 use std::collections::{BTreeMap, HashSet};
+
+type RootWithSubtrees = (Vec<u8>, std::collections::BTreeMap<u64, Vec<u8>>);
 
 pub struct LogVerifier;
 
@@ -37,7 +36,7 @@ impl LogVerifier {
         tree_size: u64,
         proof_elements: &[Vec<u8>],
         retained: &BTreeMap<u64, Vec<u8>>,
-    ) -> Result<(Vec<u8>, BTreeMap<u64, Vec<u8>>)> {
+    ) -> Result<RootWithSubtrees> {
         let peak_set: HashSet<u64> = crate::tree::log_math::get_roots(tree_size)
             .into_iter()
             .collect();
@@ -60,7 +59,7 @@ impl LogVerifier {
         proof_elements: &[Vec<u8>],
         retained: &BTreeMap<u64, Vec<u8>>,
         wanted: &HashSet<u64>,
-    ) -> Result<(Vec<u8>, BTreeMap<u64, Vec<u8>>)> {
+    ) -> Result<RootWithSubtrees> {
         if node_indices.len() != node_hashes.len() {
             return Err(anyhow!("Mismatch between indices and hashes length"));
         }
@@ -198,6 +197,12 @@ pub struct LogAccumulator {
     peaks: Vec<(u32, Vec<u8>)>,
 }
 
+impl Default for LogAccumulator {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl LogAccumulator {
     pub fn new() -> Self {
         Self {
@@ -296,16 +301,13 @@ impl PrefixVerifier {
         let mut curr_hash = leaf_hash(search_key_vrf_output, commitment);
 
         let depth = result.depth as usize;
-        let mut element_idx = 0;
 
-        // Note: The logic in `src/tree/prefix/read.rs` suggests iterating up from depth.
-        // Elements in `PrefixProof` are the siblings along the path from leaf to root.
-        for i in (0..depth).rev() {
+        // copath elements run from leaf to root; level i pairs with elements[depth-1-i]
+        for (element_idx, i) in (0..depth).rev().enumerate() {
             if element_idx >= proof.elements.len() {
                 return Err(anyhow!("Insufficient proof elements"));
             }
             let sibling = &proof.elements[element_idx];
-            element_idx += 1;
 
             let bit = get_bit(search_key_vrf_output, i);
             if bit == 1 {
@@ -469,7 +471,7 @@ impl PartialPrefixTree {
         let mut out = [0u8; 32];
         let full = level / 8;
         out[..full].copy_from_slice(&key[..full]);
-        if full < 32 && level % 8 != 0 {
+        if full < 32 && !level.is_multiple_of(8) {
             out[full] = key[full] & (0xffu8 << (8 - (level % 8)));
         }
         out

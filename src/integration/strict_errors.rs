@@ -62,7 +62,7 @@ async fn test_strict_errors() -> Result<()> {
         }
     }
 
-    let ts_key_0 = 0 | (1u64 << 63);
+    let ts_key_0 = 1u64 << 63;
     let current_ts_key = 1 | (1u64 << 63);
     let current_ts_bytes = db.get_value(current_ts_key)?.unwrap();
     let current_ts = u64::from_be_bytes(current_ts_bytes.try_into().unwrap());

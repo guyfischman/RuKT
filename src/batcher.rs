@@ -108,7 +108,7 @@ impl BatchWorker {
         let t1 = Instant::now();
         let mut tree_guard = self.tree.write().await;
         let mut jobs_to_process = Vec::new();
-        let all_jobs: Vec<UpdateJob> = batch.drain(..).collect();
+        let all_jobs: Vec<UpdateJob> = std::mem::take(batch);
 
         let mut pre_jobs = Vec::new();
         let mut version_overlay: std::collections::HashMap<Vec<u8>, u32> =

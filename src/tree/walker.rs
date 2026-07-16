@@ -5,6 +5,15 @@ use crate::proto::transparency::{
 use anyhow::Result;
 use std::collections::{HashMap, HashSet};
 
+/// A finalized traversal: the combined proof, the response's binary ladder, and
+/// any extracted value + opening.
+type FinalizedProof = (
+    CombinedTreeProof,
+    Vec<BinaryLadderStep>,
+    Option<UpdateValue>,
+    Vec<u8>,
+);
+
 /// Accumulates a CombinedTreeProof in the order the client-side algorithm will
 /// request its parts (§12.3, Appendix C).
 pub struct TraversalSession<'a> {
@@ -126,16 +135,7 @@ impl<'a> TraversalSession<'a> {
         self.prefix_proofs.push((idx, proof));
     }
 
-    pub fn finalize(
-        self,
-        tree_size: u64,
-        consistency_last: u64,
-    ) -> Result<(
-        CombinedTreeProof,
-        Vec<BinaryLadderStep>,
-        Option<UpdateValue>,
-        Vec<u8>,
-    )> {
+    pub fn finalize(self, tree_size: u64, consistency_last: u64) -> Result<FinalizedProof> {
         let mut combined = CombinedTreeProof::default();
 
         // §12.3: timestamps and proofs in request order
@@ -201,6 +201,12 @@ pub struct StandaloneProofBuilder {
     prefix_roots: HashMap<u64, Vec<u8>>,
 }
 
+impl Default for StandaloneProofBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl StandaloneProofBuilder {
     pub fn new() -> Self {
         Self {
@@ -230,8 +236,10 @@ impl StandaloneProofBuilder {
     }
 
     pub fn finalize(mut self, inclusion: InclusionProof) -> CombinedTreeProof {
-        let mut combined = CombinedTreeProof::default();
-        combined.inclusion = Some(inclusion);
+        let mut combined = CombinedTreeProof {
+            inclusion: Some(inclusion),
+            ..Default::default()
+        };
         self.visited_nodes.sort();
 
         for &idx in &self.visited_nodes {

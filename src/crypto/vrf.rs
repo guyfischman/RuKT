@@ -7,7 +7,7 @@ use p256::{
     ProjectivePoint, Scalar as P256Scalar,
     elliptic_curve::{
         Field, PrimeField,
-        group::{Group, GroupEncoding},
+        group::Group,
         sec1::{FromEncodedPoint, ToEncodedPoint},
     },
 };
@@ -164,10 +164,10 @@ fn encode_to_curve_ed25519(pub_key: &[u8], alpha: &[u8]) -> EdwardsPoint {
     let mut ctr = 0u8;
     loop {
         h.reset();
-        h.update(&[0x03, 0x01]);
+        h.update([0x03, 0x01]);
         h.update(pub_key);
         h.update(alpha);
-        h.update(&[ctr, 0x00]);
+        h.update([ctr, 0x00]);
         let result = h.finalize_reset();
         if let Some(p) = CompressedEdwardsY::from_slice(&result[0..32])
             .ok()
@@ -184,13 +184,13 @@ fn encode_to_curve_ed25519(pub_key: &[u8], alpha: &[u8]) -> EdwardsPoint {
 
 fn challenge_ed25519(p1: &[u8], p2: &[u8], p3: &[u8], p4: &[u8], p5: &[u8]) -> Scalar {
     let mut h = Sha512::new();
-    h.update(&[0x03, 0x02]);
+    h.update([0x03, 0x02]);
     h.update(p1);
     h.update(p2);
     h.update(p3);
     h.update(p4);
     h.update(p5);
-    h.update(&[0x00]);
+    h.update([0x00]);
     let d = h.finalize();
     let mut cb = [0u8; 32];
     cb[0..16].copy_from_slice(&d[0..16]);
@@ -201,9 +201,9 @@ fn proof_to_hash_ed25519(gamma: &EdwardsPoint) -> [u8; 32] {
     let cofactor_gamma = gamma.mul_by_cofactor();
     let g_bytes = cofactor_gamma.compress().to_bytes();
     let mut h = Sha512::new();
-    h.update(&[0x03, 0x03]);
+    h.update([0x03, 0x03]);
     h.update(g_bytes);
-    h.update(&[0x00]);
+    h.update([0x00]);
     let d = h.finalize();
     let mut out = [0u8; 32];
     out.copy_from_slice(&d[0..32]);
@@ -309,24 +309,23 @@ fn encode_to_curve_p256(pub_key: &[u8], alpha: &[u8]) -> ProjectivePoint {
     let mut ctr = 0u8;
     loop {
         h.reset();
-        h.update(&[0x01, 0x01]);
+        h.update([0x01, 0x01]);
         h.update(pub_key);
         h.update(alpha);
-        h.update(&[ctr, 0x00]);
+        h.update([ctr, 0x00]);
         let result = h.finalize_reset();
 
         let mut pt_bytes = vec![0x02u8];
         pt_bytes.extend_from_slice(&result);
 
-        if let Ok(pt) = p256::EncodedPoint::from_bytes(&pt_bytes) {
-            if let Some(p) =
+        if let Ok(pt) = p256::EncodedPoint::from_bytes(&pt_bytes)
+            && let Some(p) =
                 Option::<ProjectivePoint>::from(ProjectivePoint::from_encoded_point(&pt))
-            {
-                let choice = p.is_identity();
-                let is_id: bool = choice.into();
-                if !is_id {
-                    return p;
-                }
+        {
+            let choice = p.is_identity();
+            let is_id: bool = choice.into();
+            if !is_id {
+                return p;
             }
         }
         ctr = ctr.checked_add(1).expect("TAI overflow");
@@ -335,13 +334,13 @@ fn encode_to_curve_p256(pub_key: &[u8], alpha: &[u8]) -> ProjectivePoint {
 
 fn challenge_p256(p1: &[u8], p2: &[u8], p3: &[u8], p4: &[u8], p5: &[u8]) -> P256Scalar {
     let mut h = Sha256::new();
-    h.update(&[0x01, 0x02]);
+    h.update([0x01, 0x02]);
     h.update(p1);
     h.update(p2);
     h.update(p3);
     h.update(p4);
     h.update(p5);
-    h.update(&[0x00]);
+    h.update([0x00]);
     let d = h.finalize();
 
     let mut cb = [0u8; 32];
@@ -352,9 +351,9 @@ fn challenge_p256(p1: &[u8], p2: &[u8], p3: &[u8], p4: &[u8], p5: &[u8]) -> P256
 fn proof_to_hash_p256(gamma: &ProjectivePoint) -> [u8; 32] {
     let g_bytes = gamma.to_encoded_point(true).as_bytes().to_vec();
     let mut h = Sha256::new();
-    h.update(&[0x01, 0x03]);
+    h.update([0x01, 0x03]);
     h.update(g_bytes);
-    h.update(&[0x00]);
+    h.update([0x00]);
     let d = h.finalize();
     d.into()
 }

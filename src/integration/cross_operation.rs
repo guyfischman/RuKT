@@ -1,5 +1,4 @@
 use super::harness::TestServer;
-use crate::client::KtClient;
 use anyhow::Result;
 
 // One persisted client threads through every operation as the tree grows, each
@@ -27,7 +26,7 @@ async fn test_cross_operation_state_continuity() -> Result<()> {
 
         let s = client.search(label.clone(), None).await?;
         assert_eq!(s.version, Some(1));
-        assert!(client.monitoring_map.get(&label).is_some());
+        assert!(client.monitoring_map.contains_key(&label));
 
         let st = client.state.clone().unwrap();
         (st.tree_size, st.root_hash)
@@ -45,7 +44,7 @@ async fn test_cross_operation_state_continuity() -> Result<()> {
     client.persist_to(&state_file)?;
     assert_eq!(client.state.as_ref().unwrap().tree_size, retained_size);
     assert_eq!(client.state.as_ref().unwrap().root_hash, retained_root);
-    assert!(client.monitoring_map.get(&label).is_some());
+    assert!(client.monitoring_map.contains_key(&label));
     assert_eq!(client.label_versions.get(&label), Some(&1));
 
     // a fresh search must prove the new head extends the retained one (advertises

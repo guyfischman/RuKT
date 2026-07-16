@@ -1,4 +1,3 @@
-use super::entry::CachedLogEntry;
 use super::hasher::compute_seed;
 use crate::proto::prefix_tree::LogEntry;
 use crate::tree::prefix::{PrefixTree, StepResult};

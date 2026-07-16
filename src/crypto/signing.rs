@@ -4,9 +4,7 @@ use anyhow::{Result, anyhow};
 use ed25519_dalek::{Signature as EdSignature, Signer, Verifier};
 use p256::ecdsa::{
     Signature as P256Signature, SigningKey as P256SigningKey, VerifyingKey as P256VerifyingKey,
-    signature::Signer as P256Signer, signature::Verifier as P256Verifier,
 };
-use p256::elliptic_curve::sec1::ToEncodedPoint;
 use rand::rngs::OsRng;
 
 #[derive(Clone)]
@@ -86,12 +84,10 @@ fn serialize_configuration(config: &PrivateConfig, auditor_pk: Option<&[u8]>) ->
             .or(config.auditor_public_key.as_deref())
             .ok_or_else(|| anyhow!("Auditor public key required for ThirdPartyAuditing mode"))?;
         Opaqueu16(apk).tls_encode(&mut buf);
+    } else if let Some(lpk) = &config.leaf_public_key {
+        Opaqueu16(lpk).tls_encode(&mut buf);
     } else {
-        if let Some(lpk) = &config.leaf_public_key {
-            Opaqueu16(lpk).tls_encode(&mut buf);
-        } else {
-            Opaqueu16(&[]).tls_encode(&mut buf);
-        }
+        Opaqueu16(&[]).tls_encode(&mut buf);
     }
 
     config.max_ahead.tls_encode(&mut buf);
@@ -118,12 +114,10 @@ fn serialize_configuration_public(config: &PublicConfig) -> Result<Vec<u8>> {
             .as_deref()
             .ok_or_else(|| anyhow!("Auditor public key required for ThirdPartyAuditing mode"))?;
         Opaqueu16(apk).tls_encode(&mut buf);
+    } else if let Some(lpk) = &config.leaf_public_key {
+        Opaqueu16(lpk).tls_encode(&mut buf);
     } else {
-        if let Some(lpk) = &config.leaf_public_key {
-            Opaqueu16(lpk).tls_encode(&mut buf);
-        } else {
-            Opaqueu16(&[]).tls_encode(&mut buf);
-        }
+        Opaqueu16(&[]).tls_encode(&mut buf);
     }
 
     config.max_ahead.tls_encode(&mut buf);

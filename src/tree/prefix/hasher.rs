@@ -12,7 +12,7 @@ pub fn get_bit(data: &[u8], n: usize) -> u8 {
 // §11.9
 pub fn leaf_hash(vrf_output: &[u8], commitment: &[u8]) -> Vec<u8> {
     let mut h = Sha256::new();
-    h.update(&[0x02]);
+    h.update([0x02]);
     h.update(vrf_output);
     h.update(commitment);
     h.finalize().to_vec()
@@ -21,7 +21,7 @@ pub fn leaf_hash(vrf_output: &[u8], commitment: &[u8]) -> Vec<u8> {
 // §11.9
 pub fn parent_hash(left: &[u8], right: &[u8]) -> Vec<u8> {
     let mut h = Sha256::new();
-    h.update(&[0x03]);
+    h.update([0x03]);
     h.update(left);
     h.update(right);
     h.finalize().to_vec()

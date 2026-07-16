@@ -18,10 +18,10 @@ pub fn base_binary_ladder(n: u32) -> Vec<u32> {
         };
 
         // Prevent duplicates (e.g. at u32::MAX boundary)
-        if let Some(&last) = out.last() {
-            if value == last {
-                break;
-            }
+        if let Some(&last) = out.last()
+            && value == last
+        {
+            break;
         }
 
         out.push(value);
@@ -43,7 +43,7 @@ pub fn base_binary_ladder(n: u32) -> Vec<u32> {
     // Only binary search if the last value established an upper bound (non-inclusion)
     // If the last value is <= n, it means we hit the protocol limit (u32::MAX)
     // and proved it exists. No further search is needed.
-    if out.last().map_or(false, |&v| v > n) {
+    if out.last().is_some_and(|&v| v > n) {
         // Binary search between the established lower and upper bounds.
         let mut lower_bound = out[out.len() - 2];
         let mut upper_bound = out[out.len() - 1];

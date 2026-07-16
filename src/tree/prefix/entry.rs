@@ -90,8 +90,6 @@ pub fn combine_copaths(primary: Vec<ParentNode>, secondary: Vec<ParentNode>) -> 
         return primary;
     }
     let mut out = primary;
-    for i in out.len()..secondary.len() {
-        out.push(secondary[i].clone());
-    }
+    out.extend_from_slice(&secondary[out.len()..]);
     out
 }

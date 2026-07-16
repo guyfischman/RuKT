@@ -61,10 +61,10 @@ async fn test_full_update_search_and_consistency() -> Result<()> {
     assert_eq!(proof.len(), 1);
     let mut hasher = Sha256::new();
 
-    hasher.update(&[0x00]); // Left is Leaf
+    hasher.update([0x00]); // Left is Leaf
     hasher.update(&root_1);
 
-    hasher.update(&[0x00]); // Right is Leaf
+    hasher.update([0x00]); // Right is Leaf
     hasher.update(&proof[0]);
 
     let calculated_root_2 = hasher.finalize().to_vec();

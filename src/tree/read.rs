@@ -4,8 +4,7 @@ use crate::proto::transparency::{
     SearchResponse, UpdateValue,
 };
 use crate::tree::errors::KtError;
-use crate::tree::log_math;
-use anyhow::{Result, anyhow};
+use anyhow::Result;
 
 impl Tree {
     // §11.4
@@ -63,11 +62,6 @@ impl Tree {
             .max()
     }
 
-    pub(crate) fn exists_at(&self, label_history: &[(u32, u64)], log_pos: u64) -> bool {
-        let log_prefix_ptr = self.log.get_prefix_ptr(log_pos).unwrap_or(0);
-        label_history.iter().any(|(_, p)| *p <= log_prefix_ptr)
-    }
-
     pub(crate) fn get_frontier_nodes(&self, tree_size: u64, _last_size: u64) -> Vec<u64> {
         crate::tree::log_math::get_frontier(tree_size)
     }
@@ -94,103 +88,6 @@ impl Tree {
         } else {
             Err(anyhow::Error::new(KtError::Unavailable))
         }
-    }
-
-    // Moved from traversal.rs (needed for Owner Monitoring)
-    pub(crate) fn owner_monitoring_traversal_collect<'a>(
-        &'a self,
-        node_idx: u64,
-        left_ts: u64,
-        right_ts: u64,
-        tree_size: u64,
-        user_advertised_rightmost: u64,
-        history: &'a [(u32, u64)],
-        limit: usize,
-    ) -> futures::future::BoxFuture<'a, Result<(Vec<(u64, u32)>, usize)>> {
-        Box::pin(async move {
-            let mut current_limit = limit;
-            if current_limit == 0 {
-                return Ok((vec![], 0));
-            }
-
-            if right_ts.saturating_sub(left_ts) < self.config.reasonable_monitoring_window {
-                return Ok((Vec::new(), current_limit));
-            }
-
-            let node_ts = self.log.get_timestamp(node_idx)?;
-            let mut results = Vec::new();
-
-            if node_idx <= user_advertised_rightmost {
-                if !log_math::is_leaf(node_idx) {
-                    if let Some(r) = log_math::ibst_right_child(node_idx, tree_size) {
-                        if r < tree_size && r != node_idx {
-                            let (mut right_res, remaining) = self
-                                .owner_monitoring_traversal_collect(
-                                    r,
-                                    node_ts,
-                                    right_ts,
-                                    tree_size,
-                                    user_advertised_rightmost,
-                                    history,
-                                    current_limit,
-                                )
-                                .await?;
-                            results.append(&mut right_res);
-                            current_limit = remaining;
-                        }
-                    }
-                }
-                return Ok((results, current_limit));
-            }
-
-            if !log_math::is_leaf(node_idx) {
-                let l = log_math::left_child(node_idx);
-                if l < tree_size {
-                    let (mut left_res, remaining) = self
-                        .owner_monitoring_traversal_collect(
-                            l,
-                            left_ts,
-                            node_ts,
-                            tree_size,
-                            user_advertised_rightmost,
-                            history,
-                            current_limit,
-                        )
-                        .await?;
-                    results.append(&mut left_res);
-                    current_limit = remaining;
-                }
-            }
-
-            if current_limit > 0 {
-                if let Some(ver) = self.get_max_version_at(history, node_idx) {
-                    results.push((node_idx, ver));
-                    current_limit -= 1;
-                }
-            }
-
-            if current_limit > 0 && !log_math::is_leaf(node_idx) {
-                if let Some(r) = log_math::ibst_right_child(node_idx, tree_size) {
-                    if r < tree_size && r != node_idx {
-                        let (mut right_res, remaining) = self
-                            .owner_monitoring_traversal_collect(
-                                r,
-                                node_ts,
-                                right_ts,
-                                tree_size,
-                                user_advertised_rightmost,
-                                history,
-                                current_limit,
-                            )
-                            .await?;
-                        results.append(&mut right_res);
-                        current_limit = remaining;
-                    }
-                }
-            }
-
-            Ok((results, current_limit))
-        })
     }
 
     pub async fn search(

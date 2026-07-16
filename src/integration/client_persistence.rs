@@ -114,7 +114,7 @@ async fn test_client_state_survives_restart() -> Result<()> {
             client
                 .monitoring_map
                 .get(&label)
-                .map_or(true, |m| m.is_empty()),
+                .is_none_or(|m| m.is_empty()),
             "Obligation should be discharged at the distinguished ancestor"
         );
         assert_eq!(client.state.as_ref().map(|s| s.tree_size), Some(4));
