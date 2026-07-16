@@ -8,7 +8,7 @@ use p256::elliptic_curve::sec1::ToEncodedPoint;
 use rand::rngs::OsRng;
 use anyhow::{Result, anyhow};
 use super::{PrivateConfig, PublicConfig};
-use super::tls::{TlsEncode, Opaqueu16, Opaqueu32, Opaqueu8, FixedOpaque};
+use super::tls::{TlsEncode, Opaqueu16, Opaqueu32, Opaqueu8, FixedOpaque, Optional};
 
 #[derive(Clone)]
 pub enum ServiceSigningKey {
@@ -100,12 +100,7 @@ fn serialize_configuration(
     config.max_behind.tls_encode(&mut buf);
     config.reasonable_monitoring_window.tls_encode(&mut buf);
     
-    if let Some(life) = config.maximum_lifetime {
-        1u8.tls_encode(&mut buf); 
-        life.tls_encode(&mut buf);
-    } else {
-        0u8.tls_encode(&mut buf); 
-    }
+    Optional(config.maximum_lifetime.as_ref()).tls_encode(&mut buf);
 
     Ok(buf)
 }
@@ -140,12 +135,7 @@ fn serialize_configuration_public(
     config.max_behind.tls_encode(&mut buf);
     config.reasonable_monitoring_window.tls_encode(&mut buf);
     
-    if let Some(life) = config.maximum_lifetime {
-        1u8.tls_encode(&mut buf); 
-        life.tls_encode(&mut buf);
-    } else {
-        0u8.tls_encode(&mut buf); 
-    }
+    Optional(config.maximum_lifetime.as_ref()).tls_encode(&mut buf);
     Ok(buf)
 }
 
