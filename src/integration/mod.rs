@@ -25,3 +25,4 @@ mod update_verification_compliance;pub mod distinguished_walk;
 pub mod update_catchup;
 pub mod client_persistence;
 pub mod arch_obligations;
+pub mod gossip;

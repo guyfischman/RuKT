@@ -39,6 +39,8 @@ struct PersistedState {
     version_material: Vec<(String, Vec<(u32, String, Option<String>)>)>,
     #[serde(default)]
     distinguished_entries: Vec<(u64, u64, String)>,
+    #[serde(default)]
+    retained_head: Option<String>,
 }
 
 pub struct KtClient {
@@ -54,6 +56,8 @@ pub struct KtClient {
     version_material: HashMap<Vec<u8>, HashMap<u32, (Vec<u8>, Option<Vec<u8>>)>>,
     // §14: recently issued distinguished entries (position -> timestamp, prefix root)
     pub distinguished_entries: BTreeMap<u64, (u64, Vec<u8>)>,
+    // last verified signed head, kept whole for gossip and fork evidence
+    retained_head: Option<Vec<u8>>,
     state_path: Option<std::path::PathBuf>,
     config: PublicConfig,
 }
@@ -76,6 +80,7 @@ impl KtClient {
             monitoring_map: HashMap::new(),
             version_material: HashMap::new(),
             distinguished_entries: BTreeMap::new(),
+            retained_head: None,
             state_path: None,
             config,
         })
@@ -116,6 +121,7 @@ impl KtClient {
             self.distinguished_entries = p.distinguished_entries.into_iter()
                 .map(|(pos, ts, root)| Ok((pos, (ts, hex::decode(&root)?))))
                 .collect::<Result<_>>()?;
+            self.retained_head = p.retained_head.map(|h| hex::decode(&h)).transpose()?;
         }
         self.state_path = Some(path);
         Ok(())
@@ -142,6 +148,7 @@ impl KtClient {
             distinguished_entries: self.distinguished_entries.iter()
                 .map(|(&pos, (ts, root))| (pos, *ts, hex::encode(root)))
                 .collect(),
+            retained_head: self.retained_head.as_ref().map(hex::encode),
         };
         std::fs::write(path, serde_json::to_string(&p)?)?;
         Ok(())
@@ -345,6 +352,9 @@ impl KtClient {
                 self.verify_auditor_tree_head(fth, th, tree_size, &candidate_root)
                     .context("AuditorTreeHead verification failed")?;
             }
+            let mut head_bytes = Vec::new();
+            prost::Message::encode(th, &mut head_bytes)?;
+            self.retained_head = Some(head_bytes);
             self.state = Some(TrustedState {
                 tree_size,
                 root_hash: candidate_root,
@@ -502,6 +512,9 @@ impl KtClient {
                 self.verify_auditor_tree_head(fth, th, tree_size, &candidate_root)
                     .context("AuditorTreeHead verification failed")?;
             }
+            let mut head_bytes = Vec::new();
+            prost::Message::encode(th, &mut head_bytes)?;
+            self.retained_head = Some(head_bytes);
             self.state = Some(TrustedState {
                 tree_size,
                 root_hash: candidate_root,
@@ -741,6 +754,9 @@ impl KtClient {
                     .context("AuditorTreeHead verification failed")?;
             }
 
+            let mut head_bytes = Vec::new();
+            prost::Message::encode(th, &mut head_bytes)?;
+            self.retained_head = Some(head_bytes);
             self.state = Some(TrustedState {
                 tree_size,
                 root_hash: candidate_root,
@@ -1061,6 +1077,39 @@ impl KtClient {
         }
 
         Ok(terminal.unwrap())
+    }
+
+    /// Bundles the retained signed head for out-of-band exchange (arch §3.3).
+    pub fn export_head(&self) -> Result<crate::client::gossip::GossipHead> {
+        let state = self.state.as_ref().ok_or_else(|| anyhow!("No verified state to export"))?;
+        let bytes = self.retained_head.as_ref().ok_or_else(|| anyhow!("No retained signed head"))?;
+        let head = prost::Message::decode(&bytes[..])?;
+        Ok(crate::client::gossip::GossipHead::new(state.tree_size, &state.root_hash, &head))
+    }
+
+    /// Compares a head received over a partition-resistant channel with the
+    /// retained view; a same-size root conflict yields exportable fork evidence.
+    pub fn check_gossiped_head(&self, gossip: &crate::client::gossip::GossipHead) -> Result<crate::client::gossip::GossipOutcome> {
+        use crate::client::gossip::{verify_gossip_head, ForkEvidence, GossipOutcome};
+
+        verify_gossip_head(&self.config, gossip)?;
+
+        let state = self.state.as_ref().ok_or_else(|| anyhow!("No verified state to compare against"))?;
+        if gossip.tree_size != state.tree_size {
+            return Ok(GossipOutcome::Inconclusive);
+        }
+        if hex::decode(&gossip.root_hash)? == state.root_hash {
+            return Ok(GossipOutcome::Consistent);
+        }
+
+        let ours = self.export_head()?;
+        Ok(GossipOutcome::Fork(ForkEvidence {
+            tree_size: state.tree_size,
+            root_a: ours.root_hash,
+            head_a: ours.tree_head,
+            root_b: gossip.root_hash.clone(),
+            head_b: gossip.tree_head.clone(),
+        }))
     }
 
     pub async fn get_credential(&mut self, label: Vec<u8>) -> Result<crate::proto::transparency::Credential> {

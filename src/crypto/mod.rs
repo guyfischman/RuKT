@@ -136,6 +136,61 @@ impl PrivateConfig {
     }
 }
 
+// pre-distributed over a trustworthy channel (architecture §2)
+#[derive(serde::Serialize, serde::Deserialize)]
+struct PublicConfigArtifact {
+    cipher_suite: u16,
+    mode: u8,
+    server_sig_pk: String,
+    vrf_public_key: String,
+    leaf_public_key: Option<String>,
+    auditor_public_key: Option<String>,
+    auditor_start_pos: u64,
+    max_auditor_lag: u64,
+    max_ahead: u64,
+    max_behind: u64,
+    reasonable_monitoring_window: u64,
+    maximum_lifetime: Option<u64>,
+}
+
+impl PublicConfig {
+    pub fn to_json(&self) -> Result<String> {
+        let artifact = PublicConfigArtifact {
+            cipher_suite: self.cipher_suite,
+            mode: self.mode,
+            server_sig_pk: hex::encode(&self.server_sig_pk),
+            vrf_public_key: hex::encode(&self.vrf_public_key),
+            leaf_public_key: self.leaf_public_key.as_ref().map(hex::encode),
+            auditor_public_key: self.auditor_public_key.as_ref().map(hex::encode),
+            auditor_start_pos: self.auditor_start_pos,
+            max_auditor_lag: self.max_auditor_lag,
+            max_ahead: self.max_ahead,
+            max_behind: self.max_behind,
+            reasonable_monitoring_window: self.reasonable_monitoring_window,
+            maximum_lifetime: self.maximum_lifetime,
+        };
+        Ok(serde_json::to_string_pretty(&artifact)?)
+    }
+
+    pub fn from_json(data: &str) -> Result<Self> {
+        let a: PublicConfigArtifact = serde_json::from_str(data)?;
+        Ok(Self {
+            cipher_suite: a.cipher_suite,
+            mode: a.mode,
+            server_sig_pk: hex::decode(&a.server_sig_pk)?,
+            vrf_public_key: hex::decode(&a.vrf_public_key)?,
+            leaf_public_key: a.leaf_public_key.map(|k| hex::decode(&k)).transpose()?,
+            auditor_public_key: a.auditor_public_key.map(|k| hex::decode(&k)).transpose()?,
+            auditor_start_pos: a.auditor_start_pos,
+            max_auditor_lag: a.max_auditor_lag,
+            max_ahead: a.max_ahead,
+            max_behind: a.max_behind,
+            reasonable_monitoring_window: a.reasonable_monitoring_window,
+            maximum_lifetime: a.maximum_lifetime,
+        })
+    }
+}
+
 pub fn generate_vrf_keypair(suite: u16) -> (Vec<u8>, Vec<u8>) {
     match suite {
         CIPHER_SUITE_KT_128_SHA256_P256 => {
