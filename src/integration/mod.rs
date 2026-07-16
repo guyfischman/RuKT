@@ -29,3 +29,4 @@ pub mod gossip;
 pub mod harness;
 mod auditing_operations;
 mod malicious_server;
+mod cross_operation;
