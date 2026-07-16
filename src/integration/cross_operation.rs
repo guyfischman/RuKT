@@ -86,9 +86,7 @@ async fn test_cross_operation_state_continuity() -> Result<()> {
     }
     let mut victim = server.client().await?;
     victim.persist_to(&state_file)?;
-    let result = victim
-        .verify_search_response(&label, None, &rolled_back)
-        .await;
+    let result = victim.verify_search_response(&label, None, &rolled_back);
     assert!(
         result.is_err(),
         "a head below the retained tree size must be rejected"
@@ -116,7 +114,7 @@ async fn test_state_from_one_log_rejects_another() -> Result<()> {
     let from_b = cb.search_raw(b"shared".to_vec(), None).await?;
 
     // ca advertises last, so B's head must prove it extends A's retained view; it can't
-    let result = ca.verify_search_response(b"shared", None, &from_b).await;
+    let result = ca.verify_search_response(b"shared", None, &from_b);
     assert!(
         result.is_err(),
         "a response from a divergent log must not verify"

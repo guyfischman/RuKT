@@ -204,3 +204,57 @@ async fn test_contact_monitoring_ibst_path_fix() -> Result<()> {
 
     Ok(())
 }
+
+// §12.3.6: the verifier requests each walked entry's timestamp on entry to the
+// recursion, before descending into the left child. A tree large enough that a
+// left-subtree internal node is neither on the frontier nor a contact-walk
+// ancestor exposes any server-side emission-order divergence.
+#[tokio::test]
+async fn test_owner_monitor_walk_requests_timestamps_in_entry_order() -> Result<()> {
+    let server = super::harness::TestServer::contact_monitoring_all_distinguished().await?;
+    let mut client = server.client().await?;
+
+    client.update(b"filler_0".to_vec(), b"v".to_vec()).await?;
+    client.update(b"owner".to_vec(), b"v".to_vec()).await?;
+    for i in 2..12 {
+        client
+            .update(format!("filler_{}", i).into_bytes(), b"v".to_vec())
+            .await?;
+    }
+
+    let resp = client
+        .owner_monitor(b"owner".to_vec(), vec![], 1, Some(0))
+        .await?;
+    assert!(resp.monitor.is_some());
+
+    Ok(())
+}
+
+// §8.2 step 3: each monitoring-ladder entry must contribute its timestamp so
+// its verified prefix root is bound into the log reconstruction. An obligation
+// seeded before the log grows acquires ladder ancestors that are neither on
+// the frontier nor on the distinguished walk down from the root.
+#[tokio::test]
+async fn test_contact_monitor_binds_ladder_entries_after_growth() -> Result<()> {
+    let server = super::harness::TestServer::contact_monitoring().await?;
+    let mut client = server.client().await?;
+
+    for i in 0..28 {
+        client
+            .update(format!("filler_{}", i).into_bytes(), b"v".to_vec())
+            .await?;
+    }
+    client.update(b"watched".to_vec(), b"v".to_vec()).await?;
+    client.search(b"watched".to_vec(), None).await?;
+
+    for i in 28..60 {
+        client
+            .update(format!("filler_{}", i).into_bytes(), b"v".to_vec())
+            .await?;
+    }
+
+    let resp = client.contact_monitor(b"watched".to_vec()).await?;
+    assert!(resp.monitor.is_some());
+
+    Ok(())
+}

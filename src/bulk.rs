@@ -188,6 +188,130 @@ pub async fn bulk_populate(
     Ok(())
 }
 
+/// Bulk-populate a tree with one log entry per label (all at version 0),
+/// timestamps spaced `ts_step_ms` apart. A fresh tree's timestamps end at the
+/// current time; a non-empty tree continues from its rightmost timestamp.
+///
+/// Unlike `bulk_populate` (one log entry per chunk), this produces a log tree
+/// whose size equals the number of labels, so frontier/ladder-shaped client
+/// work scales realistically with the population.
+pub async fn bulk_populate_per_entry(
+    tree: &mut Tree,
+    db: &RocksDbStore,
+    config: &PrivateConfig,
+    labels: Vec<(Vec<u8>, Vec<u8>)>,
+    ts_step_ms: u64,
+) -> Result<()> {
+    let total = labels.len() as u64;
+    if total == 0 {
+        return Ok(());
+    }
+
+    let entries: Vec<BulkEntry> = labels
+        .par_iter()
+        .map(|(search_key, value)| {
+            let (index, _vrf_proof) = config.vrf_prove(search_key, 0)?;
+            let opening = generate_random_opening();
+            let commitment = commit(search_key, 0, value, &opening)?;
+            Ok(BulkEntry {
+                search_key: search_key.clone(),
+                value: value.clone(),
+                index,
+                commitment,
+                opening,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+
+    let start_size = tree.latest.as_ref().map(|th| th.tree_size).unwrap_or(0);
+    let start_prefix_version = tree.log.get_next_prefix_version()?;
+    let mut current_ptr = if start_size > 0 {
+        Some(tree.log.get_prefix_ptr(start_size - 1)?)
+    } else {
+        None
+    };
+    let base_ts = if start_size > 0 {
+        tree.log.get_timestamp(start_size - 1)? + ts_step_ms
+    } else {
+        let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis() as u64;
+        now - ts_step_ms * (total - 1)
+    };
+
+    let mut roots: Vec<Vec<u8>> = Vec::with_capacity(entries.len());
+    for chunk in entries.chunks(8192) {
+        let prefix_entries: Vec<(Vec<u8>, Vec<u8>)> = chunk
+            .iter()
+            .map(|e| (e.index.to_vec(), e.commitment.clone()))
+            .collect();
+        let (chunk_roots, _, final_ptr) = tree
+            .prefix
+            .batch_insert(
+                start_prefix_version + roots.len() as u64,
+                current_ptr,
+                &prefix_entries,
+            )
+            .await?;
+        roots.extend(chunk_roots);
+        current_ptr = Some(final_ptr);
+    }
+
+    for i in 0..total {
+        tree.log
+            .put_prefix_ptr(start_size + i, start_prefix_version + i)?;
+    }
+    tree.log
+        .set_next_prefix_version(start_prefix_version + total)?;
+
+    let log_entries: Vec<(u64, Vec<u8>)> = roots
+        .iter()
+        .enumerate()
+        .map(|(i, root)| (base_ts + i as u64 * ts_step_ms, root.clone()))
+        .collect();
+    let last_ts = log_entries.last().unwrap().0;
+    let new_log_root = tree.log.batch_append(start_size, log_entries)?;
+
+    let mut value_entries: Vec<(Vec<u8>, Vec<u8>)> = Vec::with_capacity(entries.len());
+    let mut opening_entries: Vec<(Vec<u8>, Vec<u8>)> = Vec::with_capacity(entries.len());
+    let mut history_entries: Vec<(Vec<u8>, Vec<u8>)> = Vec::with_capacity(entries.len());
+    for (i, entry) in entries.iter().enumerate() {
+        let pos = start_prefix_version + i as u64;
+        let pos_key = pos.to_be_bytes().to_vec();
+
+        value_entries.push((pos_key.clone(), entry.value.clone()));
+        opening_entries.push((pos_key, entry.opening.clone()));
+
+        let mut hist_val = Vec::with_capacity(12);
+        hist_val.extend_from_slice(&0u32.to_be_bytes());
+        hist_val.extend_from_slice(&pos.to_be_bytes());
+        history_entries.push((entry.search_key.clone(), hist_val));
+    }
+    value_entries.sort_by(|a, b| a.0.cmp(&b.0));
+    opening_entries.sort_by(|a, b| a.0.cmp(&b.0));
+    history_entries.sort_by(|a, b| a.0.cmp(&b.0));
+
+    db.ingest_sst(RocksDbStore::cf_value(), value_entries)?;
+    db.ingest_sst(RocksDbStore::cf_openings(), opening_entries)?;
+    db.ingest_sst(RocksDbStore::cf_history(), history_entries)?;
+
+    let new_size = start_size + total;
+    let tbs_data = crypto::construct_tree_head_tbs(config, None, new_size, &new_log_root)?;
+    let signature = crypto::sign_data(&config.sig_key, &tbs_data);
+    let th = TreeHead {
+        tree_size: new_size,
+        timestamp: last_ts as i64,
+        signatures: vec![PbSignature {
+            auditor_public_key: config.sig_key.verifying_key().to_bytes(),
+            signature,
+        }],
+    };
+    let mut head_buf = Vec::new();
+    th.encode(&mut head_buf)?;
+    tree.store.set_head(head_buf)?;
+    tree.latest = Some(th);
+
+    Ok(())
+}
+
 // ============================================================================
 // Parallel Bulk Populate (Option 5: Sub-tree partitioning)
 // ============================================================================

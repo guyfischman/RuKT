@@ -26,7 +26,6 @@ async fn test_client_rejects_tampered_search_responses() -> Result<()> {
         .client()
         .await?
         .verify_search_response(&label, None, &good)
-        .await
         .expect("honest response must verify");
 
     #[allow(clippy::type_complexity)]
@@ -118,8 +117,7 @@ async fn test_client_rejects_tampered_search_responses() -> Result<()> {
         let result = server
             .client()
             .await?
-            .verify_search_response(&label, None, &tampered)
-            .await;
+            .verify_search_response(&label, None, &tampered);
         assert!(
             result.is_err(),
             "client must reject tampered field: {}",

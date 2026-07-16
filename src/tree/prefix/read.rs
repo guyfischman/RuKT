@@ -32,13 +32,11 @@ impl PrefixTree {
     pub(crate) fn get_entry(
         &self,
         ptr: u64,
-        overlay: &HashMap<u64, Vec<u8>>,
+        overlay: &HashMap<u64, Arc<CachedLogEntry>>,
     ) -> Result<Arc<CachedLogEntry>> {
-        // 1. Overlay (Construct fresh cache entry, don't store in global cache yet)
-        if let Some(val) = overlay.get(&ptr) {
-            let entry = LogEntry::decode(&val[..])?;
-            let cached = CachedLogEntry::new(Arc::new(entry), &self.aes_key);
-            return Ok(Arc::new(cached));
+        // 1. Overlay (entries written earlier in the same batch, hash cache warm)
+        if let Some(cached) = overlay.get(&ptr) {
+            return Ok(cached.clone());
         }
 
         // 2. DashMap (Fast Path)
@@ -176,7 +174,7 @@ impl PrefixTree {
         &self,
         ptr: u64,
         index: &[u8],
-        overlay: &HashMap<u64, Vec<u8>>,
+        overlay: &HashMap<u64, Arc<CachedLogEntry>>,
     ) -> Result<ProofResult> {
         let mut curr = ptr;
         let mut copath = Vec::new();

@@ -23,8 +23,12 @@ jobs:
         run: cargo fmt --all --check
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Clippy (bench-internals)
+        run: cargo clippy --workspace --all-targets --features bench-internals -- -D warnings
       # benches excluded: kt_benchmarks (harness = false) would run the criterion suite under cargo test
       - name: Test
         run: cargo test --workspace --lib --bins --tests --examples
       - name: Build benches
         run: cargo bench --no-run
+      - name: Build benches (bench-internals)
+        run: cargo bench --no-run --features bench-internals

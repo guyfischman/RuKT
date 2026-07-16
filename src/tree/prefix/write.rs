@@ -20,7 +20,7 @@ impl PrefixTree {
         let mut db_batch = Vec::new();
         let mut roots = Vec::new();
         let mut search_results = Vec::new();
-        let mut overlay: HashMap<u64, Vec<u8>> = HashMap::new();
+        let mut overlay: HashMap<u64, Arc<CachedLogEntry>> = HashMap::new();
         let mut new_cache_entries: Vec<(u64, Arc<CachedLogEntry>)> =
             Vec::with_capacity(entries.len() * 2);
 
@@ -32,8 +32,8 @@ impl PrefixTree {
                 .insert_internal(alloc_version, current_ptr, index, commitment, &overlay)
                 .await?;
 
-            db_batch.push((pos, data.clone()));
-            overlay.insert(pos, data);
+            db_batch.push((pos, data));
+            overlay.insert(pos, cached_obj.clone());
 
             // Push the fully constructed CachedLogEntry (with hashes!) to global cache
             new_cache_entries.push((pos, cached_obj));
@@ -74,7 +74,7 @@ impl PrefixTree {
         current_ptr: Option<u64>,
         index: &[u8],
         commitment: &[u8],
-        overlay: &HashMap<u64, Vec<u8>>,
+        overlay: &HashMap<u64, Arc<CachedLogEntry>>,
     ) -> Result<(Vec<u8>, SearchResult, (u64, Vec<u8>), Arc<CachedLogEntry>)> {
         let mut copath = Vec::new();
         let mut current_ctr = 0;

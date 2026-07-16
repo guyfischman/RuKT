@@ -45,6 +45,7 @@ struct PersistedState {
 }
 
 #[allow(clippy::type_complexity)]
+#[cfg_attr(feature = "bench-internals", derive(Clone))]
 pub struct KtClient {
     client: KeyTransparencyServiceClient<Channel>,
     sig_pk: ServiceVerifyingKey,
@@ -278,7 +279,7 @@ impl KtClient {
 
         let resp = self.client.clone().search(req).await?.into_inner();
 
-        self.verify_search_response(&user, version, &resp).await?;
+        self.verify_search_response(&user, version, &resp)?;
 
         if let (None, Some(greatest)) = (version, resp.version) {
             self.label_versions.insert(user, greatest);
@@ -466,6 +467,7 @@ impl KtClient {
                     }
                     break;
                 }
+                reader.timestamp(e)?;
                 let pp = reader.prefix_proof(e)?;
                 let root = self
                     .verify_monitoring_ladder(material, pp, ver)
@@ -1274,7 +1276,7 @@ impl KtClient {
         Ok(())
     }
 
-    pub(crate) async fn verify_search_response(
+    pub(crate) fn verify_search_response(
         &mut self,
         label: &[u8],
         requested_version: Option<u32>,
@@ -1961,6 +1963,7 @@ impl KtClient {
 
         let mut entry_roots: BTreeMap<u64, Vec<u8>> = BTreeMap::new();
         for &e in &list {
+            reader.timestamp(e)?;
             let pp = reader.prefix_proof(e)?;
             let root = self
                 .verify_monitoring_ladder(&material, pp, cred.version)
@@ -2436,6 +2439,83 @@ impl KtClient {
             }
         }
         Err(last_err.unwrap_or_else(|| anyhow!("No matching TreeHead signature")))
+    }
+}
+
+/// Benchmark-only access to the private verifiers. Never enabled in normal
+/// builds; benches link the library as an external crate and cannot see
+/// `pub(crate)` items otherwise.
+#[cfg(feature = "bench-internals")]
+#[doc(hidden)]
+impl KtClient {
+    /// A client that can verify captured responses but never dials a server.
+    pub fn bench_unconnected(config: PublicConfig) -> Result<Self> {
+        let channel = tonic::transport::Endpoint::from_static("http://127.0.0.1:1").connect_lazy();
+        let sig_pk = ServiceVerifyingKey::from_bytes(&config.server_sig_pk)
+            .context("Invalid server signing public key in PublicConfig")?;
+        let vrf_pk = config.vrf_public_key.clone();
+
+        Ok(Self {
+            client: KeyTransparencyServiceClient::new(channel),
+            sig_pk,
+            vrf_pk,
+            state: None,
+            label_versions: HashMap::new(),
+            retained_subtrees: BTreeMap::new(),
+            auditor_head: None,
+            monitoring_map: HashMap::new(),
+            version_material: HashMap::new(),
+            distinguished_entries: BTreeMap::new(),
+            retained_head: None,
+            state_path: None,
+            config,
+        })
+    }
+
+    pub fn bench_verify_search_response(
+        &mut self,
+        label: &[u8],
+        requested_version: Option<u32>,
+        resp: &SearchResponse,
+    ) -> Result<()> {
+        self.verify_search_response(label, requested_version, resp)
+    }
+
+    pub fn bench_verify_contact_monitor(
+        &mut self,
+        label: &[u8],
+        map: &BTreeMap<u64, u32>,
+        resp: &ContactMonitorResponse,
+    ) -> Result<()> {
+        self.verify_contact_monitor(label, map, resp)
+    }
+
+    pub fn bench_verify_owner_init(
+        &mut self,
+        label: &[u8],
+        start: u64,
+        resp: &OwnerInitResponse,
+    ) -> Result<()> {
+        self.verify_owner_init(label, start, resp)
+    }
+
+    pub fn bench_verify_owner_monitor(
+        &mut self,
+        label: &[u8],
+        map: &BTreeMap<u64, u32>,
+        start: u64,
+        greatest_version: Option<u32>,
+        resp: &OwnerMonitorResponse,
+    ) -> Result<()> {
+        self.verify_owner_monitor(label, map, start, greatest_version, resp)
+    }
+
+    pub fn bench_verify_distinguished(
+        &mut self,
+        stop: Option<u64>,
+        resp: &DistinguishedResponse,
+    ) -> Result<()> {
+        self.verify_distinguished(stop, resp)
     }
 }
 

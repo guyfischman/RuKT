@@ -28,6 +28,10 @@ aes = "0.8"
 dashmap = "5.5"
 rayon = "1.8"
 
+[features]
+# Exposes private client verifiers to benches; never enabled in normal builds.
+bench-internals = []
+
 [build-dependencies]
 tonic-build = "0.10"
 
@@ -41,3 +45,8 @@ prost = "0.12"
 [[bench]]
 name = "kt_benchmarks"
 harness = false
+
+[[bench]]
+name = "verification"
+harness = false
+required-features = ["bench-internals"]

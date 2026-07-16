@@ -454,6 +454,9 @@ impl Tree {
             return Ok(());
         }
 
+        // §12.3.6: the verifier requests this timestamp on entry, before the left child
+        out.push((node, None));
+
         // step 3
         if let Some(lc) = left_child {
             self.owner_walk_actions(history, lc, left_ts, node_ts, start, tree_size, rmw, out)?;
