@@ -25,11 +25,12 @@ impl Tree {
         let (index, vrf_proof) = self.config.vrf_prove(&inner_req.search_key, next_version)?;
         
         let opening = generate_random_opening();
-        let commitment = commit(&inner_req.search_key, &inner_req.value, &opening)?;
+        let commitment = commit(&inner_req.search_key, next_version, &inner_req.value, &opening)?;
 
         Ok(PreUpdateData {
             req: inner_req,
             signature: req.signature,
+            version: next_version,
             index,
             vrf_proof,
             commitment,
@@ -70,6 +71,11 @@ impl Tree {
                     results_map[i] = Some(Err(anyhow!("Tombstone update failed: expected value mismatch")));
                     continue;
                 }
+            }
+            // vrf index and commitment were derived from update.version; a raced batch must not repair them silently
+            if update.version != next_ver {
+                results_map[i] = Some(Err(anyhow!("Version assignment raced: precomputed {} but batch assigns {}", update.version, next_ver)));
+                continue;
             }
             if let Some(verifier) = &tpm_verifier {
                 let tbs = construct_update_tbs(&update.req.search_key, next_ver, &update.req.value)?;
@@ -264,7 +270,8 @@ impl Tree {
         let insertion_log_index = tree_size - 1;
         let last = pre.req.consistency.as_ref().and_then(|c| c.last).unwrap_or(0);
         
-        let new_version = post.search_result.counter;
+        // search_result.counter is the prefix-leaf write counter, not the label version
+        let new_version = pre.version;
 
         let combined_proof = self.traverse_update_verification(
             tree_size,
@@ -284,6 +291,7 @@ impl Tree {
             binary_ladder,
             search: Some(combined_proof),
             opening: pre.opening,
+            version: new_version,
         })
     }
 }

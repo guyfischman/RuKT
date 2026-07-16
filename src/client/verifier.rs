@@ -217,11 +217,12 @@ pub struct CommitmentVerifier;
 impl CommitmentVerifier {
     pub fn verify(
         label: &[u8],
+        version: u32,
         value: &[u8],
         opening: &[u8],
         commitment: &[u8],
     ) -> Result<()> {
-        let calculated = crate::crypto::hash::commit(label, value, opening)?;
+        let calculated = crate::crypto::hash::commit(label, version, value, opening)?;
         if calculated != commitment {
             return Err(anyhow!("Commitment verification failed"));
         }

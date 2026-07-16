@@ -34,6 +34,7 @@ pub struct Tree {
 pub struct PreUpdateData {
     pub req: UpdateRequest,
     pub signature: Vec<u8>,
+    pub version: u32,
     pub index: [u8; 32],
     pub vrf_proof: Vec<u8>,
     pub commitment: Vec<u8>,

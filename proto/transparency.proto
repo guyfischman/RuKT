@@ -125,6 +125,8 @@ message UpdateResponse {
     repeated BinaryLadderStep binary_ladder = 3;
     CombinedTreeProof search = 4;
     bytes opening = 5;
+    // Section 12.2
+    uint32 version = 6;
 }
 
 message MonitorMapEntry {

@@ -129,11 +129,12 @@ impl BatchWorker {
                 let inner = req.request.clone().unwrap();
                 let (index, vrf_proof) = cfg.vrf_prove(&inner.search_key, next_version).unwrap();
                 let opening = crate::crypto::generate_random_opening();
-                let commitment = crate::crypto::commit(&inner.search_key, &inner.value, &opening).unwrap();
-                
+                let commitment = crate::crypto::commit(&inner.search_key, next_version, &inner.value, &opening).unwrap();
+
                 PreUpdateData {
                     req: inner,
                     signature: req.signature.clone(),
+                    version: next_version,
                     index,
                     vrf_proof,
                     commitment,

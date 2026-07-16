@@ -128,7 +128,7 @@ impl KtClient {
         let _ = vrf_output;
 
         let comm = ladder[0].commitment.as_ref().ok_or(anyhow!("Missing commitment"))?;
-        CommitmentVerifier::verify(label, value, &resp.opening, comm)?;
+        CommitmentVerifier::verify(label, resp.version, value, &resp.opening, comm)?;
 
         if proof.prefix_proofs.is_empty() { return Err(anyhow!("Missing prefix proof")); }
 
@@ -189,7 +189,7 @@ impl KtClient {
         let target_idx = expected_versions.iter().position(|&v| v == target_version)
             .ok_or_else(|| anyhow!("Target version {} not in binary ladder", target_version))?;
         // §12.1: the target-version commitment is normally omitted; a server-sent one must match
-        let target_commitment = crate::crypto::hash::commit(label, &value.value, &resp.opening)
+        let target_commitment = crate::crypto::hash::commit(label, target_version, &value.value, &resp.opening)
             .context("Commitment computation failed")?;
         if let Some(server_comm) = &resp.binary_ladder[target_idx].commitment {
             if server_comm != &target_commitment {
