@@ -5,7 +5,7 @@ use crate::tree::log_math;
 use crate::tree::binary_ladder::{search_binary_ladder, monitoring_binary_ladder};
 use crate::tree::errors::KtError;
 use anyhow::{Result, anyhow};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 pub struct SearchResultData {
     pub combined_proof: CombinedTreeProof,
@@ -193,24 +193,69 @@ impl Tree {
         })
     }
 
-    // §8.2
+    // §8.2 / §12.3.4: map entries right-to-left; root-down timestamps establish
+    // distinguished-ness, then monitoring ladders along the truncated ancestor list
     async fn visit_contact_entries(
         &self,
         session: &mut TraversalSession<'_>,
         entries: &[MonitorMapEntry],
-        distinguished_set: &HashSet<u64>,
         tree_size: u64,
     ) -> Result<()> {
-        for entry in entries {
-            let mut path = vec![entry.position];
-            path.extend(log_math::ibst_direct_path(entry.position, tree_size));
-            path.retain(|&idx| idx >= entry.position);
-            path.sort();
+        let rightmost_ts = self.log.get_timestamp(tree_size - 1)?;
+        let rmw = self.config.reasonable_monitoring_window;
+        let mut ladder_targets: HashMap<u64, u32> = HashMap::new();
 
-            for &log_id in &path {
-                let ladder = monitoring_binary_ladder(entry.version, &[]);
-                session.visit(log_id, &ladder, None, tree_size).await?;
-                if distinguished_set.contains(&log_id) { break; }
+        for entry in entries.iter().rev() {
+            let pos = entry.position;
+
+            // timestamps from the root to the parent of pos, stopping once a
+            // non-distinguished entry is established
+            let mut bounds = (0u64, rightmost_ts);
+            let mut parent_dist = true;
+            let mut ancestor_dist: HashMap<u64, bool> = HashMap::new();
+            let mut curr = log_math::root(tree_size);
+            while curr != pos {
+                session.visit_timestamp_only(curr)?;
+                let ts = self.log.get_timestamp(curr)?;
+                let dist = parent_dist && bounds.1.saturating_sub(bounds.0) >= rmw;
+                ancestor_dist.insert(curr, dist);
+                if !dist {
+                    parent_dist = false;
+                    break;
+                }
+                if pos < curr {
+                    bounds.1 = ts;
+                    curr = log_math::left_child(curr);
+                } else {
+                    bounds.0 = ts;
+                    curr = match log_math::ibst_right_child(curr, tree_size) {
+                        Some(rc) => rc,
+                        None => break,
+                    };
+                }
+            }
+            let pos_dist = parent_dist && curr == pos
+                && bounds.1.saturating_sub(bounds.0) >= rmw;
+
+            // step 1
+            if pos_dist { continue; }
+
+            // step 2
+            let mut list: Vec<u64> = log_math::ibst_direct_path(pos, tree_size)
+                .into_iter()
+                .filter(|&a| a > pos)
+                .collect();
+            list.sort();
+            if let Some(cut) = list.iter().position(|a| *ancestor_dist.get(a).unwrap_or(&false)) {
+                list.truncate(cut + 1);
+            }
+
+            // step 3
+            for &e in &list {
+                if ladder_targets.contains_key(&e) { break; }
+                let versions = monitoring_binary_ladder(entry.version, &[]);
+                session.visit(e, &versions, None, tree_size).await?;
+                ladder_targets.insert(e, entry.version);
             }
         }
         Ok(())
@@ -252,9 +297,7 @@ impl Tree {
         let mut session = TraversalSession::new(self, label);
         session.visit_frontier(tree_size).await?;
 
-        let distinguished_set: HashSet<u64> =
-            self.find_distinguished_nodes(tree_size).await?.into_iter().collect();
-        self.visit_contact_entries(&mut session, entries, &distinguished_set, tree_size).await?;
+        self.visit_contact_entries(&mut session, entries, tree_size).await?;
 
         Ok(session.finalize(tree_size, last)?.0)
     }
@@ -330,9 +373,7 @@ impl Tree {
         let mut session = TraversalSession::new(self, label);
         session.visit_frontier(tree_size).await?;
 
-        let distinguished_set: HashSet<u64> =
-            self.find_distinguished_nodes(tree_size).await?.into_iter().collect();
-        self.visit_contact_entries(&mut session, entries, &distinguished_set, tree_size).await?;
+        self.visit_contact_entries(&mut session, entries, tree_size).await?;
         self.visit_owner_updates(&mut session, label, start, tree_size).await?;
 
         Ok(session.finalize(tree_size, last)?.0)

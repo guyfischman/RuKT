@@ -89,7 +89,7 @@ async fn test_full_client_lifecycle() -> Result<()> {
     // 6. Monitor
     println!("--- Client Monitor ---");
     // Monitor position 0 (v0)
-    let mon_resp = client.contact_monitor(user_id.clone(), vec![(0, 0)]).await?;
+    let mon_resp = client.contact_monitor(user_id.clone()).await?;
     
     // Check FullTreeHead
     let fth = mon_resp.full_tree_head.unwrap();

@@ -33,6 +33,10 @@ struct PersistedState {
     auditor_head: Option<(u64, u64)>,
     label_versions: Vec<(String, u32)>,
     retained_subtrees: Vec<(u64, String)>,
+    #[serde(default)]
+    monitoring_map: Vec<(String, Vec<(u64, u32)>)>,
+    #[serde(default)]
+    version_material: Vec<(String, Vec<(u32, String, Option<String>)>)>,
 }
 
 pub struct KtClient {
@@ -43,6 +47,9 @@ pub struct KtClient {
     pub label_versions: HashMap<Vec<u8>, u32>,
     pub retained_subtrees: BTreeMap<u64, Vec<u8>>,
     pub auditor_head: Option<(u64, u64)>,
+    // §8.2 monitoring map plus the vrf outputs and commitments needed to re-verify
+    pub monitoring_map: HashMap<Vec<u8>, BTreeMap<u64, u32>>,
+    version_material: HashMap<Vec<u8>, HashMap<u32, (Vec<u8>, Option<Vec<u8>>)>>,
     state_path: Option<std::path::PathBuf>,
     config: PublicConfig,
 }
@@ -62,6 +69,8 @@ impl KtClient {
             label_versions: HashMap::new(),
             retained_subtrees: BTreeMap::new(),
             auditor_head: None,
+            monitoring_map: HashMap::new(),
+            version_material: HashMap::new(),
             state_path: None,
             config,
         })
@@ -88,6 +97,17 @@ impl KtClient {
             self.retained_subtrees = p.retained_subtrees.into_iter()
                 .map(|(n, h)| Ok((n, hex::decode(&h)?)))
                 .collect::<Result<_>>()?;
+            self.monitoring_map = p.monitoring_map.into_iter()
+                .map(|(l, m)| Ok((hex::decode(&l)?, m.into_iter().collect())))
+                .collect::<Result<_>>()?;
+            self.version_material = p.version_material.into_iter()
+                .map(|(l, vs)| {
+                    let inner = vs.into_iter()
+                        .map(|(v, vrf, comm)| Ok((v, (hex::decode(&vrf)?, comm.map(|c| hex::decode(&c)).transpose()?))))
+                        .collect::<Result<_>>()?;
+                    Ok((hex::decode(&l)?, inner))
+                })
+                .collect::<Result<_>>()?;
         }
         self.state_path = Some(path);
         Ok(())
@@ -102,6 +122,15 @@ impl KtClient {
             auditor_head: self.auditor_head,
             label_versions: self.label_versions.iter().map(|(l, v)| (hex::encode(l), *v)).collect(),
             retained_subtrees: self.retained_subtrees.iter().map(|(n, h)| (*n, hex::encode(h))).collect(),
+            monitoring_map: self.monitoring_map.iter()
+                .map(|(l, m)| (hex::encode(l), m.iter().map(|(&p, &v)| (p, v)).collect()))
+                .collect(),
+            version_material: self.version_material.iter()
+                .map(|(l, vs)| (
+                    hex::encode(l),
+                    vs.iter().map(|(&v, (vrf, comm))| (v, hex::encode(vrf), comm.as_ref().map(hex::encode))).collect(),
+                ))
+                .collect(),
         };
         std::fs::write(path, serde_json::to_string(&p)?)?;
         Ok(())
@@ -153,20 +182,220 @@ impl KtClient {
         Ok(resp)
     }
 
-    pub async fn contact_monitor(&mut self, user: Vec<u8>, entries: Vec<(u64, u32)>) -> Result<ContactMonitorResponse> {
+    // §13.2: monitors every obligation in the label's monitoring map
+    pub async fn contact_monitor(&mut self, user: Vec<u8>) -> Result<ContactMonitorResponse> {
+        let map = self.monitoring_map.get(&user).cloned().unwrap_or_default();
+        if map.is_empty() {
+            return Err(anyhow!("No monitoring obligations recorded for this label"));
+        }
+
         let req = ContactMonitorRequest {
             last: self.state.as_ref().map(|s| s.tree_size),
-            label: user,
-            entries: entries.into_iter()
-                .map(|(position, version)| MonitorMapEntry { position, version })
+            label: user.clone(),
+            entries: map.iter()
+                .map(|(&position, &version)| MonitorMapEntry { position, version })
                 .collect(),
         };
 
         let resp = self.client.clone().contact_monitor(req).await?.into_inner();
 
-        self.verify_monitor_proof(resp.full_tree_head.as_ref(), resp.monitor.as_ref())?;
+        self.verify_contact_monitor(&user, &map, &resp)?;
+        self.save_state()?;
 
         Ok(resp)
+    }
+
+    // §8.2 replay
+    fn verify_contact_monitor(
+        &mut self,
+        label: &[u8],
+        map: &BTreeMap<u64, u32>,
+        resp: &ContactMonitorResponse,
+    ) -> Result<()> {
+        let fth = resp.full_tree_head.as_ref().ok_or(anyhow!("Missing FullTreeHead"))?;
+        let proof = resp.monitor.as_ref().ok_or(anyhow!("Missing monitor proof"))?;
+
+        let (tree_size, timestamp_opt, fth_is_updated) = self.tree_size_for_fth(fth)?;
+        if tree_size == 0 {
+            return Err(anyhow!("Cannot monitor an empty tree"));
+        }
+        if fth_is_updated {
+            if let Some(head_ts) = timestamp_opt {
+                self.check_timestamp_bounds(head_ts)
+                    .context("TreeHead timestamp out of bounds")?;
+            }
+        }
+
+        let material = self.version_material.get(label).cloned().unwrap_or_default();
+        let rmw = self.config.reasonable_monitoring_window;
+
+        let mut reader = ProofReader::new(proof);
+        let frontier = log_math::get_frontier(tree_size);
+        for &f in &frontier {
+            reader.timestamp(f)?;
+        }
+        let rightmost_ts = reader.timestamp(tree_size - 1)?;
+
+        let mut entry_roots: BTreeMap<u64, Vec<u8>> = BTreeMap::new();
+        let mut new_map = map.clone();
+        let mut ladder_targets: HashMap<u64, u32> = HashMap::new();
+
+        for (&pos, &ver) in map.iter().rev() {
+            let mut bounds = (0u64, rightmost_ts);
+            let mut parent_dist = true;
+            let mut ancestor_dist: HashMap<u64, bool> = HashMap::new();
+            let mut curr = log_math::root(tree_size);
+            while curr != pos {
+                let ts = reader.timestamp(curr)?;
+                let dist = parent_dist && bounds.1.saturating_sub(bounds.0) >= rmw;
+                ancestor_dist.insert(curr, dist);
+                if !dist {
+                    parent_dist = false;
+                    break;
+                }
+                if pos < curr {
+                    bounds.1 = ts;
+                    curr = log_math::left_child(curr);
+                } else {
+                    bounds.0 = ts;
+                    curr = match log_math::ibst_right_child(curr, tree_size) {
+                        Some(rc) => rc,
+                        None => break,
+                    };
+                }
+            }
+            let pos_dist = parent_dist && curr == pos
+                && bounds.1.saturating_sub(bounds.0) >= rmw;
+
+            // step 1 + final map cleanup: a distinguished entry needs no monitoring
+            if pos_dist {
+                new_map.remove(&pos);
+                continue;
+            }
+
+            // step 2
+            let mut list: Vec<u64> = log_math::ibst_direct_path(pos, tree_size)
+                .into_iter()
+                .filter(|&a| a > pos)
+                .collect();
+            list.sort();
+            if let Some(cut) = list.iter().position(|a| *ancestor_dist.get(a).unwrap_or(&false)) {
+                list.truncate(cut + 1);
+            }
+
+            // step 3
+            let mut moved_to: Option<u64> = None;
+            for &e in &list {
+                if let Some(&t) = ladder_targets.get(&e) {
+                    if t > ver {
+                        new_map.remove(&pos);
+                        moved_to = None;
+                    } else {
+                        return Err(anyhow!(
+                            "Entry {} already covered by a ladder with non-greater target {}", e, t
+                        ));
+                    }
+                    break;
+                }
+                let pp = reader.prefix_proof(e)?;
+                let root = self.verify_monitoring_ladder(&material, pp, ver)
+                    .with_context(|| format!("Monitoring ladder failed at entry {}", e))?;
+                record_entry_root(&mut entry_roots, e, root)?;
+                ladder_targets.insert(e, ver);
+                moved_to = Some(e);
+            }
+
+            if let Some(newpos) = moved_to {
+                new_map.remove(&pos);
+                if !*ancestor_dist.get(&newpos).unwrap_or(&false) {
+                    new_map.insert(newpos, ver);
+                }
+            }
+        }
+
+        let leaf_data = reader.finish(&entry_roots)?;
+        let positions: Vec<u64> = leaf_data.iter().map(|(p, _, _)| *p).collect();
+        let leaf_hashes: Vec<Vec<u8>> = leaf_data.iter()
+            .map(|(_, ts, root)| crate::crypto::hash::log_leaf_value(*ts, root))
+            .collect();
+        let inclusion = proof.inclusion.as_ref()
+            .ok_or_else(|| anyhow!("Missing inclusion proof"))?;
+
+        let (candidate_root, new_peaks) = LogVerifier::calculate_root_with_retained(
+            &positions, &leaf_hashes, tree_size, &inclusion.elements, &self.retained_subtrees,
+        ).context("Log tree root reconstruction failed")?;
+
+        if fth_is_updated {
+            let th = fth.tree_head.as_ref()
+                .ok_or_else(|| anyhow!("FullTreeHead.head_type=updated but TreeHead is missing"))?;
+            self.verify_tree_head_signature(th, tree_size, &candidate_root)
+                .context("TreeHead signature verification failed")?;
+            if self.config.mode == crypto::DEPLOYMENT_MODE_THIRD_PARTY_AUDITING {
+                self.verify_auditor_tree_head(fth, th, tree_size, &candidate_root)
+                    .context("AuditorTreeHead verification failed")?;
+            }
+            self.state = Some(TrustedState {
+                tree_size,
+                root_hash: candidate_root,
+                timestamp: timestamp_opt.unwrap_or(0),
+            });
+            self.retained_subtrees = new_peaks;
+        } else {
+            let prev = self.state.as_ref()
+                .ok_or_else(|| anyhow!("SAME head without previous state"))?;
+            if candidate_root != prev.root_hash {
+                return Err(anyhow!("SAME head but proofs do not reconstruct the retained root"));
+            }
+        }
+
+        self.monitoring_map.insert(label.to_vec(), new_map);
+        Ok(())
+    }
+
+    // §8.2 step 3.2: every monitoring-ladder lookup must show inclusion, folded
+    // with the vrf outputs and commitments retained from earlier searches
+    fn verify_monitoring_ladder(
+        &self,
+        material: &HashMap<u32, (Vec<u8>, Option<Vec<u8>>)>,
+        prefix_proof: &PrefixProof,
+        target: u32,
+    ) -> Result<Vec<u8>> {
+        let versions = crate::tree::binary_ladder::monitoring_binary_ladder(target, &[]);
+        if prefix_proof.results.len() != versions.len() {
+            return Err(anyhow!(
+                "Monitoring ladder has {} results, expected {}",
+                prefix_proof.results.len(), versions.len()
+            ));
+        }
+
+        let mut elements_offset = 0usize;
+        let mut computed_root: Option<Vec<u8>> = None;
+
+        for (j, &v) in versions.iter().enumerate() {
+            if prefix_proof.results[j].result_type != 1 {
+                return Err(anyhow!("Monitoring lookup for v={} is not an inclusion proof", v));
+            }
+            let (vrf_output, commitment) = material.get(&v)
+                .ok_or_else(|| anyhow!("No retained material for v={}", v))?;
+            let commitment = commitment.as_ref()
+                .ok_or_else(|| anyhow!("No retained commitment for v={}", v))?;
+
+            let (root, consumed) = PrefixVerifier::compute_root_from_result(
+                prefix_proof, j, vrf_output, Some(commitment), elements_offset,
+            )?;
+            elements_offset += consumed;
+
+            match &computed_root {
+                None => computed_root = Some(root),
+                Some(prev) if prev == &root => {}
+                Some(_) => return Err(anyhow!("Monitoring ladder results disagree on prefix-tree root")),
+            }
+        }
+
+        if elements_offset != prefix_proof.elements.len() {
+            return Err(anyhow!("Monitoring ladder has unused proof elements"));
+        }
+        computed_root.ok_or_else(|| anyhow!("Monitoring ladder contained no results"))
     }
 
     pub async fn owner_init(&mut self, user: Vec<u8>, start: u64) -> Result<OwnerInitResponse> {
@@ -350,22 +579,31 @@ impl KtClient {
         }
 
         let mut entry_roots: BTreeMap<u64, Vec<u8>> = BTreeMap::new();
+        let mut material: HashMap<u32, Option<Vec<u8>>> = HashMap::new();
+        let terminal: u64;
 
         if greatest {
             // §6.3
             let rightmost = *frontier.last().unwrap();
+            let mut first_equal: Option<u64> = None;
             for &entry in &frontier {
                 let pp = reader.prefix_proof(entry)?;
-                let (root, _) = self.verify_ladder_proof(
+                let (root, relation) = self.verify_ladder_proof(
                     label, pp, target_version, &mut wire_index, &mut vrf_cache,
                     &resp.binary_ladder, &target_commitment, true, entry == rightmost,
+                    &mut material,
                 ).with_context(|| format!("Ladder verification failed at entry {}", entry))?;
                 record_entry_root(&mut entry_roots, entry, root)?;
+                if relation == std::cmp::Ordering::Equal && first_equal.is_none() {
+                    first_equal = Some(entry);
+                }
             }
+            terminal = first_equal.unwrap_or(rightmost);
         } else {
-            self.simulate_fixed_search(
+            terminal = self.simulate_fixed_search(
                 label, tree_size, target_version, &mut reader,
                 &mut wire_index, &mut vrf_cache, resp, &target_commitment, &mut entry_roots,
+                &mut material,
             )?;
         }
 
@@ -418,6 +656,17 @@ impl KtClient {
             }
         }
 
+        // §8.2: the terminal entry enters the monitoring map, with the material
+        // needed to re-verify monitoring ladders later
+        let stash = self.version_material.entry(label.to_vec()).or_default();
+        for (v, comm) in material {
+            if let Some(out) = vrf_cache.get(&v) {
+                stash.insert(v, (out.clone(), comm));
+            }
+        }
+        self.monitoring_map.entry(label.to_vec()).or_default()
+            .insert(terminal, target_version);
+
         Ok(())
     }
 
@@ -435,6 +684,7 @@ impl KtClient {
         target_commitment: &[u8],
         greatest: bool,
         is_rightmost: bool,
+        material: &mut HashMap<u32, Option<Vec<u8>>>,
     ) -> Result<(Vec<u8>, std::cmp::Ordering)> {
         let decoded = decode_search_ladder(&prefix_proof.results, target_version)
             .context("Ladder decode failed")?;
@@ -503,6 +753,10 @@ impl KtClient {
                 }
                 None
             };
+
+            if lk.inclusion {
+                material.insert(lk.version, commitment.clone());
+            }
 
             let (root, consumed) = PrefixVerifier::compute_root_from_result(
                 prefix_proof,
@@ -596,7 +850,8 @@ impl KtClient {
         resp: &SearchResponse,
         target_commitment: &[u8],
         entry_roots: &mut BTreeMap<u64, Vec<u8>>,
-    ) -> Result<()> {
+        material: &mut HashMap<u32, Option<Vec<u8>>>,
+    ) -> Result<u64> {
         let rightmost_ts = reader.timestamp(tree_size - 1)?;
         let max_life = self.config.maximum_lifetime;
         let rmw = self.config.reasonable_monitoring_window;
@@ -611,7 +866,7 @@ impl KtClient {
         // walked entries left of the current path: (position, unexpired-and-distinguished)
         let mut left_path: Vec<(u64, bool)> = Vec::new();
         let mut inspected: Vec<(u64, std::cmp::Ordering)> = Vec::new();
-        let mut success = false;
+        let mut terminal: Option<u64> = None;
 
         loop {
             let ts = reader.timestamp(curr)?;
@@ -638,7 +893,7 @@ impl KtClient {
             let pp = reader.prefix_proof(curr)?;
             let (root, relation) = self.verify_ladder_proof(
                 label, pp, target_version, wire_index, vrf_cache,
-                &resp.binary_ladder, target_commitment, false, false,
+                &resp.binary_ladder, target_commitment, false, false, material,
             ).with_context(|| format!("Ladder verification failed at entry {}", curr))?;
             record_entry_root(entry_roots, curr, root)?;
             inspected.push((curr, relation));
@@ -667,7 +922,7 @@ impl KtClient {
                         || is_dist
                         || left_path.iter().any(|&(_, d)| d)
                     {
-                        success = true;
+                        terminal = Some(curr);
                         break;
                     }
                     return Err(anyhow!("Requested version of the label is expired"));
@@ -676,7 +931,7 @@ impl KtClient {
         }
 
         // step 6
-        if !success {
+        if terminal.is_none() {
             let identified = inspected.iter()
                 .filter(|&&(_, r)| r == std::cmp::Ordering::Greater)
                 .map(|&(p, _)| p)
@@ -701,9 +956,10 @@ impl KtClient {
             if !included {
                 return Err(anyhow!("Requested version of the label does not exist"));
             }
+            terminal = Some(identified);
         }
 
-        Ok(())
+        Ok(terminal.unwrap())
     }
 
     // §11.3

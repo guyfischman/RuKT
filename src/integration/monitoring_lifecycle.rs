@@ -18,27 +18,13 @@ async fn test_contact_monitoring_conformant() -> Result<()> {
     let (signer, _) = crypto::generate_sig_keypair();
     let (vrf_key, _) = crypto::generate_vrf_keypair(CIPHER_SUITE_KT_128_SHA256_ED25519);
     
-    // Init service
-    let mut service = KeyTransparencyImpl::new(db, signer, vrf_key, HashMap::new(), None).await?;
-    
-    // Set RMW to 0 to make every node distinguished (maximum verification path)
-    {
-        let mut tree = service.tree.write().await;
-        tree.config.reasonable_monitoring_window = 0;
-    }
+    let service = KeyTransparencyImpl::new(db, signer, vrf_key, HashMap::new(), None).await?;
 
     let user_a = b"user_a".to_vec();
 
-    // 1. Initial Update (Log Index 0)
-    service.update(tonic::Request::new(UpdateRequest {
-        last: None,
-        label: user_a.clone(),
-        greatest_version: None,
-        values: vec![LabelValue { value: b"v1".to_vec() }],
-    })).await?;
-
-    // 2. Other updates to advance tree (Log Indices 1, 2)
-    for i in 1..=2 {
+    // Two dummies first so 'user_a' lands at position 2 — a position off the
+    // 0-anchored left spine, hence not distinguished and in need of monitoring
+    for i in 0..2 {
         service.update(tonic::Request::new(UpdateRequest {
             last: None,
             label: format!("user_dummy_{}", i).as_bytes().to_vec(),
@@ -46,15 +32,24 @@ async fn test_contact_monitoring_conformant() -> Result<()> {
             values: vec![LabelValue { value: b"data".to_vec() }],
         })).await?;
     }
+    service.update(tonic::Request::new(UpdateRequest {
+        last: None,
+        label: user_a.clone(),
+        greatest_version: None,
+        values: vec![LabelValue { value: b"v1".to_vec() }],
+    })).await?;
+    service.update(tonic::Request::new(UpdateRequest {
+        last: None,
+        label: b"user_dummy_2".to_vec(),
+        greatest_version: None,
+        values: vec![LabelValue { value: b"data".to_vec() }],
+    })).await?;
 
-    // 3. Contact Monitoring Request
-    // User last saw 'user_a' at position 0. Current head is 3.
-    // Logic should trace path from 0 -> Head.
     let req = ContactMonitorRequest {
-        last: Some(1), // Client thinks tree size is 1
+        last: Some(3),
         label: user_a.clone(),
         entries: vec![MonitorMapEntry {
-            position: 0,
+            position: 2,
             version: 0,
         }],
     };
@@ -62,12 +57,8 @@ async fn test_contact_monitoring_conformant() -> Result<()> {
     let resp = service.contact_monitor(tonic::Request::new(req)).await?.into_inner();
 
     let proof = resp.monitor.expect("Missing monitor proof");
-
-    // With RMW=0, we expect timestamps for intermediate nodes
     assert!(!proof.timestamps.is_empty(), "Should contain timestamps");
-
-    // Ensure we have prefix proofs for the label
-    // Since RMW=0, we hit distinguished nodes quickly, so we expect proofs.
+    // §8.2: ladders along the ancestors of position 2 up to the first distinguished entry
     assert!(!proof.prefix_proofs.is_empty(), "Should contain prefix proofs for monitoring");
 
     Ok(())

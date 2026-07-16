@@ -15,18 +15,12 @@ async fn test_monitoring_flow() -> Result<()> {
     let (signer, _) = crypto::generate_sig_keypair();
     let (vrf_key, _) = crypto::generate_vrf_keypair(CIPHER_SUITE_KT_128_SHA256_ED25519);
     
-    let mut service = KeyTransparencyImpl::new(db, signer, vrf_key, HashMap::new(), None).await?;
-    service.config.reasonable_monitoring_window = 0; 
+    let service = KeyTransparencyImpl::new(db, signer, vrf_key, HashMap::new(), None).await?;
 
     let user_id = b"monitor_user".to_vec();
-    service.update(tonic::Request::new(UpdateRequest {
-        last: None,
-        label: user_id.clone(),
-        greatest_version: None,
-        values: vec![LabelValue { value: b"monitored_value".to_vec() }],
-    })).await?;
-
-    for i in 0..3 {
+    // 'monitor_user' lands at position 2: off the 0-anchored left spine, so its
+    // map entry is not distinguished and must be walked up
+    for i in 0..2 {
         service.update(tonic::Request::new(UpdateRequest {
             last: None,
             label: format!("user_b_{}", i).as_bytes().to_vec(),
@@ -34,13 +28,25 @@ async fn test_monitoring_flow() -> Result<()> {
             values: vec![LabelValue { value: b"val_b".to_vec() }],
         })).await?;
     }
+    service.update(tonic::Request::new(UpdateRequest {
+        last: None,
+        label: user_id.clone(),
+        greatest_version: None,
+        values: vec![LabelValue { value: b"monitored_value".to_vec() }],
+    })).await?;
+    service.update(tonic::Request::new(UpdateRequest {
+        last: None,
+        label: b"user_b_2".to_vec(),
+        greatest_version: None,
+        values: vec![LabelValue { value: b"val_b".to_vec() }],
+    })).await?;
 
     // Contact Monitoring
     let req_contact = ContactMonitorRequest {
         last: None,
         label: user_id.clone(),
         entries: vec![MonitorMapEntry {
-            position: 0,
+            position: 2,
             version: 0,
         }],
     };
