@@ -28,3 +28,4 @@ pub mod arch_obligations;
 pub mod gossip;
 pub mod harness;
 mod auditing_operations;
+mod malicious_server;

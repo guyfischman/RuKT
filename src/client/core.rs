@@ -187,6 +187,17 @@ impl KtClient {
         Err(anyhow!("Update did not converge while catching up on existing versions"))
     }
 
+    /// Issues a Search RPC and returns the raw response without verifying it.
+    /// For adversarial tests that tamper the response before verification.
+    pub(crate) async fn search_raw(&mut self, user: Vec<u8>, version: Option<u32>) -> Result<SearchResponse> {
+        let req = SearchRequest {
+            last: self.get_consistency_req().and_then(|c| c.last),
+            label: user,
+            version,
+        };
+        Ok(self.client.clone().search(req).await?.into_inner())
+    }
+
     pub async fn search(&mut self, user: Vec<u8>, version: Option<u32>) -> Result<SearchResponse> {
         let req = SearchRequest {
             last: self.get_consistency_req().and_then(|c| c.last),
@@ -933,7 +944,7 @@ impl KtClient {
         Ok(())
     }
 
-    async fn verify_search_response(
+    pub(crate) async fn verify_search_response(
         &mut self,
         label: &[u8],
         requested_version: Option<u32>,
