@@ -220,6 +220,41 @@ impl PrefixVerifier {
     }
 }
 
+// §10.2: the two lists must be a prefix/suffix of one another with >= 1 common root
+pub fn compare_roots(roots_a: &[Vec<u8>], roots_b: &[Vec<u8>]) -> Result<()> {
+    if roots_a.len() != roots_b.len() {
+        return Err(anyhow!("Root lists must be the same size"));
+    }
+    let n = roots_a.len();
+    for x in 0..n {
+        if roots_a[..n - x] == roots_b[x..] || roots_b[..n - x] == roots_a[x..] {
+            return Ok(());
+        }
+    }
+    Err(anyhow!("No valid overlap between root lists: possible fork"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::compare_roots;
+
+    fn r(b: u8) -> Vec<u8> { vec![b; 32] }
+
+    #[test]
+    fn compare_roots_accepts_overlap() {
+        compare_roots(&[r(1), r(2), r(3)], &[r(1), r(2), r(3)]).unwrap();
+        compare_roots(&[r(1), r(2), r(3)], &[r(2), r(3), r(4)]).unwrap();
+        compare_roots(&[r(2), r(3), r(4)], &[r(1), r(2), r(3)]).unwrap();
+    }
+
+    #[test]
+    fn compare_roots_rejects_fork() {
+        assert!(compare_roots(&[r(1), r(2), r(3)], &[r(4), r(5), r(6)]).is_err());
+        assert!(compare_roots(&[r(1), r(2), r(3)], &[r(1), r(5), r(6)]).is_err());
+        assert!(compare_roots(&[r(1)], &[r(1), r(2)]).is_err());
+    }
+}
+
 // --- COMMITMENT VERIFIER ---
 pub struct CommitmentVerifier;
 

@@ -274,6 +274,48 @@ impl Tree {
         Ok((proof, ladder, versions))
     }
 
+    // §10.1; "recent" = one of the max_response_entries rightmost distinguished entries
+    pub async fn traverse_distinguished(
+        &self,
+        tree_size: u64,
+        stop: Option<u64>,
+        last: u64,
+    ) -> Result<CombinedTreeProof> {
+        let mut session = TraversalSession::new(self, b"");
+        session.visit_frontier(tree_size).await?;
+
+        let distinguished = self.find_distinguished_nodes(tree_size).await?;
+        let dset: HashSet<u64> = distinguished.iter().copied().collect();
+        let recent: HashSet<u64> = distinguished.iter().rev()
+            .take(self.config.max_response_entries as usize)
+            .copied()
+            .collect();
+
+        let mut stack = vec![log_math::root(tree_size)];
+        while let Some(curr) = stack.pop() {
+            // step 1
+            if !dset.contains(&curr) { continue; }
+            // §12.3.8
+            session.visit_timestamp_only(curr)?;
+            // step 2
+            if !log_math::is_leaf(curr) {
+                if let Some(rc) = log_math::ibst_right_child(curr, tree_size) {
+                    stack.push(rc);
+                }
+            }
+            // step 3
+            if stop.map_or(false, |s| curr <= s) { continue; }
+            // step 4
+            if !recent.contains(&curr) { continue; }
+            // step 5
+            if !log_math::is_leaf(curr) {
+                stack.push(log_math::left_child(curr));
+            }
+        }
+
+        Ok(session.finalize(tree_size, last)?.0)
+    }
+
     pub async fn traverse_owner_monitor(
         &self,
         tree_size: u64,

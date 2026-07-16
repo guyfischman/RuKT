@@ -173,8 +173,14 @@ impl KeyTransparencyService for KeyTransparencyImpl {
         Ok(Response::new(resp))
     }
 
-    async fn distinguished(&self, _request: Request<DistinguishedRequest>) -> Result<Response<DistinguishedResponse>, Status> {
-        Err(Status::unimplemented("Walking distinguished heads (§13.6) is not yet implemented"))
+    async fn distinguished(&self, request: Request<DistinguishedRequest>) -> Result<Response<DistinguishedResponse>, Status> {
+        let req = request.into_inner();
+        let tree_guard = self.tree.read().await;
+
+        let resp = tree_guard.distinguished(&req).await
+            .map_err(map_anyhow_to_status)?;
+
+        Ok(Response::new(resp))
     }
     
     async fn get_credential(&self, request: Request<GetCredentialRequest>) -> Result<Response<Credential>, Status> {

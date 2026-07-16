@@ -3,6 +3,7 @@ use crate::proto::transparency::{
     ContactMonitorRequest, ContactMonitorResponse,
     OwnerInitRequest, OwnerInitResponse,
     OwnerMonitorRequest, OwnerMonitorResponse,
+    DistinguishedRequest, DistinguishedResponse,
     Consistency, MonitorMapEntry,
 };
 use crate::tree::errors::KtError;
@@ -74,6 +75,25 @@ impl Tree {
             greatest_versions,
             binary_ladder,
             init: Some(proof),
+        })
+    }
+
+    pub async fn distinguished(&self, req: &DistinguishedRequest) -> Result<DistinguishedResponse> {
+        let tree_size = self.monitored_tree_size()?;
+        if let Some(stop) = req.stop {
+            if stop >= tree_size {
+                return Err(anyhow::Error::new(KtError::InvalidArgument(
+                    format!("Stop position {} outside tree of size {}", stop, tree_size),
+                )));
+            }
+        }
+
+        let proof = self.traverse_distinguished(tree_size, req.stop, req.last.unwrap_or(0)).await?;
+        let fth = self.get_full_tree_head(Some(Consistency { last: req.last, distinguished: None }))?;
+
+        Ok(DistinguishedResponse {
+            full_tree_head: Some(fth),
+            distinguished: Some(proof),
         })
     }
 

@@ -21,4 +21,4 @@ mod monitoring_lifecycle;
 mod batching_collisions;
 mod malicious_auditor;
 mod binary_ladder_boundaries;
-mod update_verification_compliance;
+mod update_verification_compliance;pub mod distinguished_walk;

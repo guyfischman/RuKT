@@ -5,6 +5,7 @@ use crate::proto::transparency::{
     ContactMonitorRequest, ContactMonitorResponse,
     OwnerInitRequest, OwnerInitResponse,
     OwnerMonitorRequest, OwnerMonitorResponse,
+    DistinguishedRequest, DistinguishedResponse,
     MonitorMapEntry, Consistency, CombinedTreeProof,
     UpdateResponse, SearchResponse,
     FullTreeHead, FullTreeHeadType, PrefixProof,
@@ -112,6 +113,19 @@ impl KtClient {
         let resp = self.client.clone().owner_init(req).await?.into_inner();
 
         self.verify_monitor_proof(resp.full_tree_head.as_ref(), resp.init.as_ref())?;
+
+        Ok(resp)
+    }
+
+    pub async fn distinguished(&mut self, stop: Option<u64>) -> Result<DistinguishedResponse> {
+        let req = DistinguishedRequest {
+            last: self.state.as_ref().map(|s| s.tree_size),
+            stop,
+        };
+
+        let resp = self.client.clone().distinguished(req).await?.into_inner();
+
+        self.verify_monitor_proof(resp.full_tree_head.as_ref(), resp.distinguished.as_ref())?;
 
         Ok(resp)
     }
