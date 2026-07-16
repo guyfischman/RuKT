@@ -80,14 +80,12 @@ fn serialize_configuration(
     Opaqueu16(&server_sig_pk).tls_encode(&mut buf);
     Opaqueu16(&config.vrf_public_key).tls_encode(&mut buf);
 
-    if config.mode == 3 { 
-        0u64.tls_encode(&mut buf);
-        0u64.tls_encode(&mut buf);
-        if let Some(apk) = auditor_pk {
-            Opaqueu16(apk).tls_encode(&mut buf);
-        } else {
-             return Err(anyhow!("Auditor public key required for ThirdPartyAuditing mode"));
-        }
+    if config.mode == 3 {
+        config.auditor_start_pos.tls_encode(&mut buf);
+        config.max_auditor_lag.tls_encode(&mut buf);
+        let apk = auditor_pk.or(config.auditor_public_key.as_deref())
+            .ok_or_else(|| anyhow!("Auditor public key required for ThirdPartyAuditing mode"))?;
+        Opaqueu16(apk).tls_encode(&mut buf);
     } else {
         if let Some(lpk) = &config.leaf_public_key {
             Opaqueu16(lpk).tls_encode(&mut buf);
@@ -99,30 +97,25 @@ fn serialize_configuration(
     config.max_ahead.tls_encode(&mut buf);
     config.max_behind.tls_encode(&mut buf);
     config.reasonable_monitoring_window.tls_encode(&mut buf);
-    
+
     Optional(config.maximum_lifetime.as_ref()).tls_encode(&mut buf);
 
     Ok(buf)
 }
 
-fn serialize_configuration_public(
-    config: &PublicConfig,
-    auditor_pk: Option<&[u8]>,
-) -> Result<Vec<u8>> {
+fn serialize_configuration_public(config: &PublicConfig) -> Result<Vec<u8>> {
     let mut buf = Vec::new();
     config.cipher_suite.tls_encode(&mut buf);
     config.mode.tls_encode(&mut buf);
     Opaqueu16(&config.server_sig_pk).tls_encode(&mut buf);
     Opaqueu16(&config.vrf_public_key).tls_encode(&mut buf);
 
-    if config.mode == 3 { // Auditing
-         0u64.tls_encode(&mut buf);
-         0u64.tls_encode(&mut buf);
-         if let Some(apk) = auditor_pk {
-             Opaqueu16(apk).tls_encode(&mut buf);
-         } else {
-              return Err(anyhow!("Auditor public key required for ThirdPartyAuditing mode"));
-         }
+    if config.mode == 3 {
+        config.auditor_start_pos.tls_encode(&mut buf);
+        config.max_auditor_lag.tls_encode(&mut buf);
+        let apk = config.auditor_public_key.as_deref()
+            .ok_or_else(|| anyhow!("Auditor public key required for ThirdPartyAuditing mode"))?;
+        Opaqueu16(apk).tls_encode(&mut buf);
     } else {
         if let Some(lpk) = &config.leaf_public_key {
             Opaqueu16(lpk).tls_encode(&mut buf);
@@ -167,14 +160,14 @@ pub fn construct_auditor_tree_head_tbs(
     Ok(buf)
 }
 
+// §11.3
 pub fn construct_auditor_tree_head_tbs_public(
     config: &PublicConfig,
-    auditor_pk: &[u8],
     tree_size: u64,
     timestamp: u64,
     root_hash: &[u8]
 ) -> Result<Vec<u8>> {
-    let mut buf = serialize_configuration_public(config, Some(auditor_pk))?;
+    let mut buf = serialize_configuration_public(config)?;
     timestamp.tls_encode(&mut buf);
     tree_size.tls_encode(&mut buf);
     if root_hash.len() != 32 { return Err(anyhow!("Root hash must be 32 bytes")); }
@@ -182,13 +175,13 @@ pub fn construct_auditor_tree_head_tbs_public(
     Ok(buf)
 }
 
+// §11.2
 pub fn construct_tree_head_tbs_public(
     config: &PublicConfig,
-    auditor_pk: Option<&[u8]>,
     tree_size: u64,
     root_hash: &[u8]
 ) -> Result<Vec<u8>> {
-    let mut buf = serialize_configuration_public(config, auditor_pk)?;
+    let mut buf = serialize_configuration_public(config)?;
     tree_size.tls_encode(&mut buf);
     if root_hash.len() != 32 { return Err(anyhow!("Root hash must be 32 bytes")); }
     FixedOpaque(root_hash).tls_encode(&mut buf);

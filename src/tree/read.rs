@@ -1,6 +1,6 @@
 use super::Tree;
 use crate::proto::transparency::{
-    SearchResponse, FullTreeHead, Consistency, FullAuditorTreeHead,
+    SearchResponse, FullTreeHead, Consistency,
     AuditorTreeHead as PbAuditorTreeHead, FullTreeHeadType, UpdateValue
 };
 use crate::tree::errors::KtError;
@@ -8,30 +8,13 @@ use anyhow::{Result, anyhow};
 use crate::tree::log_math;
 
 impl Tree {
+    // §11.4
     pub fn get_full_tree_head(&self, consistency: Option<Consistency>) -> Result<FullTreeHead> {
-        let (tree_head, current_size, _current_ts) = if let Some(th) = &self.latest {
-            (Some(th.clone()), th.tree_size, th.timestamp)
+        let (tree_head, current_size) = if let Some(th) = &self.latest {
+            (Some(th.clone()), th.tree_size)
         } else {
-            (None, 0, 0)
+            (None, 0)
         };
-
-        let mut full_auditor_tree_heads = vec![];
-        for (name, ath) in &self.auditors {
-            if let Ok(key_bytes) = hex::decode(name) {
-                if let Some(_pk) = self.config.auditor_keys.get(&key_bytes) {
-                     full_auditor_tree_heads.push(FullAuditorTreeHead {
-                         tree_head: Some(PbAuditorTreeHead {
-                             tree_size: ath.tree_size,
-                             timestamp: ath.timestamp,
-                             signature: ath.signature.clone(),
-                         }),
-                         root_value: Some(ath.root_value.clone()),
-                         consistency: ath.consistency.clone(),
-                         public_key: key_bytes,
-                     });
-                }
-            }
-        }
 
         let last_seen = consistency.as_ref().and_then(|c| c.last).unwrap_or(0);
 
@@ -39,34 +22,23 @@ impl Tree {
             return Ok(FullTreeHead {
                 head_type: FullTreeHeadType::Same as i32,
                 tree_head: None,
-                last: vec![],
-                distinguished: vec![],
-                full_auditor_tree_heads,
+                auditor_tree_head: None,
             });
         }
 
-        let mut last_proof = vec![];
-        let mut dist_proof = vec![];
-
-        if let Some(c) = consistency {
-            if let Some(last) = c.last {
-                if last > 0 && last < current_size {
-                    last_proof = self.log.get_consistency_proof(last, current_size)?;
-                }
-            }
-            if let Some(dist) = c.distinguished {
-                if dist > 0 && dist < current_size {
-                    dist_proof = self.log.get_consistency_proof(dist, current_size)?;
-                }
-            }
-        }
+        // freshest verified auditor head
+        let auditor_tree_head = self.auditors.values()
+            .max_by_key(|ath| ath.tree_size)
+            .map(|ath| PbAuditorTreeHead {
+                tree_size: ath.tree_size,
+                timestamp: ath.timestamp,
+                signature: ath.signature.clone(),
+            });
 
         Ok(FullTreeHead {
             head_type: FullTreeHeadType::Updated as i32,
             tree_head,
-            last: last_proof.into_iter().collect(),
-            distinguished: dist_proof.into_iter().collect(),
-            full_auditor_tree_heads,
+            auditor_tree_head,
         })
     }
 

@@ -459,12 +459,60 @@ impl KtClient {
             self.verify_tree_head_signature(th, tree_size, &candidate_root)
                 .context("TreeHead signature verification failed")?;
 
+            if self.config.mode == crypto::DEPLOYMENT_MODE_THIRD_PARTY_AUDITING {
+                self.verify_auditor_tree_head(fth, th, tree_size, &candidate_root)
+                    .context("AuditorTreeHead verification failed")?;
+            }
+
             self.state = Some(TrustedState {
                 tree_size,
                 root_hash: candidate_root,
                 timestamp: timestamp_opt.unwrap_or(0),
             });
         }
+
+        Ok(())
+    }
+
+    // §11.3
+    fn verify_auditor_tree_head(
+        &self,
+        fth: &FullTreeHead,
+        th: &crate::proto::transparency::TreeHead,
+        tree_size: u64,
+        candidate_root: &[u8],
+    ) -> Result<()> {
+        let ath = fth.auditor_tree_head.as_ref()
+            .ok_or_else(|| anyhow!("Missing AuditorTreeHead in third-party-auditing mode"))?;
+
+        // TODO: step 1 needs the persisted previous head's auditor tree_size
+        // step 2
+        let rightmost_ts = th.timestamp as u64;
+        let auditor_ts = ath.timestamp as u64;
+        if auditor_ts > rightmost_ts {
+            return Err(anyhow!("Auditor timestamp is ahead of the rightmost log entry"));
+        }
+        if rightmost_ts - auditor_ts > self.config.max_auditor_lag {
+            return Err(anyhow!("Auditor tree head exceeds max_auditor_lag"));
+        }
+        // step 3
+        if ath.tree_size > th.tree_size {
+            return Err(anyhow!("Auditor tree size exceeds the log's tree size"));
+        }
+
+        // step 4
+        if ath.tree_size == tree_size {
+            let tbs = crypto::construct_auditor_tree_head_tbs_public(
+                &self.config, ath.tree_size, auditor_ts, candidate_root,
+            ).context("AuditorTreeHeadTBS construction failed")?;
+            let apk_bytes = self.config.auditor_public_key.as_deref()
+                .ok_or_else(|| anyhow!("No auditor public key configured"))?;
+            let apk = ServiceVerifyingKey::from_bytes(apk_bytes)
+                .context("Invalid auditor public key")?;
+            verify_data(&apk, &tbs, &ath.signature)
+                .context("Auditor signature verification failed")?;
+        }
+        // TODO: reconstruct the root at ath.tree_size from retained subtrees when it lags
 
         Ok(())
     }
@@ -502,12 +550,14 @@ impl KtClient {
 
     // --- FullTreeHead helpers ---
 
-    // §10.4
+    // §11.4
     fn tree_size_for_fth(&self, fth: &FullTreeHead) -> Result<(u64, Option<u64>, bool)> {
         if fth.head_type == FullTreeHeadType::Same as i32 {
             let prev = self.state.as_ref().ok_or_else(|| {
                 anyhow!("Server returned head_type=SAME but client has no previous tree head")
             })?;
+            self.check_timestamp_bounds(prev.timestamp)
+                .context("Retained tree head is stale (head_type=SAME)")?;
             return Ok((prev.tree_size, Some(prev.timestamp), false));
         }
         if fth.head_type == FullTreeHeadType::Updated as i32 {
@@ -550,7 +600,7 @@ impl KtClient {
         if th.signatures.is_empty() {
             return Err(anyhow!("TreeHead has no signatures"));
         }
-        let tbs = construct_tree_head_tbs_public(&self.config, None, tree_size, root_hash)
+        let tbs = construct_tree_head_tbs_public(&self.config, tree_size, root_hash)
             .context("TreeHeadTBS construction failed")?;
         // signatures carries one entry per auditor plus the operator; any match under our pinned key suffices
         let mut last_err: Option<anyhow::Error> = None;

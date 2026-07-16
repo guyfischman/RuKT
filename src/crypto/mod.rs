@@ -36,14 +36,17 @@ pub struct PrivateConfig {
     pub vrf_ctx: VrfContext,
     pub prefix_aes_key: Vec<u8>,
     pub auditor_keys: HashMap<Vec<u8>, ServiceVerifyingKey>,
-    
+    pub auditor_public_key: Option<Vec<u8>>,
+    pub auditor_start_pos: u64,
+    pub max_auditor_lag: u64,
+
     pub max_ahead: u64,
     pub max_behind: u64,
     pub reasonable_monitoring_window: u64,
-    pub maximum_lifetime: Option<u64>, 
-    
+    pub maximum_lifetime: Option<u64>,
+
     pub leaf_public_key: Option<Vec<u8>>,
-    
+
     // Pagination limit for Monitor responses
     pub max_response_entries: usize,
 }
@@ -55,6 +58,9 @@ pub struct PublicConfig {
     pub server_sig_pk: Vec<u8>,
     pub vrf_public_key: Vec<u8>,
     pub leaf_public_key: Option<Vec<u8>>,
+    pub auditor_public_key: Option<Vec<u8>>,
+    pub auditor_start_pos: u64,
+    pub max_auditor_lag: u64,
     pub max_ahead: u64,
     pub max_behind: u64,
     pub reasonable_monitoring_window: u64,
@@ -96,6 +102,13 @@ impl PrivateConfig {
             VrfContext::P256 { y_bytes, .. } => y_bytes.clone(),
         };
         
+        // single-auditor deployments: pick the smallest key for a deterministic TBS
+        let auditor_public_key = {
+            let mut keys: Vec<&Vec<u8>> = auditor_keys.keys().collect();
+            keys.sort();
+            keys.first().map(|k| (*k).clone())
+        };
+
         Ok(Self {
             cipher_suite,
             mode,
@@ -103,8 +116,11 @@ impl PrivateConfig {
             vrf_key,
             vrf_public_key: vrf_pk,
             vrf_ctx,
-            prefix_aes_key: vec![0u8; 32], 
+            prefix_aes_key: vec![0u8; 32],
             auditor_keys,
+            auditor_public_key,
+            auditor_start_pos: 0,
+            max_auditor_lag: 60_000,
             max_ahead,
             max_behind,
             reasonable_monitoring_window,

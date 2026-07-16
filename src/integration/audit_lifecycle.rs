@@ -10,7 +10,6 @@ use tokio::net::TcpListener;
 use tonic::transport::Server;
 
 #[tokio::test]
-#[ignore = "client cannot build auditing-mode TreeHeadTBS until PublicConfig carries an auditor key (conformance plan Phase 4)"]
 async fn test_full_auditor_lifecycle() -> Result<()> {
     // 1. Keys
     let (server_sk, server_vk) = crypto::generate_sig_keypair();
@@ -64,6 +63,9 @@ async fn test_full_auditor_lifecycle() -> Result<()> {
         server_sig_pk: server_vk.to_bytes(),
         vrf_public_key: vrf_pub.clone(),
         leaf_public_key: None,
+        auditor_public_key: Some(auditor_vk_bytes.clone()),
+        auditor_start_pos: 0,
+        max_auditor_lag: 60_000,
         max_ahead: 5000,
         max_behind: 5000,
         reasonable_monitoring_window: 86400000,
@@ -90,11 +92,8 @@ async fn test_full_auditor_lifecycle() -> Result<()> {
     let search_resp = user_client.search(b"user1".to_vec(), None).await?;
     let fth = search_resp.full_tree_head.unwrap();
     
-    assert!(!fth.full_auditor_tree_heads.is_empty(), "Server should return auditor signature");
-    
-    let returned_ath = &fth.full_auditor_tree_heads[0];
-    assert_eq!(returned_ath.tree_head.as_ref().unwrap().tree_size, 1);
-    assert_eq!(returned_ath.public_key, auditor_vk_bytes);
+    let returned_ath = fth.auditor_tree_head.expect("Server should return auditor tree head");
+    assert_eq!(returned_ath.tree_size, 1);
 
     println!("Auditor Lifecycle Test Passed");
     Ok(())

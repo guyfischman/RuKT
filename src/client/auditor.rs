@@ -69,11 +69,8 @@ impl KtAuditor {
         let new_log_root = self.log_accumulator.calculate_root_naive()?;
         let tree_size = self.log_accumulator.tree_size;
 
-        let auditor_pk = self.signer.verifying_key().to_bytes();
-        
         let tbs = crypto::construct_auditor_tree_head_tbs_public(
-            &self.config, 
-            &auditor_pk,
+            &self.config,
             tree_size,
             self.last_timestamp,
             &new_log_root

@@ -60,26 +60,18 @@ message Signature {
   bytes signature = 2;
 }
 
-message FullAuditorTreeHead {
-    AuditorTreeHead tree_head = 1;
-    optional bytes root_value = 2;
-    repeated bytes consistency = 3;
-    bytes public_key = 4;
-}
-
-// Draft-03 Section 10.4 Full Tree Head Verification
+// Section 11.4
 enum FullTreeHeadType {
     FULL_TREE_HEAD_TYPE_RESERVED = 0;
     FULL_TREE_HEAD_TYPE_SAME = 1;
     FULL_TREE_HEAD_TYPE_UPDATED = 2;
 }
 
+// Section 11.4
 message FullTreeHead {
     FullTreeHeadType head_type = 1;
     optional TreeHead tree_head = 2;
-    repeated bytes last = 3;
-    repeated bytes distinguished = 4;
-    repeated FullAuditorTreeHead full_auditor_tree_heads = 5;
+    optional AuditorTreeHead auditor_tree_head = 3;
 }
 
 message UpdateValue {
