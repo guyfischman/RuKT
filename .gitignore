@@ -3,3 +3,4 @@ target/
 kt_data/
 out.txt
 .DS_Store
+.devcontainer/
