@@ -390,6 +390,50 @@ impl Tree {
         Ok(session.finalize(tree_size, last)?.0)
     }
 
+    // §8.3 second algorithm / §12.3.6: the ordered walk actions. `None` target =
+    // timestamp only (a node reaching step 2); `Some(v)` = a step-5 ladder node.
+    fn owner_walk_actions(
+        &self,
+        history: &[(u32, u64)],
+        node: u64,
+        left_ts: u64,
+        right_ts: u64,
+        start: u64,
+        tree_size: u64,
+        rmw: u64,
+        out: &mut Vec<(u64, Option<u32>)>,
+    ) -> Result<()> {
+        // step 1
+        if right_ts.saturating_sub(left_ts) < rmw { return Ok(()); }
+        let node_ts = self.log.get_timestamp(node)?;
+
+        let right_child = if log_math::is_leaf(node) { None } else { log_math::ibst_right_child(node, tree_size) };
+        let left_child = if log_math::is_leaf(node) { None } else { Some(log_math::left_child(node)) };
+
+        // step 2
+        if node <= start {
+            out.push((node, None));
+            if let Some(rc) = right_child {
+                self.owner_walk_actions(history, rc, node_ts, right_ts, start, tree_size, rmw, out)?;
+            }
+            return Ok(());
+        }
+
+        // step 3
+        if let Some(lc) = left_child {
+            self.owner_walk_actions(history, lc, left_ts, node_ts, start, tree_size, rmw, out)?;
+        }
+
+        // step 5
+        out.push((node, Some(self.get_max_version_at(history, node).unwrap_or(0))));
+
+        // step 6
+        if let Some(rc) = right_child {
+            self.owner_walk_actions(history, rc, node_ts, right_ts, start, tree_size, rmw, out)?;
+        }
+        Ok(())
+    }
+
     pub async fn traverse_owner_monitor(
         &self,
         tree_size: u64,
@@ -397,13 +441,28 @@ impl Tree {
         entries: &[MonitorMapEntry],
         start: u64,
         last: u64,
-    ) -> Result<CombinedTreeProof> {
+    ) -> Result<(CombinedTreeProof, Vec<BinaryLadderStep>)> {
+        let history = self.store.get_label_history(label)?;
+        let rightmost_ts = self.log.get_timestamp(tree_size - 1)?;
+        let rmw = self.config.reasonable_monitoring_window;
+
         let mut session = TraversalSession::new(self, label);
         session.visit_frontier(tree_size).await?;
-
         self.visit_contact_entries(&mut session, entries, tree_size).await?;
-        self.visit_owner_updates(&mut session, label, start, tree_size).await?;
 
-        Ok(session.finalize(tree_size, last)?.0)
+        let mut actions = Vec::new();
+        self.owner_walk_actions(&history, log_math::root(tree_size), 0, rightmost_ts, start, tree_size, rmw, &mut actions)?;
+        for (node, target) in actions {
+            match target {
+                None => session.visit_timestamp_only(node)?,
+                Some(t) => {
+                    let ladder = search_binary_ladder(t, t, &[], &[]);
+                    session.visit(node, &ladder, None, tree_size).await?;
+                }
+            }
+        }
+
+        let (proof, ladder, _, _) = session.finalize(tree_size, last)?;
+        Ok((proof, ladder))
     }
 }

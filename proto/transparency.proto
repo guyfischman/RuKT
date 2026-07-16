@@ -176,6 +176,9 @@ message OwnerMonitorRequest {
 message OwnerMonitorResponse {
     FullTreeHead full_tree_head = 1;
     CombinedTreeProof monitor = 2;
+    // Carries the VRF proofs and commitments the §8.3 search ladders need for
+    // their non-inclusion boundary versions (as OwnerInitResponse does).
+    repeated BinaryLadderStep binary_ladder = 3;
 }
 
 // Section 13.6

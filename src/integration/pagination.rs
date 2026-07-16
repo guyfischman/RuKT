@@ -70,5 +70,13 @@ async fn test_owner_init_client_verified() -> Result<()> {
     // client verification updated the trusted head
     assert_eq!(client.state.as_ref().map(|s| s.tree_size), Some(4));
 
+    // §8.3 second algorithm: the owner monitors that no version beyond 2 appeared
+    // at any distinguished entry as the tree grows
+    client.update(b"noise2".to_vec(), b"y".to_vec()).await?;
+    client.update(b"noise3".to_vec(), b"z".to_vec()).await?;
+    let owner_resp = client.owner_monitor(owner.clone(), vec![], 3, Some(2)).await?;
+    assert!(owner_resp.monitor.is_some());
+    assert_eq!(client.state.as_ref().map(|s| s.tree_size), Some(6));
+
     Ok(())
 }

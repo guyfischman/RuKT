@@ -115,7 +115,7 @@ impl Tree {
             }
         }
 
-        let proof = self.traverse_owner_monitor(
+        let (proof, binary_ladder) = self.traverse_owner_monitor(
             tree_size, &req.label, &req.entries, req.start, req.last.unwrap_or(0),
         ).await?;
         let fth = self.get_full_tree_head(Some(Consistency { last: req.last, distinguished: None }))?;
@@ -123,6 +123,7 @@ impl Tree {
         Ok(OwnerMonitorResponse {
             full_tree_head: Some(fth),
             monitor: Some(proof),
+            binary_ladder,
         })
     }
 }

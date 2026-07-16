@@ -261,6 +261,41 @@ impl KtClient {
         let rightmost_ts = reader.timestamp(tree_size - 1)?;
 
         let mut entry_roots: BTreeMap<u64, Vec<u8>> = BTreeMap::new();
+        let new_map = self.replay_contact_ladders(
+            label, map, tree_size, rmw, &material, &mut reader, &mut entry_roots,
+        )?;
+
+        let leaf_data = reader.finish(&entry_roots)?;
+        let positions: Vec<u64> = leaf_data.iter().map(|(p, _, _)| *p).collect();
+        let leaf_hashes: Vec<Vec<u8>> = leaf_data.iter()
+            .map(|(_, ts, root)| crate::crypto::hash::log_leaf_value(*ts, root))
+            .collect();
+        let inclusion = proof.inclusion.as_ref()
+            .ok_or_else(|| anyhow!("Missing inclusion proof"))?;
+
+        self.verify_head_and_commit(
+            fth, tree_size, timestamp_opt, fth_is_updated,
+            &positions, &leaf_hashes, &inclusion.elements,
+            &std::collections::HashSet::new(),
+        )?;
+
+        self.monitoring_map.insert(label.to_vec(), new_map);
+        Ok(())
+    }
+
+    // §8.2 replay for a monitoring map; returns the updated map. Records each
+    // walked entry's prefix root into `entry_roots`.
+    fn replay_contact_ladders(
+        &self,
+        _label: &[u8],
+        map: &BTreeMap<u64, u32>,
+        tree_size: u64,
+        rmw: u64,
+        material: &HashMap<u32, (Vec<u8>, Option<Vec<u8>>)>,
+        reader: &mut ProofReader,
+        entry_roots: &mut BTreeMap<u64, Vec<u8>>,
+    ) -> Result<BTreeMap<u64, u32>> {
+        let rightmost_ts = reader.timestamp(tree_size - 1)?;
         let mut new_map = map.clone();
         let mut ladder_targets: HashMap<u64, u32> = HashMap::new();
 
@@ -273,10 +308,7 @@ impl KtClient {
                 let ts = reader.timestamp(curr)?;
                 let dist = parent_dist && bounds.1.saturating_sub(bounds.0) >= rmw;
                 ancestor_dist.insert(curr, dist);
-                if !dist {
-                    parent_dist = false;
-                    break;
-                }
+                if !dist { parent_dist = false; break; }
                 if pos < curr {
                     bounds.1 = ts;
                     curr = log_math::left_child(curr);
@@ -291,17 +323,12 @@ impl KtClient {
             let pos_dist = parent_dist && curr == pos
                 && bounds.1.saturating_sub(bounds.0) >= rmw;
 
-            // step 1 + final map cleanup: a distinguished entry needs no monitoring
-            if pos_dist {
-                new_map.remove(&pos);
-                continue;
-            }
+            // step 1
+            if pos_dist { new_map.remove(&pos); continue; }
 
             // step 2
             let mut list: Vec<u64> = log_math::ibst_direct_path(pos, tree_size)
-                .into_iter()
-                .filter(|&a| a > pos)
-                .collect();
+                .into_iter().filter(|&a| a > pos).collect();
             list.sort();
             if let Some(cut) = list.iter().position(|a| *ancestor_dist.get(a).unwrap_or(&false)) {
                 list.truncate(cut + 1);
@@ -322,9 +349,9 @@ impl KtClient {
                     break;
                 }
                 let pp = reader.prefix_proof(e)?;
-                let root = self.verify_monitoring_ladder(&material, pp, ver)
+                let root = self.verify_monitoring_ladder(material, pp, ver)
                     .with_context(|| format!("Monitoring ladder failed at entry {}", e))?;
-                record_entry_root(&mut entry_roots, e, root)?;
+                record_entry_root(entry_roots, e, root)?;
                 ladder_targets.insert(e, ver);
                 moved_to = Some(e);
             }
@@ -336,23 +363,7 @@ impl KtClient {
                 }
             }
         }
-
-        let leaf_data = reader.finish(&entry_roots)?;
-        let positions: Vec<u64> = leaf_data.iter().map(|(p, _, _)| *p).collect();
-        let leaf_hashes: Vec<Vec<u8>> = leaf_data.iter()
-            .map(|(_, ts, root)| crate::crypto::hash::log_leaf_value(*ts, root))
-            .collect();
-        let inclusion = proof.inclusion.as_ref()
-            .ok_or_else(|| anyhow!("Missing inclusion proof"))?;
-
-        self.verify_head_and_commit(
-            fth, tree_size, timestamp_opt, fth_is_updated,
-            &positions, &leaf_hashes, &inclusion.elements,
-            &std::collections::HashSet::new(),
-        )?;
-
-        self.monitoring_map.insert(label.to_vec(), new_map);
-        Ok(())
+        Ok(new_map)
     }
 
     // §8.2 step 3.2: every monitoring-ladder lookup must show inclusion, folded
@@ -715,9 +726,10 @@ impl KtClient {
         start: u64,
         greatest_version: Option<u32>,
     ) -> Result<OwnerMonitorResponse> {
+        let map: BTreeMap<u64, u32> = entries.iter().copied().collect();
         let req = OwnerMonitorRequest {
             last: self.state.as_ref().map(|s| s.tree_size),
-            label: user,
+            label: user.clone(),
             entries: entries.into_iter()
                 .map(|(position, version)| MonitorMapEntry { position, version })
                 .collect(),
@@ -727,9 +739,131 @@ impl KtClient {
 
         let resp = self.client.clone().owner_monitor(req).await?.into_inner();
 
-        self.verify_monitor_proof(resp.full_tree_head.as_ref(), resp.monitor.as_ref())?;
+        self.verify_owner_monitor(&user, &map, start, greatest_version, &resp)?;
+        self.save_state()?;
 
         Ok(resp)
+    }
+
+    // §8.3 second algorithm: contact-monitors the map entries, then replays the
+    // recursive distinguished walk proving no version beyond greatest_version.
+    fn verify_owner_monitor(
+        &mut self,
+        label: &[u8],
+        map: &BTreeMap<u64, u32>,
+        start: u64,
+        greatest_version: Option<u32>,
+        resp: &OwnerMonitorResponse,
+    ) -> Result<()> {
+        let fth = resp.full_tree_head.as_ref().ok_or(anyhow!("Missing FullTreeHead"))?;
+        let proof = resp.monitor.as_ref().ok_or(anyhow!("Missing monitor proof"))?;
+
+        let (tree_size, timestamp_opt, fth_is_updated) = self.tree_size_for_fth(fth)?;
+        if tree_size == 0 { return Err(anyhow!("Cannot monitor an empty tree")); }
+        if fth_is_updated {
+            if let Some(head_ts) = timestamp_opt {
+                self.check_timestamp_bounds(head_ts).context("TreeHead timestamp out of bounds")?;
+            }
+        }
+        let bound = greatest_version.unwrap_or(u32::MAX);
+
+        let material = self.version_material.get(label).cloned().unwrap_or_default();
+        let rmw = self.config.reasonable_monitoring_window;
+        let mut reader = ProofReader::new(proof);
+        let frontier = log_math::get_frontier(tree_size);
+        for &f in &frontier {
+            reader.timestamp(f)?;
+        }
+        let rightmost_ts = reader.timestamp(tree_size - 1)?;
+
+        let mut entry_roots: BTreeMap<u64, Vec<u8>> = BTreeMap::new();
+        let mut wire_index: HashMap<u32, usize> = HashMap::new();
+        let mut vrf_cache: HashMap<u32, Vec<u8>> = HashMap::new();
+
+        // §8.2 contact part for the map entries
+        self.replay_contact_ladders(label, map, tree_size, rmw, &material, &mut reader, &mut entry_roots)?;
+
+        // §8.3 second algorithm walk, mirroring the server's emission order
+        self.replay_owner_walk(
+            label, log_math::root(tree_size), 0, rightmost_ts, start, tree_size, rmw, bound,
+            &resp.binary_ladder, &mut reader, &mut wire_index, &mut vrf_cache, &mut entry_roots,
+        )?;
+
+        let owner_ladder_ok = resp.binary_ladder.len() == wire_index.len() || wire_index.is_empty();
+        if !owner_ladder_ok {
+            return Err(anyhow!("Owner-monitor binary ladder step count mismatch"));
+        }
+
+        let leaf_data = reader.finish(&entry_roots)?;
+        let positions: Vec<u64> = leaf_data.iter().map(|(p, _, _)| *p).collect();
+        let leaf_hashes: Vec<Vec<u8>> = leaf_data.iter()
+            .map(|(_, ts, root)| crate::crypto::hash::log_leaf_value(*ts, root))
+            .collect();
+        let inclusion = proof.inclusion.as_ref().ok_or_else(|| anyhow!("Missing inclusion proof"))?;
+
+        self.verify_head_and_commit(
+            fth, tree_size, timestamp_opt, fth_is_updated,
+            &positions, &leaf_hashes, &inclusion.elements,
+            &std::collections::HashSet::new(),
+        )?;
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn replay_owner_walk(
+        &self,
+        label: &[u8],
+        node: u64,
+        left_ts: u64,
+        right_ts: u64,
+        start: u64,
+        tree_size: u64,
+        rmw: u64,
+        bound: u32,
+        binary_ladder: &[crate::proto::transparency::BinaryLadderStep],
+        reader: &mut ProofReader,
+        wire_index: &mut HashMap<u32, usize>,
+        vrf_cache: &mut HashMap<u32, Vec<u8>>,
+        entry_roots: &mut BTreeMap<u64, Vec<u8>>,
+    ) -> Result<()> {
+        // step 1
+        if right_ts.saturating_sub(left_ts) < rmw { return Ok(()); }
+        let node_ts = reader.timestamp(node)?;
+
+        let right_child = if log_math::is_leaf(node) { None } else { log_math::ibst_right_child(node, tree_size) };
+        let left_child = if log_math::is_leaf(node) { None } else { Some(log_math::left_child(node)) };
+
+        // step 2
+        if node <= start {
+            if let Some(rc) = right_child {
+                self.replay_owner_walk(label, rc, node_ts, right_ts, start, tree_size, rmw, bound,
+                    binary_ladder, reader, wire_index, vrf_cache, entry_roots)?;
+            }
+            return Ok(());
+        }
+
+        // step 3
+        if let Some(lc) = left_child {
+            self.replay_owner_walk(label, lc, left_ts, node_ts, start, tree_size, rmw, bound,
+                binary_ladder, reader, wire_index, vrf_cache, entry_roots)?;
+        }
+
+        // step 5
+        let pp = reader.prefix_proof(node)?;
+        let (root, greatest) = self.verify_owner_ladder(
+            label, pp, wire_index, vrf_cache, binary_ladder,
+        ).with_context(|| format!("Owner-monitor ladder failed at entry {}", node))?;
+        if greatest.map_or(false, |g| g > bound) {
+            return Err(anyhow!("Unexpected version {} exceeds advertised greatest {}", greatest.unwrap(), bound));
+        }
+        record_entry_root(entry_roots, node, root)?;
+
+        // step 6
+        if let Some(rc) = right_child {
+            self.replay_owner_walk(label, rc, node_ts, right_ts, start, tree_size, rmw, bound,
+                binary_ladder, reader, wire_index, vrf_cache, entry_roots)?;
+        }
+        Ok(())
     }
 
     // --- Helpers ---
