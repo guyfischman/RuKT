@@ -65,5 +65,11 @@ async fn test_stale_client_catches_up_on_update() -> Result<()> {
     assert_eq!(latest.version, Some(2));
     assert_eq!(latest.value.unwrap().value, b"b_v2".to_vec());
 
+    // fixed-version searches ride the SAME head and replay the §7.2 walk
+    let v1 = client_a.search(label.clone(), Some(1)).await?;
+    assert_eq!(v1.value.unwrap().value, b"a_v1".to_vec());
+    let v0 = client_a.search(label.clone(), Some(0)).await?;
+    assert_eq!(v0.value.unwrap().value, b"a_v0".to_vec());
+
     Ok(())
 }

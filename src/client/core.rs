@@ -332,16 +332,6 @@ impl KtClient {
         let target_commitment = crate::crypto::hash::commit(label, target_version, &value.value, &resp.opening)
             .context("Commitment computation failed")?;
 
-        // §12.3: greatest-search emission order equals log-position order
-        if greatest {
-            let mut prev_ts = 0u64;
-            for &ts in &proof.timestamps {
-                if ts < prev_ts {
-                    return Err(anyhow!("CombinedTreeProof: timestamps are not monotonic"));
-                }
-                prev_ts = ts;
-            }
-        }
         // §11.4
         if fth_is_updated {
             if let Some(head_ts) = timestamp_opt {
@@ -351,115 +341,32 @@ impl KtClient {
         }
 
         let mut vrf_cache: HashMap<u32, Vec<u8>> = HashMap::new();
-        let mut per_proof_roots: Vec<Vec<u8>> = Vec::with_capacity(proof.prefix_proofs.len());
-        let proof_count = proof.prefix_proofs.len();
+        let mut reader = ProofReader::new(proof);
+        let frontier = log_math::get_frontier(tree_size);
 
-        for (proof_idx, prefix_proof) in proof.prefix_proofs.iter().enumerate() {
-            let is_rightmost = proof_idx == proof_count - 1;
-            let decoded = decode_search_ladder(&prefix_proof.results, target_version)
-                .with_context(|| format!("Prefix proof #{} ladder decode failed", proof_idx))?;
+        // §12.3.1
+        for &f in &frontier {
+            reader.timestamp(f)?;
+        }
 
-            let mut elements_offset = 0usize;
-            let mut computed_root: Option<Vec<u8>> = None;
+        let mut entry_roots: BTreeMap<u64, Vec<u8>> = BTreeMap::new();
 
-            for (j, lk) in decoded.iter().enumerate() {
-                // §6.3 step 2
-                if greatest {
-                    if lk.inclusion && lk.version > target_version {
-                        return Err(anyhow!(
-                            "Inclusion proof for v={} contradicts claimed greatest version {}",
-                            lk.version, target_version
-                        ));
-                    }
-                    if is_rightmost && !lk.inclusion && lk.version <= target_version {
-                        return Err(anyhow!(
-                            "Non-inclusion proof for v={} at the rightmost entry contradicts claimed greatest version {}",
-                            lk.version, target_version
-                        ));
-                    }
-                }
-
-                let next_slot = wire_index.len();
-                let wi = *wire_index.entry(lk.version).or_insert(next_slot);
-                let step = resp.binary_ladder.get(wi)
-                    .ok_or_else(|| anyhow!("Ladder step missing for v={}", lk.version))?;
-
-                if !vrf_cache.contains_key(&lk.version) {
-                    let vrf_input = construct_vrf_input(label, lk.version)
-                        .context("VRF input construction failed")?;
-                    let out = crypto::ecvrf_verify(
-                        self.config.cipher_suite,
-                        &self.vrf_pk,
-                        &vrf_input,
-                        &step.proof,
-                    ).with_context(|| format!("Binary ladder VRF verify failed at v={}", lk.version))?;
-                    vrf_cache.insert(lk.version, out.to_vec());
-                }
-
-                let commitment: Option<Vec<u8>> = if lk.inclusion {
-                    if lk.version == target_version {
-                        if let Some(server_comm) = &step.commitment {
-                            if server_comm != &target_commitment {
-                                return Err(anyhow!(
-                                    "Target-version commitment mismatch: server-supplied does not open to provided value"
-                                ));
-                            }
-                        }
-                        Some(target_commitment.clone())
-                    } else {
-                        Some(step.commitment.clone().ok_or_else(|| anyhow!(
-                            "Inclusion result for v={} but binary ladder has no commitment", lk.version
-                        ))?)
-                    }
-                } else {
-                    if step.commitment.is_some() && lk.version > target_version {
-                        return Err(anyhow!("Commitment provided for non-existent v={}", lk.version));
-                    }
-                    None
-                };
-
-                let (root, consumed) = PrefixVerifier::compute_root_from_result(
-                    prefix_proof,
-                    j,
-                    &vrf_cache[&lk.version],
-                    commitment.as_deref(),
-                    elements_offset,
-                )?;
-                elements_offset += consumed;
-
-                match &computed_root {
-                    None => computed_root = Some(root),
-                    Some(prev) if prev == &root => {}
-                    Some(prev) => {
-                        return Err(anyhow!(
-                            "PrefixProof #{} results disagree on prefix-tree root: {} vs {}",
-                            proof_idx, hex::encode(&root), hex::encode(prev)
-                        ));
-                    }
-                }
+        if greatest {
+            // §6.3
+            let rightmost = *frontier.last().unwrap();
+            for &entry in &frontier {
+                let pp = reader.prefix_proof(entry)?;
+                let (root, _) = self.verify_ladder_proof(
+                    label, pp, target_version, &mut wire_index, &mut vrf_cache,
+                    &resp.binary_ladder, &target_commitment, true, entry == rightmost,
+                ).with_context(|| format!("Ladder verification failed at entry {}", entry))?;
+                record_entry_root(&mut entry_roots, entry, root)?;
             }
-
-            if elements_offset != prefix_proof.elements.len() {
-                return Err(anyhow!(
-                    "PrefixProof #{}: {} unused proof elements",
-                    proof_idx, prefix_proof.elements.len() - elements_offset
-                ));
-            }
-
-            if greatest && is_rightmost {
-                let base = base_binary_ladder(target_version);
-                let seen: Vec<u32> = decoded.iter().map(|lk| lk.version).collect();
-                if seen != base {
-                    return Err(anyhow!(
-                        "Rightmost entry ladder incomplete: expected full base ladder for v={}",
-                        target_version
-                    ));
-                }
-            }
-
-            per_proof_roots.push(
-                computed_root.ok_or_else(|| anyhow!("PrefixProof #{} contained no results", proof_idx))?
-            );
+        } else {
+            self.simulate_fixed_search(
+                label, tree_size, target_version, &mut reader,
+                &mut wire_index, &mut vrf_cache, resp, &target_commitment, &mut entry_roots,
+            )?;
         }
 
         if resp.binary_ladder.len() != wire_index.len() {
@@ -469,70 +376,330 @@ impl KtClient {
             ));
         }
 
-        // TODO: fixed-version log-root reconstruction requires simulating the IBST walk
-        if requested_version.is_none() {
-            let frontier = log_math::get_frontier(tree_size);
-            if frontier.len() != per_proof_roots.len() {
-                return Err(anyhow!(
-                    "Greatest-version search: prefix_proofs count {} != frontier size {} for tree_size={}",
-                    per_proof_roots.len(), frontier.len(), tree_size
-                ));
+        // §12.3: exact queue consumption; proof-less entries surface prefix roots
+        let leaf_data = reader.finish(&entry_roots)?;
+
+        let positions: Vec<u64> = leaf_data.iter().map(|(p, _, _)| *p).collect();
+        let leaf_hashes: Vec<Vec<u8>> = leaf_data.iter()
+            .map(|(_, ts, root)| crate::crypto::hash::log_leaf_value(*ts, root))
+            .collect();
+
+        let inclusion = proof.inclusion.as_ref()
+            .ok_or_else(|| anyhow!("Missing inclusion proof"))?;
+
+        let (candidate_root, new_peaks) = LogVerifier::calculate_root_with_retained(
+            &positions, &leaf_hashes, tree_size, &inclusion.elements, &self.retained_subtrees,
+        ).context("Log tree root reconstruction failed")?;
+
+        if fth_is_updated {
+            let th = fth.tree_head.as_ref()
+                .ok_or_else(|| anyhow!("FullTreeHead.head_type=updated but TreeHead is missing"))?;
+            self.verify_tree_head_signature(th, tree_size, &candidate_root)
+                .context("TreeHead signature verification failed")?;
+
+            if self.config.mode == crypto::DEPLOYMENT_MODE_THIRD_PARTY_AUDITING {
+                self.verify_auditor_tree_head(fth, th, tree_size, &candidate_root)
+                    .context("AuditorTreeHead verification failed")?;
             }
-            if proof.timestamps.len() != frontier.len() {
-                return Err(anyhow!(
-                    "Greatest-version search: timestamps count {} != frontier size {} for tree_size={}",
-                    proof.timestamps.len(), frontier.len(), tree_size
-                ));
-            }
-            if !proof.prefix_roots.is_empty() {
-                return Err(anyhow!(
-                    "Greatest-version search: unexpected prefix_roots entries (expected 0)"
-                ));
-            }
 
-            let mut visited = frontier.clone();
-            visited.sort();
-
-            let leaf_hashes: Vec<Vec<u8>> = visited.iter().enumerate().map(|(i, _)| {
-                crate::crypto::hash::log_leaf_value(proof.timestamps[i], &per_proof_roots[i])
-            }).collect();
-
-            let inclusion = proof.inclusion.as_ref()
-                .ok_or_else(|| anyhow!("Missing inclusion proof"))?;
-
-            let (candidate_root, new_peaks) = LogVerifier::calculate_root_with_retained(
-                &visited,
-                &leaf_hashes,
+            self.state = Some(TrustedState {
                 tree_size,
-                &inclusion.elements,
-                &self.retained_subtrees,
-            ).context("Log tree root reconstruction failed")?;
+                root_hash: candidate_root,
+                timestamp: timestamp_opt.unwrap_or(0),
+            });
+            self.retained_subtrees = new_peaks;
+            self.save_state()?;
+        } else {
+            // SAME: the reconstruction must land exactly on the retained root
+            let prev = self.state.as_ref()
+                .ok_or_else(|| anyhow!("SAME head without previous state"))?;
+            if candidate_root != prev.root_hash {
+                return Err(anyhow!("SAME head but proofs do not reconstruct the retained root"));
+            }
+        }
 
-            if fth_is_updated {
-                let th = fth.tree_head.as_ref()
-                    .ok_or_else(|| anyhow!("FullTreeHead.head_type=updated but TreeHead is missing"))?;
-                self.verify_tree_head_signature(th, tree_size, &candidate_root)
-                    .context("TreeHead signature verification failed")?;
+        Ok(())
+    }
 
-                if self.config.mode == crypto::DEPLOYMENT_MODE_THIRD_PARTY_AUDITING {
-                    self.verify_auditor_tree_head(fth, th, tree_size, &candidate_root)
-                        .context("AuditorTreeHead verification failed")?;
+    /// Verifies one search binary ladder PrefixProof: VRF per lookup, commitment
+    /// rules, per-entry root consistency. Returns the prefix root and how the
+    /// entry's greatest version relates to the target.
+    fn verify_ladder_proof(
+        &self,
+        label: &[u8],
+        prefix_proof: &PrefixProof,
+        target_version: u32,
+        wire_index: &mut HashMap<u32, usize>,
+        vrf_cache: &mut HashMap<u32, Vec<u8>>,
+        binary_ladder: &[crate::proto::transparency::BinaryLadderStep],
+        target_commitment: &[u8],
+        greatest: bool,
+        is_rightmost: bool,
+    ) -> Result<(Vec<u8>, std::cmp::Ordering)> {
+        let decoded = decode_search_ladder(&prefix_proof.results, target_version)
+            .context("Ladder decode failed")?;
+
+        let mut relation = std::cmp::Ordering::Equal;
+        let mut elements_offset = 0usize;
+        let mut computed_root: Option<Vec<u8>> = None;
+
+        for (j, lk) in decoded.iter().enumerate() {
+            if lk.inclusion && lk.version > target_version {
+                // §6.3 step 2
+                if greatest {
+                    return Err(anyhow!(
+                        "Inclusion proof for v={} contradicts claimed greatest version {}",
+                        lk.version, target_version
+                    ));
                 }
+                relation = std::cmp::Ordering::Greater;
+            }
+            if !lk.inclusion && lk.version <= target_version {
+                if greatest && is_rightmost {
+                    return Err(anyhow!(
+                        "Non-inclusion proof for v={} at the rightmost entry contradicts claimed greatest version {}",
+                        lk.version, target_version
+                    ));
+                }
+                relation = std::cmp::Ordering::Less;
+            }
 
-                self.state = Some(TrustedState {
-                    tree_size,
-                    root_hash: candidate_root,
-                    timestamp: timestamp_opt.unwrap_or(0),
-                });
-                self.retained_subtrees = new_peaks;
-                self.save_state()?;
+            let next_slot = wire_index.len();
+            let wi = *wire_index.entry(lk.version).or_insert(next_slot);
+            let step = binary_ladder.get(wi)
+                .ok_or_else(|| anyhow!("Ladder step missing for v={}", lk.version))?;
+
+            if !vrf_cache.contains_key(&lk.version) {
+                let vrf_input = construct_vrf_input(label, lk.version)
+                    .context("VRF input construction failed")?;
+                let out = crypto::ecvrf_verify(
+                    self.config.cipher_suite,
+                    &self.vrf_pk,
+                    &vrf_input,
+                    &step.proof,
+                ).with_context(|| format!("Binary ladder VRF verify failed at v={}", lk.version))?;
+                vrf_cache.insert(lk.version, out.to_vec());
+            }
+
+            let commitment: Option<Vec<u8>> = if lk.inclusion {
+                if lk.version == target_version {
+                    if let Some(server_comm) = &step.commitment {
+                        if server_comm != target_commitment {
+                            return Err(anyhow!(
+                                "Target-version commitment mismatch: server-supplied does not open to provided value"
+                            ));
+                        }
+                    }
+                    Some(target_commitment.to_vec())
+                } else {
+                    Some(step.commitment.clone().ok_or_else(|| anyhow!(
+                        "Inclusion result for v={} but binary ladder has no commitment", lk.version
+                    ))?)
+                }
             } else {
-                // SAME: the reconstruction must land exactly on the retained root
-                let prev = self.state.as_ref()
-                    .ok_or_else(|| anyhow!("SAME head without previous state"))?;
-                if candidate_root != prev.root_hash {
-                    return Err(anyhow!("SAME head but proofs do not reconstruct the retained root"));
+                // only a greatest-version claim makes versions above the target globally absent
+                if greatest && step.commitment.is_some() && lk.version > target_version {
+                    return Err(anyhow!("Commitment provided for non-existent v={}", lk.version));
                 }
+                None
+            };
+
+            let (root, consumed) = PrefixVerifier::compute_root_from_result(
+                prefix_proof,
+                j,
+                &vrf_cache[&lk.version],
+                commitment.as_deref(),
+                elements_offset,
+            )?;
+            elements_offset += consumed;
+
+            match &computed_root {
+                None => computed_root = Some(root),
+                Some(prev) if prev == &root => {}
+                Some(prev) => {
+                    return Err(anyhow!(
+                        "PrefixProof results disagree on prefix-tree root: {} vs {}",
+                        hex::encode(&root), hex::encode(prev)
+                    ));
+                }
+            }
+        }
+
+        if elements_offset != prefix_proof.elements.len() {
+            return Err(anyhow!(
+                "PrefixProof: {} unused proof elements",
+                prefix_proof.elements.len() - elements_offset
+            ));
+        }
+
+        if greatest && is_rightmost {
+            let base = base_binary_ladder(target_version);
+            let seen: Vec<u32> = decoded.iter().map(|lk| lk.version).collect();
+            if seen != base {
+                return Err(anyhow!(
+                    "Rightmost entry ladder incomplete: expected full base ladder for v={}",
+                    target_version
+                ));
+            }
+        }
+
+        let root = computed_root.ok_or_else(|| anyhow!("PrefixProof contained no results"))?;
+        Ok((root, relation))
+    }
+
+    // §7.2 step 6.3
+    fn verify_single_lookup(
+        &self,
+        label: &[u8],
+        prefix_proof: &PrefixProof,
+        version: u32,
+        wire_index: &mut HashMap<u32, usize>,
+        vrf_cache: &mut HashMap<u32, Vec<u8>>,
+        binary_ladder: &[crate::proto::transparency::BinaryLadderStep],
+        target_commitment: &[u8],
+    ) -> Result<(Vec<u8>, bool)> {
+        if prefix_proof.results.len() != 1 {
+            return Err(anyhow!("Expected a single-lookup PrefixProof, got {} results", prefix_proof.results.len()));
+        }
+        let inclusion = prefix_proof.results[0].result_type == 1;
+
+        let next_slot = wire_index.len();
+        let wi = *wire_index.entry(version).or_insert(next_slot);
+        let step = binary_ladder.get(wi)
+            .ok_or_else(|| anyhow!("Ladder step missing for v={}", version))?;
+        if !vrf_cache.contains_key(&version) {
+            let vrf_input = construct_vrf_input(label, version)?;
+            let out = crypto::ecvrf_verify(self.config.cipher_suite, &self.vrf_pk, &vrf_input, &step.proof)
+                .with_context(|| format!("VRF verify failed at v={}", version))?;
+            vrf_cache.insert(version, out.to_vec());
+        }
+
+        let commitment = inclusion.then(|| target_commitment.to_vec());
+        let (root, consumed) = PrefixVerifier::compute_root_from_result(
+            prefix_proof, 0, &vrf_cache[&version], commitment.as_deref(), 0,
+        )?;
+        if consumed != prefix_proof.elements.len() {
+            return Err(anyhow!("Single-lookup PrefixProof has unused elements"));
+        }
+        Ok((root, inclusion))
+    }
+
+    // §7.2
+    fn simulate_fixed_search(
+        &self,
+        label: &[u8],
+        tree_size: u64,
+        target_version: u32,
+        reader: &mut ProofReader,
+        wire_index: &mut HashMap<u32, usize>,
+        vrf_cache: &mut HashMap<u32, Vec<u8>>,
+        resp: &SearchResponse,
+        target_commitment: &[u8],
+        entry_roots: &mut BTreeMap<u64, Vec<u8>>,
+    ) -> Result<()> {
+        let rightmost_ts = reader.timestamp(tree_size - 1)?;
+        let max_life = self.config.maximum_lifetime;
+        let rmw = self.config.reasonable_monitoring_window;
+        let is_expired = |ts: u64| max_life.map_or(false, |ml| rightmost_ts.saturating_sub(ts) >= ml);
+
+        let mut curr = log_math::root(tree_size);
+        // §6.1 selection interval, tracked along the walk
+        let mut bounds = (0u64, rightmost_ts);
+        let mut parent_dist = true;
+        let mut expired_on_path = false;
+        let mut encountered_expired = false;
+        // walked entries left of the current path: (position, unexpired-and-distinguished)
+        let mut left_path: Vec<(u64, bool)> = Vec::new();
+        let mut inspected: Vec<(u64, std::cmp::Ordering)> = Vec::new();
+        let mut success = false;
+
+        loop {
+            let ts = reader.timestamp(curr)?;
+            let is_dist = parent_dist && bounds.1.saturating_sub(bounds.0) >= rmw;
+            let right_child = if log_math::is_leaf(curr) { None } else { log_math::ibst_right_child(curr, tree_size) };
+
+            // step 1
+            if is_expired(ts) {
+                encountered_expired = true;
+                expired_on_path = true;
+                match right_child {
+                    Some(rc) => {
+                        left_path.push((curr, false));
+                        bounds.0 = ts;
+                        parent_dist = is_dist;
+                        curr = rc;
+                        continue;
+                    }
+                    None => break,
+                }
+            }
+
+            // step 2
+            let pp = reader.prefix_proof(curr)?;
+            let (root, relation) = self.verify_ladder_proof(
+                label, pp, target_version, wire_index, vrf_cache,
+                &resp.binary_ladder, target_commitment, false, false,
+            ).with_context(|| format!("Ladder verification failed at entry {}", curr))?;
+            record_entry_root(entry_roots, curr, root)?;
+            inspected.push((curr, relation));
+
+            match relation {
+                // step 3
+                std::cmp::Ordering::Less => match right_child {
+                    Some(rc) => {
+                        left_path.push((curr, is_dist && !is_expired(ts)));
+                        bounds.0 = ts;
+                        parent_dist = is_dist;
+                        curr = rc;
+                    }
+                    None => break,
+                },
+                // step 4
+                std::cmp::Ordering::Greater => {
+                    if log_math::is_leaf(curr) { break; }
+                    bounds.1 = ts;
+                    parent_dist = is_dist;
+                    curr = log_math::left_child(curr);
+                }
+                // step 5
+                std::cmp::Ordering::Equal => {
+                    if !expired_on_path
+                        || is_dist
+                        || left_path.iter().any(|&(_, d)| d)
+                    {
+                        success = true;
+                        break;
+                    }
+                    return Err(anyhow!("Requested version of the label is expired"));
+                }
+            }
+        }
+
+        // step 6
+        if !success {
+            let identified = inspected.iter()
+                .filter(|&&(_, r)| r == std::cmp::Ordering::Greater)
+                .map(|&(p, _)| p)
+                .min()
+                .ok_or_else(|| anyhow!("Requested version of the label does not exist"))?;
+
+            if encountered_expired {
+                // conservative: only entries on the walked path are decidable
+                let covered = left_path.iter().any(|&(p, d)| p < identified && d);
+                if !covered {
+                    return Err(anyhow!("Requested version of the label is expired"));
+                }
+            }
+
+            let pp = reader.prefix_proof(identified)?;
+            let (root, included) = self.verify_single_lookup(
+                label, pp, target_version, wire_index, vrf_cache,
+                &resp.binary_ladder, target_commitment,
+            ).with_context(|| format!("Target-version lookup failed at entry {}", identified))?;
+            record_entry_root(entry_roots, identified, root)?;
+
+            if !included {
+                return Err(anyhow!("Requested version of the label does not exist"));
             }
         }
 
@@ -676,6 +843,94 @@ impl KtClient {
             }
         }
         Err(last_err.unwrap_or_else(|| anyhow!("No matching TreeHead signature")))
+    }
+}
+
+/// Consumes a CombinedTreeProof's fields as queues in the order the executed
+/// algorithm requests them (Appendix C), enforcing position-wise timestamp
+/// monotonicity and exact consumption.
+struct ProofReader<'a> {
+    proof: &'a CombinedTreeProof,
+    ts_idx: usize,
+    proof_idx: usize,
+    assigned_ts: BTreeMap<u64, u64>,
+}
+
+impl<'a> ProofReader<'a> {
+    fn new(proof: &'a CombinedTreeProof) -> Self {
+        Self { proof, ts_idx: 0, proof_idx: 0, assigned_ts: BTreeMap::new() }
+    }
+
+    fn timestamp(&mut self, pos: u64) -> Result<u64> {
+        if let Some(&ts) = self.assigned_ts.get(&pos) {
+            return Ok(ts);
+        }
+        let ts = *self.proof.timestamps.get(self.ts_idx)
+            .ok_or_else(|| anyhow!("Timestamp queue exhausted at entry {}", pos))?;
+        self.ts_idx += 1;
+
+        // §12.3: monotonic by log position
+        if let Some((_, &left_ts)) = self.assigned_ts.range(..pos).next_back() {
+            if ts < left_ts {
+                return Err(anyhow!("Timestamp for entry {} is older than an entry to its left", pos));
+            }
+        }
+        if let Some((_, &right_ts)) = self.assigned_ts.range(pos + 1..).next() {
+            if ts > right_ts {
+                return Err(anyhow!("Timestamp for entry {} is newer than an entry to its right", pos));
+            }
+        }
+        self.assigned_ts.insert(pos, ts);
+        Ok(ts)
+    }
+
+    fn prefix_proof(&mut self, _pos: u64) -> Result<&'a PrefixProof> {
+        let pp = self.proof.prefix_proofs.get(self.proof_idx)
+            .ok_or_else(|| anyhow!("PrefixProof queue exhausted"))?;
+        self.proof_idx += 1;
+        Ok(pp)
+    }
+
+    /// Enforces exact consumption of all three queues and returns, per touched
+    /// entry in position order, its timestamp and prefix root (from the entry's
+    /// verified proof, or popped from prefix_roots for proof-less entries).
+    fn finish(self, entry_roots: &BTreeMap<u64, Vec<u8>>) -> Result<Vec<(u64, u64, Vec<u8>)>> {
+        if self.ts_idx != self.proof.timestamps.len() {
+            return Err(anyhow!("{} unused timestamps in proof", self.proof.timestamps.len() - self.ts_idx));
+        }
+        if self.proof_idx != self.proof.prefix_proofs.len() {
+            return Err(anyhow!("{} unused PrefixProofs in proof", self.proof.prefix_proofs.len() - self.proof_idx));
+        }
+
+        let mut roots_idx = 0usize;
+        let mut out = Vec::with_capacity(self.assigned_ts.len());
+        for (&pos, &ts) in &self.assigned_ts {
+            let root = if let Some(root) = entry_roots.get(&pos) {
+                root.clone()
+            } else {
+                let root = self.proof.prefix_roots.get(roots_idx)
+                    .ok_or_else(|| anyhow!("Missing prefix root for entry {}", pos))?;
+                roots_idx += 1;
+                root.clone()
+            };
+            out.push((pos, ts, root));
+        }
+        if roots_idx != self.proof.prefix_roots.len() {
+            return Err(anyhow!("{} unused prefix roots in proof", self.proof.prefix_roots.len() - roots_idx));
+        }
+        Ok(out)
+    }
+}
+
+fn record_entry_root(map: &mut BTreeMap<u64, Vec<u8>>, entry: u64, root: Vec<u8>) -> Result<()> {
+    match map.get(&entry) {
+        Some(prev) if prev != &root => Err(anyhow!(
+            "PrefixProofs for entry {} disagree on the prefix-tree root", entry
+        )),
+        _ => {
+            map.insert(entry, root);
+            Ok(())
+        }
     }
 }
 
