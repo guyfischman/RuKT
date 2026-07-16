@@ -26,9 +26,10 @@ async fn test_credential_flow() -> Result<()> {
     })).await?;
 
     let cred = service.get_credential(tonic::Request::new(GetCredentialRequest {
-        search_key: user.clone(),
+        label: user.clone(),
     })).await?.into_inner();
 
+    assert_eq!(cred.label, user);
     assert_eq!(cred.version, 0);
     assert!(cred.value.is_some());
     assert!(!cred.binary_ladder.is_empty());

@@ -204,20 +204,30 @@ enum CredentialType {
     CREDENTIAL_TYPE_PROVISIONAL = 2;
 }
 
+// Section 14
 message Credential {
-    CredentialType credential_type = 1;
+    bytes label = 1;
     uint32 version = 2;
     bytes opening = 3;
     UpdateValue value = 4;
     repeated BinaryLadderStep binary_ladder = 5;
-    uint64 tree_size = 6;
-    PrefixProof distinguished = 7;
-    FullTreeHead full_tree_head = 8;
-    CombinedTreeProof search = 9;
+    uint64 position = 6;
+    CredentialType credential_type = 7;
+    // standard
+    optional PrefixProof distinguished = 8;
+    // provisional
+    optional TreeHead tree_head = 9;
+    optional CombinedTreeProof search = 10;
+}
+
+// Section 14.2
+message CredentialUpdate {
+    uint64 position = 1;
+    CombinedTreeProof monitor = 2;
 }
 
 message GetCredentialRequest {
-    bytes search_key = 1;
+    bytes label = 1;
 }
 
 // --- Draft-03 Section 13.2 Auditing ---

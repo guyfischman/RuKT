@@ -17,7 +17,7 @@ impl Tree {
             return Err(anyhow!("Log is empty"));
         }
 
-        let label_history = self.store.get_label_history(&req.search_key)?;
+        let label_history = self.store.get_label_history(&req.label)?;
         let target_ver = if let Some((v, _)) = label_history.last() {
             *v
         } else {
@@ -47,14 +47,14 @@ impl Tree {
             // STANDARD CREDENTIAL
             let snapshot_log_idx = dist_node;
             let n = self.get_max_version_at(&label_history, snapshot_log_idx);
-            
+
             let versions = greatest_version_binary_ladder(target_ver, n, true, &[], &[], &[]);
             let prefix_ptr = self.log.get_prefix_ptr(dist_node)?;
-            let (prefix_proof, ladder_results) = self.generate_ladder_proof(prefix_ptr, tree_size, &req.search_key, &versions).await?;
-            
+            let (prefix_proof, ladder_results) = self.generate_ladder_proof(prefix_ptr, tree_size, &req.label, &versions).await?;
+
             let mut steps = Vec::new();
             for (ver, res) in ladder_results {
-                let (_, vrf_proof) = self.config.vrf_prove(&req.search_key, ver)?;
+                let (_, vrf_proof) = self.config.vrf_prove(&req.label, ver)?;
                 let comm: Option<Vec<u8>> = res.map(|r| r.commitment);
                 steps.push(BinaryLadderStep {
                     proof: vrf_proof,
@@ -63,16 +63,17 @@ impl Tree {
             }
 
             Ok(Credential {
-                credential_type: CredentialType::Standard.into(),
+                label: req.label.clone(),
                 version: target_ver,
                 opening: open_vec,
                 value: val_struct,
                 binary_ladder: steps,
-                
-                tree_size, 
+                position: dist_node,
+                credential_type: CredentialType::Standard.into(),
+
                 distinguished: Some(prefix_proof),
-                
-                full_tree_head: None,
+
+                tree_head: None,
                 search: None,
             })
 
@@ -95,13 +96,13 @@ impl Tree {
 
                 let versions = greatest_version_binary_ladder(target_ver, n, false, &[], &[], &[]);
                 let prefix_ptr = self.log.get_prefix_ptr(node)?;
-                let (proof_struct, results) = self.generate_ladder_proof(prefix_ptr, tree_size, &req.search_key, &versions).await?;
-                
+                let (proof_struct, results) = self.generate_ladder_proof(prefix_ptr, tree_size, &req.label, &versions).await?;
+
                 builder.add_proof(node, proof_struct);
 
                 if node == *frontier.last().unwrap() {
                     for (ver, res) in results {
-                         let (_, vrf_proof) = self.config.vrf_prove(&req.search_key, ver)?;
+                         let (_, vrf_proof) = self.config.vrf_prove(&req.label, ver)?;
                          let comm: Option<Vec<u8>> = res.map(|r| r.commitment);
                          binary_ladder_steps.push(BinaryLadderStep {
                              proof: vrf_proof,
@@ -110,24 +111,26 @@ impl Tree {
                     }
                 }
             }
-            
+
             let sorted_nodes = builder.get_sorted_nodes();
             let inc_proof = self.log.get_batch_proof_for_nodes(sorted_nodes, tree_size, 0)?;
             let combined = builder.finalize(InclusionProof { elements: inc_proof });
 
-            let fth = self.get_full_tree_head(None)?;
+            // §14.2: anchored to the most recent distinguished entry, if any exists yet
+            let position = distinguished_nodes.last().copied().unwrap_or(0);
 
             Ok(Credential {
-                credential_type: CredentialType::Provisional.into(),
+                label: req.label.clone(),
                 version: target_ver,
                 opening: open_vec,
                 value: val_struct,
                 binary_ladder: binary_ladder_steps,
-                
-                tree_size: 0,
+                position,
+                credential_type: CredentialType::Provisional.into(),
+
                 distinguished: None,
-                
-                full_tree_head: Some(fth),
+
+                tree_head: self.latest.clone(),
                 search: Some(combined),
             })
         }

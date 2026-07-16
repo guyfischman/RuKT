@@ -686,7 +686,7 @@ fn bench_protocol_credential(c: &mut Criterion) {
         b.iter(|| {
             rt.block_on(async {
                 let req = tonic::Request::new(GetCredentialRequest {
-                    search_key: make_label(0),
+                    label: make_label(0),
                 });
                 service.get_credential(req).await.unwrap()
             })
@@ -817,7 +817,7 @@ fn bench_git_forge_scenario(c: &mut Criterion) {
         b.iter(|| {
             rt.block_on(async {
                 let req = tonic::Request::new(GetCredentialRequest {
-                    search_key: make_label(42),
+                    label: make_label(42),
                 });
                 service.get_credential(req).await.unwrap()
             })
