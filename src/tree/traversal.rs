@@ -67,7 +67,7 @@ impl Tree {
         let mut expired_on_path = false;
         let mut encountered_expired = false;
         let mut left_path: Vec<(u64, u64)> = Vec::new();
-        let mut inspected: Vec<(u64, u32)> = Vec::new();
+        let mut inspected: Vec<(u64, Option<u32>)> = Vec::new();
         let mut success = false;
 
         loop {
@@ -86,20 +86,24 @@ impl Tree {
                 }
             }
 
-            // step 2
-            let n = self.get_max_version_at(&label_history, curr);
-            let versions = search_binary_ladder(target_ver, n, &[], &[]);
-            let extract = if n == target_ver { Some(target_ver) } else { None };
+            // step 2; an absent label yields a single terminating non-inclusion lookup
+            let n_opt = self.get_max_version_at(&label_history, curr);
+            let versions = match n_opt {
+                Some(n) => search_binary_ladder(target_ver, n, &[], &[]),
+                None => vec![0],
+            };
+            let n = n_opt;
+            let extract = if n == Some(target_ver) { Some(target_ver) } else { None };
             session.visit(curr, &versions, extract, tree_size).await?;
             inspected.push((curr, n));
 
-            if n < target_ver {
+            if n.map_or(true, |n| n < target_ver) {
                 // step 3
                 match right_child {
                     Some(rc) => { left_path.push((curr, ts)); curr = rc; }
                     None => break,
                 }
-            } else if n > target_ver {
+            } else if n.map_or(false, |n| n > target_ver) {
                 // step 4
                 if log_math::is_leaf(curr) { break; }
                 curr = log_math::left_child(curr);
@@ -119,7 +123,7 @@ impl Tree {
         // step 6
         if !success {
             let identified = inspected.iter()
-                .filter(|&&(_, n)| n > target_ver)
+                .filter(|&&(_, n)| n.map_or(false, |n| n > target_ver))
                 .map(|&(node, _)| node)
                 .min();
             let identified = match identified {
@@ -173,12 +177,15 @@ impl Tree {
         let frontier = self.get_frontier_nodes(tree_size, 0);
         let rightmost = *frontier.last().unwrap();
         // every entry's ladder targets the claimed greatest version
-        let target = self.get_max_version_at(&label_history, rightmost);
+        let target = self.get_max_version_at(&label_history, rightmost)
+            .ok_or_else(|| anyhow::Error::new(KtError::Unavailable))?;
 
         for &node in &frontier {
-            let n = self.get_max_version_at(&label_history, node);
+            let versions = match self.get_max_version_at(&label_history, node) {
+                Some(n) => search_binary_ladder(target, n, &[], &[]),
+                None => vec![0],
+            };
             let extract = if node == rightmost { Some(target) } else { None };
-            let versions = search_binary_ladder(target, n, &[], &[]);
 
             session.visit(node, &versions, extract, tree_size).await?;
         }

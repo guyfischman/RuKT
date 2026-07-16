@@ -108,6 +108,14 @@ async fn test_full_auditor_lifecycle() -> Result<()> {
     restarted.process_and_sign().await?;
     assert_eq!(restarted.log_accumulator.tree_size, 4);
 
+    // 7. The log advances past the auditor; the client verifies the lagging
+    // auditor signature against the derived root at the auditor's tree size
+    let _ = user_client.update(b"user5".to_vec(), b"val5".to_vec()).await?;
+    let resp = user_client.search(b"user5".to_vec(), None).await?;
+    let lagging_ath = resp.full_tree_head.unwrap().auditor_tree_head.unwrap();
+    assert_eq!(lagging_ath.tree_size, 4);
+    assert_eq!(user_client.state.as_ref().unwrap().tree_size, 5);
+
     println!("Auditor Lifecycle Test Passed");
     Ok(())
 }

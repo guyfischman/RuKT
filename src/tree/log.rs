@@ -240,10 +240,11 @@ impl LogTree {
     }
 
     pub fn get_batch_proof_for_nodes(
-        &self, 
-        leaf_indices: Vec<u64>, 
-        tree_size: u64, 
-        last_size: u64
+        &self,
+        leaf_indices: Vec<u64>,
+        tree_size: u64,
+        last_size: u64,
+        boundaries: &[u64],
     ) -> Result<Vec<Vec<u8>>> {
         let root_id = log_math::merkle_root(tree_size);
         let mut skeleton = HashSet::new();
@@ -251,6 +252,17 @@ impl LogTree {
             let node_id = idx * 2;
             skeleton.insert(node_id);
             let mut curr = node_id;
+            for _ in 0..64 {
+                if curr == root_id { break; }
+                curr = log_math::parent(curr, tree_size);
+                skeleton.insert(curr);
+            }
+        }
+        // descend along boundary paths without providing their leaves, so the
+        // proof carries what a client needs to derive historical sub-roots
+        for &boundary in boundaries {
+            if boundary == 0 || boundary > tree_size { continue; }
+            let mut curr = (boundary - 1) * 2;
             for _ in 0..64 {
                 if curr == root_id { break; }
                 curr = log_math::parent(curr, tree_size);

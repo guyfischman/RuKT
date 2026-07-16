@@ -144,10 +144,17 @@ impl<'a> TraversalSession<'a> {
 
         let mut visited: Vec<u64> = self.ts_order.clone();
         visited.sort();
+        // in auditing mode the client also derives the root at the auditor's size
+        let boundaries: Vec<u64> = self.tree.auditors.values()
+            .map(|ath| ath.tree_size)
+            .max()
+            .into_iter()
+            .collect();
         let inc_proof = self.tree.log.get_batch_proof_for_nodes(
             visited,
             tree_size,
-            consistency_last
+            consistency_last,
+            &boundaries,
         )?;
 
         combined.inclusion = Some(InclusionProof { elements: inc_proof });

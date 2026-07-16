@@ -46,22 +46,14 @@ impl Tree {
         self.log.get_consistency_proof(m, n)
     }
 
-    pub(crate) fn get_max_version_at(&self, label_history: &[(u32, u64)], log_pos: u64) -> u32 {
-        let mut max_ver = 0;
-        let mut found = false;
-        
+    /// None when no version of the label existed in the entry's prefix tree.
+    pub(crate) fn get_max_version_at(&self, label_history: &[(u32, u64)], log_pos: u64) -> Option<u32> {
         let log_prefix_ptr = self.log.get_prefix_ptr(log_pos).unwrap_or(0);
 
-        for (ver, ptr) in label_history {
-            if *ptr <= log_prefix_ptr {
-                if !found || *ver > max_ver {
-                    max_ver = *ver;
-                    found = true;
-                }
-            }
-        }
-        if !found { return 0; } 
-        max_ver
+        label_history.iter()
+            .filter(|(_, ptr)| *ptr <= log_prefix_ptr)
+            .map(|(ver, _)| *ver)
+            .max()
     }
     
     pub(crate) fn exists_at(&self, label_history: &[(u32, u64)], log_pos: u64) -> bool {
@@ -146,10 +138,10 @@ impl Tree {
             }
 
             if current_limit > 0 {
-                let snapshot_idx = node_idx; 
-                let ver = self.get_max_version_at(history, snapshot_idx);
-                results.push((node_idx, ver));
-                current_limit -= 1;
+                if let Some(ver) = self.get_max_version_at(history, node_idx) {
+                    results.push((node_idx, ver));
+                    current_limit -= 1;
+                }
             }
 
             if current_limit > 0 && !log_math::is_leaf(node_idx) {

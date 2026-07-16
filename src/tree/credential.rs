@@ -46,7 +46,8 @@ impl Tree {
         if let Some(dist_node) = standard_node {
             // STANDARD CREDENTIAL
             let snapshot_log_idx = dist_node;
-            let n = self.get_max_version_at(&label_history, snapshot_log_idx);
+            let n = self.get_max_version_at(&label_history, snapshot_log_idx)
+                .ok_or_else(|| anyhow!("Label absent at its own distinguished entry"))?;
 
             let versions = search_binary_ladder(target_ver, n, &[], &[]);
             let prefix_ptr = self.log.get_prefix_ptr(dist_node)?;
@@ -91,9 +92,10 @@ impl Tree {
                 builder.add_node(node, ts);
 
                 let snapshot_idx = node;
-                let n = self.get_max_version_at(&label_history, snapshot_idx);
-
-                let versions = search_binary_ladder(target_ver, n, &[], &[]);
+                let versions = match self.get_max_version_at(&label_history, snapshot_idx) {
+                    Some(n) => search_binary_ladder(target_ver, n, &[], &[]),
+                    None => vec![0],
+                };
                 let prefix_ptr = self.log.get_prefix_ptr(node)?;
                 let (proof_struct, results) = self.generate_ladder_proof(prefix_ptr, tree_size, &req.label, &versions).await?;
 
@@ -111,7 +113,7 @@ impl Tree {
             }
 
             let sorted_nodes = builder.get_sorted_nodes();
-            let inc_proof = self.log.get_batch_proof_for_nodes(sorted_nodes, tree_size, 0)?;
+            let inc_proof = self.log.get_batch_proof_for_nodes(sorted_nodes, tree_size, 0, &[])?;
             let combined = builder.finalize(InclusionProof { elements: inc_proof });
 
             // §14.2: anchored to the most recent distinguished entry, if any exists yet

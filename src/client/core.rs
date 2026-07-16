@@ -345,35 +345,11 @@ impl KtClient {
         let inclusion = proof.inclusion.as_ref()
             .ok_or_else(|| anyhow!("Missing inclusion proof"))?;
 
-        let (candidate_root, new_peaks) = LogVerifier::calculate_root_with_retained(
-            &positions, &leaf_hashes, tree_size, &inclusion.elements, &self.retained_subtrees,
-        ).context("Log tree root reconstruction failed")?;
-
-        if fth_is_updated {
-            let th = fth.tree_head.as_ref()
-                .ok_or_else(|| anyhow!("FullTreeHead.head_type=updated but TreeHead is missing"))?;
-            self.verify_tree_head_signature(th, tree_size, &candidate_root)
-                .context("TreeHead signature verification failed")?;
-            if self.config.mode == crypto::DEPLOYMENT_MODE_THIRD_PARTY_AUDITING {
-                self.verify_auditor_tree_head(fth, th, tree_size, &candidate_root)
-                    .context("AuditorTreeHead verification failed")?;
-            }
-            let mut head_bytes = Vec::new();
-            prost::Message::encode(th, &mut head_bytes)?;
-            self.retained_head = Some(head_bytes);
-            self.state = Some(TrustedState {
-                tree_size,
-                root_hash: candidate_root,
-                timestamp: timestamp_opt.unwrap_or(0),
-            });
-            self.retained_subtrees = new_peaks;
-        } else {
-            let prev = self.state.as_ref()
-                .ok_or_else(|| anyhow!("SAME head without previous state"))?;
-            if candidate_root != prev.root_hash {
-                return Err(anyhow!("SAME head but proofs do not reconstruct the retained root"));
-            }
-        }
+        self.verify_head_and_commit(
+            fth, tree_size, timestamp_opt, fth_is_updated,
+            &positions, &leaf_hashes, &inclusion.elements,
+            &std::collections::HashSet::new(),
+        )?;
 
         self.monitoring_map.insert(label.to_vec(), new_map);
         Ok(())
@@ -507,44 +483,16 @@ impl KtClient {
 
         // §14.2.1: also derive the full subtrees at each walked distinguished
         // entry; they anchor provisional credentials and §10.2 root values
-        let mut wanted: std::collections::HashSet<u64> =
-            log_math::get_roots(tree_size).into_iter().collect();
+        let mut extra_wanted: std::collections::HashSet<u64> = std::collections::HashSet::new();
         for &p in &walked {
-            wanted.extend(log_math::get_roots(p + 1));
+            extra_wanted.extend(log_math::get_roots(p + 1));
         }
 
-        let (candidate_root, captured) = LogVerifier::calculate_root_capturing(
-            &positions, &leaf_hashes, tree_size, &inclusion.elements, &self.retained_subtrees, &wanted,
-        ).context("Log tree root reconstruction failed")?;
-        let new_peaks: BTreeMap<u64, Vec<u8>> = log_math::get_roots(tree_size).into_iter()
-            .filter_map(|n| captured.get(&n).map(|v| (n, v.clone())))
-            .collect();
-
-        if fth_is_updated {
-            let th = fth.tree_head.as_ref()
-                .ok_or_else(|| anyhow!("FullTreeHead.head_type=updated but TreeHead is missing"))?;
-            self.verify_tree_head_signature(th, tree_size, &candidate_root)
-                .context("TreeHead signature verification failed")?;
-            if self.config.mode == crypto::DEPLOYMENT_MODE_THIRD_PARTY_AUDITING {
-                self.verify_auditor_tree_head(fth, th, tree_size, &candidate_root)
-                    .context("AuditorTreeHead verification failed")?;
-            }
-            let mut head_bytes = Vec::new();
-            prost::Message::encode(th, &mut head_bytes)?;
-            self.retained_head = Some(head_bytes);
-            self.state = Some(TrustedState {
-                tree_size,
-                root_hash: candidate_root,
-                timestamp: timestamp_opt.unwrap_or(0),
-            });
-            self.retained_subtrees = new_peaks;
-        } else {
-            let prev = self.state.as_ref()
-                .ok_or_else(|| anyhow!("SAME head without previous state"))?;
-            if candidate_root != prev.root_hash {
-                return Err(anyhow!("SAME head but proofs do not reconstruct the retained root"));
-            }
-        }
+        let captured = self.verify_head_and_commit(
+            fth, tree_size, timestamp_opt, fth_is_updated,
+            &positions, &leaf_hashes, &inclusion.elements,
+            &extra_wanted,
+        )?;
 
         let by_pos: BTreeMap<u64, (u64, Vec<u8>)> = leaf_data.into_iter()
             .map(|(p, ts, root)| (p, (ts, root)))
@@ -797,39 +745,12 @@ impl KtClient {
         let inclusion = proof.inclusion.as_ref()
             .ok_or_else(|| anyhow!("Missing inclusion proof"))?;
 
-        let (candidate_root, new_peaks) = LogVerifier::calculate_root_with_retained(
-            &positions, &leaf_hashes, tree_size, &inclusion.elements, &self.retained_subtrees,
-        ).context("Log tree root reconstruction failed")?;
-
-        if fth_is_updated {
-            let th = fth.tree_head.as_ref()
-                .ok_or_else(|| anyhow!("FullTreeHead.head_type=updated but TreeHead is missing"))?;
-            self.verify_tree_head_signature(th, tree_size, &candidate_root)
-                .context("TreeHead signature verification failed")?;
-
-            if self.config.mode == crypto::DEPLOYMENT_MODE_THIRD_PARTY_AUDITING {
-                self.verify_auditor_tree_head(fth, th, tree_size, &candidate_root)
-                    .context("AuditorTreeHead verification failed")?;
-            }
-
-            let mut head_bytes = Vec::new();
-            prost::Message::encode(th, &mut head_bytes)?;
-            self.retained_head = Some(head_bytes);
-            self.state = Some(TrustedState {
-                tree_size,
-                root_hash: candidate_root,
-                timestamp: timestamp_opt.unwrap_or(0),
-            });
-            self.retained_subtrees = new_peaks;
-            self.save_state()?;
-        } else {
-            // SAME: the reconstruction must land exactly on the retained root
-            let prev = self.state.as_ref()
-                .ok_or_else(|| anyhow!("SAME head without previous state"))?;
-            if candidate_root != prev.root_hash {
-                return Err(anyhow!("SAME head but proofs do not reconstruct the retained root"));
-            }
-        }
+        self.verify_head_and_commit(
+            fth, tree_size, timestamp_opt, fth_is_updated,
+            &positions, &leaf_hashes, &inclusion.elements,
+            &std::collections::HashSet::new(),
+        )?;
+        self.save_state()?;
 
         // §8.2: the terminal entry enters the monitoring map, with the material
         // needed to re-verify monitoring ladders later
@@ -1219,6 +1140,69 @@ impl KtClient {
         Ok(())
     }
 
+
+    /// Shared tail of every verified operation: reconstruct the log root with
+    /// retained subtrees (capturing any additionally wanted node values), verify
+    /// signatures, and commit the new state.
+    fn verify_head_and_commit(
+        &mut self,
+        fth: &FullTreeHead,
+        tree_size: u64,
+        timestamp_opt: Option<u64>,
+        fth_is_updated: bool,
+        positions: &[u64],
+        leaf_hashes: &[Vec<u8>],
+        inclusion_elements: &[Vec<u8>],
+        extra_wanted: &std::collections::HashSet<u64>,
+    ) -> Result<BTreeMap<u64, Vec<u8>>> {
+        let mut wanted: std::collections::HashSet<u64> =
+            log_math::get_roots(tree_size).into_iter().collect();
+        wanted.extend(extra_wanted.iter().copied());
+
+        let auditing = self.config.mode == crypto::DEPLOYMENT_MODE_THIRD_PARTY_AUDITING;
+        if auditing {
+            if let Some(ath) = fth.auditor_tree_head.as_ref() {
+                if ath.tree_size > 0 && ath.tree_size < tree_size {
+                    wanted.extend(log_math::get_roots(ath.tree_size));
+                }
+            }
+        }
+
+        let (candidate_root, captured) = LogVerifier::calculate_root_capturing(
+            positions, leaf_hashes, tree_size, inclusion_elements, &self.retained_subtrees, &wanted,
+        ).context("Log tree root reconstruction failed")?;
+
+        if fth_is_updated {
+            let th = fth.tree_head.as_ref()
+                .ok_or_else(|| anyhow!("FullTreeHead.head_type=updated but TreeHead is missing"))?;
+            self.verify_tree_head_signature(th, tree_size, &candidate_root)
+                .context("TreeHead signature verification failed")?;
+            if auditing {
+                self.verify_auditor_tree_head(fth, th, tree_size, &candidate_root, &captured)
+                    .context("AuditorTreeHead verification failed")?;
+            }
+
+            let mut head_bytes = Vec::new();
+            prost::Message::encode(th, &mut head_bytes)?;
+            self.retained_head = Some(head_bytes);
+            self.state = Some(TrustedState {
+                tree_size,
+                root_hash: candidate_root,
+                timestamp: timestamp_opt.unwrap_or(0),
+            });
+            self.retained_subtrees = log_math::get_roots(tree_size).into_iter()
+                .filter_map(|n| captured.get(&n).map(|v| (n, v.clone())))
+                .collect();
+        } else {
+            let prev = self.state.as_ref()
+                .ok_or_else(|| anyhow!("SAME head without previous state"))?;
+            if candidate_root != prev.root_hash {
+                return Err(anyhow!("SAME head but proofs do not reconstruct the retained root"));
+            }
+        }
+        Ok(captured)
+    }
+
     // §11.3
     fn verify_auditor_tree_head(
         &mut self,
@@ -1226,6 +1210,7 @@ impl KtClient {
         th: &crate::proto::transparency::TreeHead,
         tree_size: u64,
         candidate_root: &[u8],
+        captured: &BTreeMap<u64, Vec<u8>>,
     ) -> Result<()> {
         let ath = fth.auditor_tree_head.as_ref()
             .ok_or_else(|| anyhow!("Missing AuditorTreeHead in third-party-auditing mode"))?;
@@ -1251,18 +1236,27 @@ impl KtClient {
         }
 
         // step 4
-        if ath.tree_size == tree_size {
-            let tbs = crypto::construct_auditor_tree_head_tbs_public(
-                &self.config, ath.tree_size, auditor_ts, candidate_root,
-            ).context("AuditorTreeHeadTBS construction failed")?;
-            let apk_bytes = self.config.auditor_public_key.as_deref()
-                .ok_or_else(|| anyhow!("No auditor public key configured"))?;
-            let apk = ServiceVerifyingKey::from_bytes(apk_bytes)
-                .context("Invalid auditor public key")?;
-            verify_data(&apk, &tbs, &ath.signature)
-                .context("Auditor signature verification failed")?;
-        }
-        // TODO: reconstruct the root at ath.tree_size from retained subtrees when it lags
+        let auditor_root = if ath.tree_size == tree_size {
+            candidate_root.to_vec()
+        } else {
+            let peaks: Option<Vec<Vec<u8>>> = log_math::get_roots(ath.tree_size).into_iter()
+                .map(|n| captured.get(&n).cloned())
+                .collect();
+            let peaks = peaks.ok_or_else(|| anyhow!(
+                "Proof lacks the data to derive the root at the auditor's tree size"
+            ))?;
+            LogVerifier::accumulator_from_peaks(ath.tree_size, peaks)?
+        };
+
+        let tbs = crypto::construct_auditor_tree_head_tbs_public(
+            &self.config, ath.tree_size, auditor_ts, &auditor_root,
+        ).context("AuditorTreeHeadTBS construction failed")?;
+        let apk_bytes = self.config.auditor_public_key.as_deref()
+            .ok_or_else(|| anyhow!("No auditor public key configured"))?;
+        let apk = ServiceVerifyingKey::from_bytes(apk_bytes)
+            .context("Invalid auditor public key")?;
+        verify_data(&apk, &tbs, &ath.signature)
+            .context("Auditor signature verification failed")?;
 
         self.auditor_head = Some((ath.tree_size, auditor_ts));
         Ok(())
