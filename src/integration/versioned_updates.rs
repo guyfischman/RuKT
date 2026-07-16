@@ -1,6 +1,6 @@
 use crate::db::RocksDbStore;
 use crate::service::KeyTransparencyImpl;
-use crate::proto::transparency::{UpdateRequest, TreeSearchRequest, SignedUpdateRequest};
+use crate::proto::transparency::{UpdateRequest, SearchRequest, SignedUpdateRequest};
 use crate::proto::kt::key_transparency_service_server::KeyTransparencyService; 
 use crate::crypto::{self, CIPHER_SUITE_KT_128_SHA256_ED25519};
 use anyhow::Result;
@@ -40,9 +40,9 @@ async fn test_versioned_updates() -> Result<()> {
         signature: vec![],
     })).await?;
 
-    let search_resp = service.search(tonic::Request::new(TreeSearchRequest {
-        search_key: user_a.clone(),
-        consistency: None,
+    let search_resp = service.search(tonic::Request::new(SearchRequest {
+        label: user_a.clone(),
+        last: None,
         version: None,
     })).await?;
 

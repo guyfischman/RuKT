@@ -91,20 +91,21 @@ message Consistency {
     optional uint64 distinguished = 2;
 }
 
-message TreeSearchRequest {
-    bytes search_key = 1;
-    Consistency consistency = 2;
+// Section 13.1
+message SearchRequest {
+    optional uint64 last = 1;
+    bytes label = 2;
     optional uint32 version = 3;
 }
 
-message TreeSearchResponse {
-    FullTreeHead tree_head = 1;
-    repeated BinaryLadderStep binary_ladder = 3;
-    CombinedTreeProof search = 4;
-    bytes opening = 5;
-    UpdateValue value = 6;
-    // Section 12.1
-    optional uint32 version = 7;
+// Section 13.1
+message SearchResponse {
+    FullTreeHead full_tree_head = 1;
+    optional uint32 version = 2;
+    bytes opening = 3;
+    UpdateValue value = 4;
+    repeated BinaryLadderStep binary_ladder = 5;
+    CombinedTreeProof search = 6;
 }
 
 message UpdateRequest {

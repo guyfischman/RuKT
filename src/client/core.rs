@@ -1,9 +1,9 @@
 use tonic::transport::Channel;
 use crate::proto::kt::key_transparency_service_client::KeyTransparencyServiceClient;
 use crate::proto::transparency::{
-    TreeSearchRequest, UpdateRequest, SignedUpdateRequest,
+    SearchRequest, UpdateRequest, SignedUpdateRequest,
     MonitorRequest, MonitorLabel, Consistency,
-    UpdateResponse, TreeSearchResponse, MonitorResponse,
+    UpdateResponse, SearchResponse, MonitorResponse,
     FullTreeHead, FullTreeHeadType, PrefixProof,
 };
 use crate::crypto::{self, PublicConfig, ServiceVerifyingKey, construct_tree_head_tbs_public, verify_data, construct_vrf_input};
@@ -64,10 +64,10 @@ impl KtClient {
         Ok(resp)
     }
 
-    pub async fn search(&mut self, user: Vec<u8>, version: Option<u32>) -> Result<TreeSearchResponse> {
-        let req = TreeSearchRequest {
-            search_key: user.clone(),
-            consistency: self.get_consistency_req(),
+    pub async fn search(&mut self, user: Vec<u8>, version: Option<u32>) -> Result<SearchResponse> {
+        let req = SearchRequest {
+            last: self.get_consistency_req().and_then(|c| c.last),
+            label: user.clone(),
             version,
         };
 
@@ -145,9 +145,9 @@ impl KtClient {
         &mut self,
         label: &[u8],
         requested_version: Option<u32>,
-        resp: &TreeSearchResponse,
+        resp: &SearchResponse,
     ) -> Result<()> {
-        let fth = resp.tree_head.as_ref().ok_or(anyhow!("Missing FullTreeHead"))?;
+        let fth = resp.full_tree_head.as_ref().ok_or(anyhow!("Missing FullTreeHead"))?;
         let proof = resp.search.as_ref().ok_or(anyhow!("Missing CombinedTreeProof"))?;
 
         let (tree_size, timestamp_opt, fth_is_updated) = self.tree_size_for_fth(fth)?;

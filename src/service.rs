@@ -2,8 +2,8 @@
 use crate::proto::kt::key_transparency_service_server::KeyTransparencyService;
 use crate::proto::kt::{AuditRequest, AuditResponse, TreeSizeResponse};
 use crate::proto::transparency::{
-    TreeSearchRequest, TreeSearchResponse, 
-    SignedUpdateRequest, UpdateResponse, 
+    SearchRequest, SearchResponse,
+    SignedUpdateRequest, UpdateResponse,
     MonitorRequest, MonitorResponse,
     AuditorTreeHead,
     GetCredentialRequest, Credential
@@ -121,7 +121,7 @@ impl KeyTransparencyService for KeyTransparencyImpl {
         Ok(Response::new(()))
     }
 
-    async fn search(&self, request: Request<TreeSearchRequest>) -> Result<Response<TreeSearchResponse>, Status> {
+    async fn search(&self, request: Request<SearchRequest>) -> Result<Response<SearchResponse>, Status> {
         let req = request.into_inner();
         let tree_guard = self.tree.read().await; // CHANGED: Read lock
             

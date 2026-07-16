@@ -22,7 +22,7 @@ use rukt::service::KeyTransparencyImpl;
 use rukt::bulk;
 use rukt::tree::Tree;
 use rukt::proto::transparency::{
-    UpdateRequest, SignedUpdateRequest, TreeSearchRequest,
+    UpdateRequest, SignedUpdateRequest, SearchRequest,
     MonitorRequest, MonitorLabel, MonitorMapEntry, Consistency,
     GetCredentialRequest,
 };
@@ -416,7 +416,7 @@ fn bench_crypto_primitives(c: &mut Criterion) {
     group.bench_function("hmac_commitment", |b| {
         b.iter(|| {
             let opening = generate_random_opening();
-            commit(b"alice@example.com", &value, &opening).unwrap()
+            commit(b"alice@example.com", 0, &value, &opening).unwrap()
         })
     });
 
@@ -530,9 +530,9 @@ fn bench_protocol_search(c: &mut Criterion) {
             |b, _| {
                 b.iter(|| {
                     rt.block_on(async {
-                        let req = tonic::Request::new(TreeSearchRequest {
-                            search_key: make_label(0),
-                            consistency: None,
+                        let req = tonic::Request::new(SearchRequest {
+                            label: make_label(0),
+                            last: None,
                             version: None,
                         });
                         service.search(req).await.unwrap()
@@ -547,9 +547,9 @@ fn bench_protocol_search(c: &mut Criterion) {
             |b, _| {
                 b.iter(|| {
                     rt.block_on(async {
-                        let req = tonic::Request::new(TreeSearchRequest {
-                            search_key: make_label(0),
-                            consistency: None,
+                        let req = tonic::Request::new(SearchRequest {
+                            label: make_label(0),
+                            last: None,
                             version: Some(0),
                         });
                         service.search(req).await.unwrap()
@@ -576,9 +576,9 @@ fn bench_protocol_search_versioned(c: &mut Criterion) {
             |b, _| {
                 b.iter(|| {
                     rt.block_on(async {
-                        let req = tonic::Request::new(TreeSearchRequest {
-                            search_key: make_label(0),
-                            consistency: None,
+                        let req = tonic::Request::new(SearchRequest {
+                            label: make_label(0),
+                            last: None,
                             version: None,
                         });
                         service.search(req).await.unwrap()
@@ -595,9 +595,9 @@ fn bench_protocol_search_versioned(c: &mut Criterion) {
             |b, _| {
                 b.iter(|| {
                     rt.block_on(async {
-                        let req = tonic::Request::new(TreeSearchRequest {
-                            search_key: make_label(0),
-                            consistency: None,
+                        let req = tonic::Request::new(SearchRequest {
+                            label: make_label(0),
+                            last: None,
                             version: Some(rv),
                         });
                         service.search(req).await.unwrap()
@@ -811,9 +811,9 @@ fn bench_concurrent_reads(c: &mut Criterion) {
                         for i in 0..n {
                             let svc = service.clone();
                             handles.push(tokio::spawn(async move {
-                                let req = tonic::Request::new(TreeSearchRequest {
-                                    search_key: make_label(i % 500),
-                                    consistency: None,
+                                let req = tonic::Request::new(SearchRequest {
+                                    label: make_label(i % 500),
+                                    last: None,
                                     version: None,
                                 });
                                 let _ = svc.search(req).await;
@@ -842,9 +842,9 @@ fn bench_git_forge_scenario(c: &mut Criterion) {
     group.bench_function("verify_developer_key", |b| {
         b.iter(|| {
             rt.block_on(async {
-                let req = tonic::Request::new(TreeSearchRequest {
-                    search_key: make_label(42),
-                    consistency: None,
+                let req = tonic::Request::new(SearchRequest {
+                    label: make_label(42),
+                    last: None,
                     version: None,
                 });
                 service.search(req).await.unwrap()
@@ -894,9 +894,9 @@ fn bench_git_forge_scenario(c: &mut Criterion) {
                 for i in 0..10 {
                     let svc = service.clone();
                     handles.push(tokio::spawn(async move {
-                        let req = tonic::Request::new(TreeSearchRequest {
-                            search_key: make_label(i * 50),
-                            consistency: None,
+                        let req = tonic::Request::new(SearchRequest {
+                            label: make_label(i * 50),
+                            last: None,
                             version: None,
                         });
                         let _ = svc.search(req).await;
@@ -978,9 +978,9 @@ fn bench_enterprise_rotation(c: &mut Criterion) {
     group.bench_function("search_after_rotations", |b| {
         b.iter(|| {
             rt.block_on(async {
-                let req = tonic::Request::new(TreeSearchRequest {
-                    search_key: make_label(25),
-                    consistency: None,
+                let req = tonic::Request::new(SearchRequest {
+                    label: make_label(25),
+                    last: None,
                     version: None,
                 });
                 service.search(req).await.unwrap()
@@ -994,9 +994,9 @@ fn bench_enterprise_rotation(c: &mut Criterion) {
     group.bench_function("search_fixed_vrand", |b| {
         b.iter(|| {
             rt.block_on(async {
-                let req = tonic::Request::new(TreeSearchRequest {
-                    search_key: make_label(25),
-                    consistency: None,
+                let req = tonic::Request::new(SearchRequest {
+                    label: make_label(25),
+                    last: None,
                     version: Some(ent_rv),
                 });
                 service.search(req).await.unwrap()
@@ -1038,9 +1038,9 @@ fn bench_scalability(c: &mut Criterion) {
             |b, &n| {
                 b.iter(|| {
                     rt.block_on(async {
-                        let req = tonic::Request::new(TreeSearchRequest {
-                            search_key: make_label(n / 2),
-                            consistency: None,
+                        let req = tonic::Request::new(SearchRequest {
+                            label: make_label(n / 2),
+                            last: None,
                             version: None,
                         });
                         service.search(req).await.unwrap()
@@ -1094,14 +1094,14 @@ fn bench_proof_sizes(c: &mut Criterion) {
             |b, _| {
                 b.iter(|| {
                     rt.block_on(async {
-                        let req = tonic::Request::new(TreeSearchRequest {
-                            search_key: make_label(0),
-                            consistency: None,
+                        let req = tonic::Request::new(SearchRequest {
+                            label: make_label(0),
+                            last: None,
                             version: None,
                         });
                         let resp = service.search(req).await.unwrap().into_inner();
                         let mut size = 0usize;
-                        if let Some(th) = &resp.tree_head {
+                        if let Some(th) = &resp.full_tree_head {
                             size += prost::Message::encoded_len(th);
                         }
                         if let Some(s) = &resp.search {
@@ -1229,9 +1229,9 @@ fn bench_comparative_analysis(c: &mut Criterion) {
             |b, _| {
                 b.iter(|| {
                     rt.block_on(async {
-                        let req = tonic::Request::new(TreeSearchRequest {
-                            search_key: make_label(0),
-                            consistency: None,
+                        let req = tonic::Request::new(SearchRequest {
+                            label: make_label(0),
+                            last: None,
                             version: None,
                         });
                         service.search(req).await.unwrap()
@@ -1246,9 +1246,9 @@ fn bench_comparative_analysis(c: &mut Criterion) {
             |b, _| {
                 b.iter(|| {
                     rt.block_on(async {
-                        let req = tonic::Request::new(TreeSearchRequest {
-                            search_key: make_label(0),
-                            consistency: None,
+                        let req = tonic::Request::new(SearchRequest {
+                            label: make_label(0),
+                            last: None,
                             version: Some(0),
                         });
                         service.search(req).await.unwrap()
@@ -1273,9 +1273,9 @@ fn bench_comparative_analysis(c: &mut Criterion) {
             |b, _| {
                 b.iter(|| {
                     rt.block_on(async {
-                        let req = tonic::Request::new(TreeSearchRequest {
-                            search_key: make_label(0),
-                            consistency: None,
+                        let req = tonic::Request::new(SearchRequest {
+                            label: make_label(0),
+                            last: None,
                             version: None,
                         });
                         service.search(req).await.unwrap()
@@ -1292,9 +1292,9 @@ fn bench_comparative_analysis(c: &mut Criterion) {
             |b, _| {
                 b.iter(|| {
                     rt.block_on(async {
-                        let req = tonic::Request::new(TreeSearchRequest {
-                            search_key: make_label(0),
-                            consistency: None,
+                        let req = tonic::Request::new(SearchRequest {
+                            label: make_label(0),
+                            last: None,
                             version: Some(rv),
                         });
                         service.search(req).await.unwrap()
@@ -1313,14 +1313,14 @@ fn bench_comparative_analysis(c: &mut Criterion) {
 
         // One-time measurement: print actual byte count
         let one_shot_bytes = rt.block_on(async {
-            let req = tonic::Request::new(TreeSearchRequest {
-                search_key: make_label(0),
-                consistency: None,
+            let req = tonic::Request::new(SearchRequest {
+                label: make_label(0),
+                last: None,
                 version: None,
             });
             let resp = service.search(req).await.unwrap().into_inner();
             let mut size = 0usize;
-            if let Some(th) = &resp.tree_head { size += prost::Message::encoded_len(th); }
+            if let Some(th) = &resp.full_tree_head { size += prost::Message::encoded_len(th); }
             if let Some(s) = &resp.search { size += prost::Message::encoded_len(s); }
             size += resp.opening.len();
             for step in &resp.binary_ladder { size += prost::Message::encoded_len(step); }
@@ -1334,14 +1334,14 @@ fn bench_comparative_analysis(c: &mut Criterion) {
             |b, _| {
                 b.iter(|| {
                     rt.block_on(async {
-                        let req = tonic::Request::new(TreeSearchRequest {
-                            search_key: make_label(0),
-                            consistency: None,
+                        let req = tonic::Request::new(SearchRequest {
+                            label: make_label(0),
+                            last: None,
                             version: None,
                         });
                         let resp = service.search(req).await.unwrap().into_inner();
                         let mut size = 0usize;
-                        if let Some(th) = &resp.tree_head {
+                        if let Some(th) = &resp.full_tree_head {
                             size += prost::Message::encoded_len(th);
                         }
                         if let Some(s) = &resp.search {
@@ -1366,14 +1366,14 @@ fn bench_comparative_analysis(c: &mut Criterion) {
 
         // One-time measurement: print actual byte count
         let one_shot_bytes = rt.block_on(async {
-            let req = tonic::Request::new(TreeSearchRequest {
-                search_key: make_label(0),
-                consistency: None,
+            let req = tonic::Request::new(SearchRequest {
+                label: make_label(0),
+                last: None,
                 version: None,
             });
             let resp = service.search(req).await.unwrap().into_inner();
             let mut size = 0usize;
-            if let Some(th) = &resp.tree_head { size += prost::Message::encoded_len(th); }
+            if let Some(th) = &resp.full_tree_head { size += prost::Message::encoded_len(th); }
             if let Some(s) = &resp.search { size += prost::Message::encoded_len(s); }
             size += resp.opening.len();
             for step in &resp.binary_ladder { size += prost::Message::encoded_len(step); }
@@ -1387,14 +1387,14 @@ fn bench_comparative_analysis(c: &mut Criterion) {
             |b, _| {
                 b.iter(|| {
                     rt.block_on(async {
-                        let req = tonic::Request::new(TreeSearchRequest {
-                            search_key: make_label(0),
-                            consistency: None,
+                        let req = tonic::Request::new(SearchRequest {
+                            label: make_label(0),
+                            last: None,
                             version: None,
                         });
                         let resp = service.search(req).await.unwrap().into_inner();
                         let mut size = 0usize;
-                        if let Some(th) = &resp.tree_head {
+                        if let Some(th) = &resp.full_tree_head {
                             size += prost::Message::encoded_len(th);
                         }
                         if let Some(s) = &resp.search {
@@ -1433,9 +1433,9 @@ fn bench_large_scale_scalability(c: &mut Criterion) {
             |b, &n| {
                 b.iter(|| {
                     rt.block_on(async {
-                        let req = tonic::Request::new(TreeSearchRequest {
-                            search_key: make_label(n / 2),
-                            consistency: None,
+                        let req = tonic::Request::new(SearchRequest {
+                            label: make_label(n / 2),
+                            last: None,
                             version: None,
                         });
                         service.search(req).await.unwrap()
@@ -1452,9 +1452,9 @@ fn bench_large_scale_scalability(c: &mut Criterion) {
             |b, &n| {
                 b.iter(|| {
                     rt.block_on(async {
-                        let req = tonic::Request::new(TreeSearchRequest {
-                            search_key: make_label(n / 2),
-                            consistency: None,
+                        let req = tonic::Request::new(SearchRequest {
+                            label: make_label(n / 2),
+                            last: None,
                             version: Some(0),
                         });
                         service.search(req).await.unwrap()
@@ -1490,14 +1490,14 @@ fn bench_large_scale_scalability(c: &mut Criterion) {
 
         // Search response payload size (bytes on the wire)
         let one_shot_bytes = rt.block_on(async {
-            let req = tonic::Request::new(TreeSearchRequest {
-                search_key: make_label(n / 2),
-                consistency: None,
+            let req = tonic::Request::new(SearchRequest {
+                label: make_label(n / 2),
+                last: None,
                 version: None,
             });
             let resp = service.search(req).await.unwrap().into_inner();
             let mut size = 0usize;
-            if let Some(th) = &resp.tree_head { size += prost::Message::encoded_len(th); }
+            if let Some(th) = &resp.full_tree_head { size += prost::Message::encoded_len(th); }
             if let Some(s) = &resp.search { size += prost::Message::encoded_len(s); }
             size += resp.opening.len();
             for step in &resp.binary_ladder { size += prost::Message::encoded_len(step); }
@@ -1511,14 +1511,14 @@ fn bench_large_scale_scalability(c: &mut Criterion) {
             |b, &n| {
                 b.iter(|| {
                     rt.block_on(async {
-                        let req = tonic::Request::new(TreeSearchRequest {
-                            search_key: make_label(n / 2),
-                            consistency: None,
+                        let req = tonic::Request::new(SearchRequest {
+                            label: make_label(n / 2),
+                            last: None,
                             version: None,
                         });
                         let resp = service.search(req).await.unwrap().into_inner();
                         let mut size = 0usize;
-                        if let Some(th) = &resp.tree_head {
+                        if let Some(th) = &resp.full_tree_head {
                             size += prost::Message::encoded_len(th);
                         }
                         if let Some(s) = &resp.search {
@@ -1596,9 +1596,9 @@ fn bench_gdpr(c: &mut Criterion) {
     group.bench_function("search_with_lifetime_enabled", |b| {
         b.iter(|| {
             rt.block_on(async {
-                let req = tonic::Request::new(TreeSearchRequest {
-                    search_key: make_label(1),
-                    consistency: None,
+                let req = tonic::Request::new(SearchRequest {
+                    label: make_label(1),
+                    last: None,
                     version: None,
                 });
                 service.search(req).await.unwrap()
@@ -1627,9 +1627,9 @@ fn bench_gdpr(c: &mut Criterion) {
     group.bench_function("search_after_forget", |b| {
         b.iter(|| {
             rt.block_on(async {
-                let req = tonic::Request::new(TreeSearchRequest {
-                    search_key: make_label(50),
-                    consistency: None,
+                let req = tonic::Request::new(SearchRequest {
+                    label: make_label(50),
+                    last: None,
                     version: Some(0),
                 });
                 let _ = service.search(req).await;
@@ -1650,9 +1650,9 @@ fn bench_gdpr(c: &mut Criterion) {
     group.bench_function("search_expired_entry", |b| {
         b.iter(|| {
             rt.block_on(async {
-                let req = tonic::Request::new(TreeSearchRequest {
-                    search_key: make_label(0),
-                    consistency: None,
+                let req = tonic::Request::new(SearchRequest {
+                    label: make_label(0),
+                    last: None,
                     version: Some(0),
                 });
                 let _ = service.search(req).await;

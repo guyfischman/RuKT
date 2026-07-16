@@ -1,6 +1,6 @@
 use crate::db::RocksDbStore;
 use crate::service::KeyTransparencyImpl;
-use crate::proto::transparency::{UpdateRequest, TreeSearchRequest, SignedUpdateRequest};
+use crate::proto::transparency::{UpdateRequest, SearchRequest, SignedUpdateRequest};
 use crate::proto::kt::key_transparency_service_server::KeyTransparencyService;
 use crate::crypto::{self, CIPHER_SUITE_KT_128_SHA256_ED25519};
 use anyhow::Result;
@@ -78,9 +78,9 @@ async fn test_multi_label_batching_collisions() -> Result<()> {
     // 4. Verify Sequentiality via Search
     // We expect versions 0 to 9 to exist.
     for i in 0..num_concurrent_updates {
-        let req = tonic::Request::new(TreeSearchRequest {
-            search_key: label.clone(),
-            consistency: None,
+        let req = tonic::Request::new(SearchRequest {
+            label: label.clone(),
+            last: None,
             version: Some(i as u32),
         });
 
@@ -106,9 +106,9 @@ async fn test_multi_label_batching_collisions() -> Result<()> {
     println!("Total updates: {}, Final Tree Size: {}", num_concurrent_updates, current_tree_size);
     
     // 6. Verify Greatest Version
-    let req_latest = tonic::Request::new(TreeSearchRequest {
-        search_key: label.clone(),
-        consistency: None,
+    let req_latest = tonic::Request::new(SearchRequest {
+        label: label.clone(),
+        last: None,
         version: None, // Greatest
     });
     

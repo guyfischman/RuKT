@@ -1,6 +1,6 @@
 use crate::db::RocksDbStore;
 use crate::service::KeyTransparencyImpl;
-use crate::proto::transparency::{UpdateRequest, MonitorRequest, MonitorLabel, TreeSearchRequest, SignedUpdateRequest};
+use crate::proto::transparency::{UpdateRequest, MonitorRequest, MonitorLabel, SearchRequest, SignedUpdateRequest};
 use crate::proto::kt::key_transparency_service_server::KeyTransparencyService;
 use crate::crypto::{self, CIPHER_SUITE_KT_128_SHA256_ED25519};
 use anyhow::Result;
@@ -42,13 +42,13 @@ async fn test_pagination_full_lifecycle() -> Result<()> {
 
     // 3. User verifies initial state via Search (TOFU - Trust On First Use)
     // This gives the user their "Anchor" at Log Index 0.
-    let search_resp = service.search(tonic::Request::new(TreeSearchRequest {
-        search_key: user_id.clone(),
-        consistency: None,
+    let search_resp = service.search(tonic::Request::new(SearchRequest {
+        label: user_id.clone(),
+        last: None,
         version: None,
     })).await?.into_inner();
 
-    let initial_tree_size = search_resp.tree_head.as_ref().unwrap().tree_head.as_ref().unwrap().tree_size;
+    let initial_tree_size = search_resp.full_tree_head.as_ref().unwrap().tree_head.as_ref().unwrap().tree_size;
     assert_eq!(initial_tree_size, 1);
     
     // User's local state: verified up to index 0.

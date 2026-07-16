@@ -27,7 +27,7 @@ service KeyTransparencyService {
   rpc SetAuditorHead(transparency.AuditorTreeHead) returns (google.protobuf.Empty) {}
 
   // User endpoints
-  rpc Search(transparency.TreeSearchRequest) returns (transparency.TreeSearchResponse) {}
+  rpc Search(transparency.SearchRequest) returns (transparency.SearchResponse) {}
   rpc Update(transparency.SignedUpdateRequest) returns (transparency.UpdateResponse) {}
   rpc Monitor(transparency.MonitorRequest) returns (transparency.MonitorResponse) {}
   

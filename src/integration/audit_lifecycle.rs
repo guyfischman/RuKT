@@ -88,7 +88,7 @@ async fn test_full_auditor_lifecycle() -> Result<()> {
     // User client performs search. The response should now contain the AuditorTreeHead.
     println!("--- User Checks for Signed Head ---");
     let search_resp = user_client.search(b"user1".to_vec(), None).await?;
-    let fth = search_resp.tree_head.unwrap();
+    let fth = search_resp.full_tree_head.unwrap();
     
     assert!(!fth.full_auditor_tree_heads.is_empty(), "Server should return auditor signature");
     

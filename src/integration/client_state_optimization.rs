@@ -1,6 +1,6 @@
 use crate::db::RocksDbStore;
 use crate::service::KeyTransparencyImpl;
-use crate::proto::transparency::{UpdateRequest, TreeSearchRequest, Consistency, SignedUpdateRequest};
+use crate::proto::transparency::{UpdateRequest, SearchRequest, Consistency, SignedUpdateRequest};
 use crate::proto::kt::key_transparency_service_server::KeyTransparencyService;
 use crate::crypto::{self, CIPHER_SUITE_KT_128_SHA256_ED25519};
 use anyhow::Result;
@@ -34,12 +34,9 @@ async fn test_inclusion_proof_optimization() -> Result<()> {
     let target_user = b"user_2".to_vec();
 
     // Cold Client
-    let req_cold = tonic::Request::new(TreeSearchRequest {
-        search_key: target_user.clone(),
-        consistency: Some(Consistency { 
-            last: Some(0), 
-            distinguished: None 
-        }),
+    let req_cold = tonic::Request::new(SearchRequest {
+        label: target_user.clone(),
+        last: Some(0),
         version: None,
     });
 
@@ -49,12 +46,9 @@ async fn test_inclusion_proof_optimization() -> Result<()> {
     assert_eq!(proof_cold.elements.len(), 2);
 
     // Warm Client
-    let req_warm = tonic::Request::new(TreeSearchRequest {
-        search_key: target_user.clone(),
-        consistency: Some(Consistency { 
-            last: Some(2), 
-            distinguished: None 
-        }),
+    let req_warm = tonic::Request::new(SearchRequest {
+        label: target_user.clone(),
+        last: Some(2),
         version: None,
     });
 

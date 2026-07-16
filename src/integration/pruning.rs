@@ -1,6 +1,6 @@
 use crate::db::RocksDbStore;
 use crate::service::KeyTransparencyImpl;
-use crate::proto::transparency::{UpdateRequest, TreeSearchRequest, SignedUpdateRequest};
+use crate::proto::transparency::{UpdateRequest, SearchRequest, SignedUpdateRequest};
 use crate::proto::kt::key_transparency_service_server::KeyTransparencyService;
 use crate::crypto::{self, CIPHER_SUITE_KT_128_SHA256_ED25519};
 use anyhow::Result;
@@ -55,9 +55,9 @@ async fn test_pruning_expiration() -> Result<()> {
     let old_ts = current_ts - 20_000; 
     db.put_value(ts_key_0, old_ts.to_be_bytes().to_vec())?;
 
-    let req_v0 = tonic::Request::new(TreeSearchRequest {
-        search_key: user_id.clone(),
-        consistency: None,
+    let req_v0 = tonic::Request::new(SearchRequest {
+        label: user_id.clone(),
+        last: None,
         version: Some(0),
     });
 
@@ -66,9 +66,9 @@ async fn test_pruning_expiration() -> Result<()> {
     let err = result_v0.err().unwrap();
     assert!(err.to_string().contains("expired"));
 
-    let req_v1 = tonic::Request::new(TreeSearchRequest {
-        search_key: user_id.clone(),
-        consistency: None,
+    let req_v1 = tonic::Request::new(SearchRequest {
+        label: user_id.clone(),
+        last: None,
         version: Some(1),
     });
 

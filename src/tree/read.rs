@@ -1,6 +1,6 @@
 use super::Tree;
 use crate::proto::transparency::{
-    TreeSearchResponse, FullTreeHead, Consistency, FullAuditorTreeHead, 
+    SearchResponse, FullTreeHead, Consistency, FullAuditorTreeHead,
     AuditorTreeHead as PbAuditorTreeHead, FullTreeHeadType, UpdateValue
 };
 use crate::tree::errors::KtError;
@@ -196,12 +196,12 @@ impl Tree {
         })
     }
 
-    pub async fn search(&self, req: &crate::proto::transparency::TreeSearchRequest) -> Result<TreeSearchResponse> {
+    pub async fn search(&self, req: &crate::proto::transparency::SearchRequest) -> Result<SearchResponse> {
         let tree_size = self.latest.as_ref().map(|th| th.tree_size).unwrap_or(0);
 
         if tree_size == 0 {
-             return Ok(TreeSearchResponse {
-                 tree_head: Some(self.get_full_tree_head(None)?),
+             return Ok(SearchResponse {
+                 full_tree_head: Some(self.get_full_tree_head(None)?),
                  binary_ladder: vec![],
                  search: Some(crate::proto::transparency::CombinedTreeProof::default()),
                  opening: vec![],
@@ -210,20 +210,20 @@ impl Tree {
              });
         }
 
-        let last = req.consistency.as_ref().and_then(|c| c.last).unwrap_or(0);
+        let last = req.last.unwrap_or(0);
         let is_greatest = req.version.is_none();
 
-        // Delegate to unified traversal logic in traversal.rs
         let result_data = if let Some(target_ver) = req.version {
-            self.traverse_fixed_search(tree_size, &req.search_key, target_ver, last).await?
+            self.traverse_fixed_search(tree_size, &req.label, target_ver, last).await?
         } else {
-            self.traverse_greatest_search(tree_size, &req.search_key, last).await?
+            self.traverse_greatest_search(tree_size, &req.label, last).await?
         };
 
-        let fth = self.get_full_tree_head(req.consistency.clone())?;
+        let consistency = Consistency { last: req.last, distinguished: None };
+        let fth = self.get_full_tree_head(Some(consistency))?;
 
-        Ok(TreeSearchResponse {
-            tree_head: Some(fth),
+        Ok(SearchResponse {
+            full_tree_head: Some(fth),
             binary_ladder: result_data.binary_ladder,
             search: Some(result_data.combined_proof),
             opening: result_data.opening,

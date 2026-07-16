@@ -1,6 +1,6 @@
 use crate::db::RocksDbStore;
 use crate::service::KeyTransparencyImpl;
-use crate::proto::transparency::{UpdateRequest, TreeSearchRequest, SignedUpdateRequest};
+use crate::proto::transparency::{UpdateRequest, SearchRequest, SignedUpdateRequest};
 use crate::proto::kt::key_transparency_service_server::KeyTransparencyService; 
 use crate::crypto::{self, CIPHER_SUITE_KT_128_SHA256_ED25519};
 use anyhow::Result;
@@ -47,9 +47,9 @@ async fn test_batcher_logic() -> Result<()> {
 
     for i in 0..10 {
         let user = format!("user_{}", i).as_bytes().to_vec();
-        let resp = service.search(tonic::Request::new(TreeSearchRequest {
-            search_key: user,
-            consistency: None,
+        let resp = service.search(tonic::Request::new(SearchRequest {
+            label: user,
+            last: None,
             version: None,
         })).await?.into_inner();
         
