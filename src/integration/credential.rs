@@ -74,5 +74,23 @@ async fn test_credential_offline_verification() -> Result<()> {
     bad.value.as_mut().unwrap().value = b"forged".to_vec();
     assert!(recipient.verify_credential(&bad).is_err());
 
+    // a label whose version postdates every distinguished entry gets a
+    // provisional credential, verified against the anchor's retained subtrees;
+    // the extra noise entry keeps it right of the (always distinguished) root
+    sender.update(b"noise_3".to_vec(), b"z".to_vec()).await?;
+    let fresh = b"fresh_user".to_vec();
+    sender.update(fresh.clone(), b"fresh_val".to_vec()).await?;
+
+    let prov = sender.get_credential(fresh.clone()).await?;
+    assert_eq!(prov.credential_type, CredentialType::Provisional as i32);
+    assert!(prov.position < prov.tree_head.as_ref().unwrap().tree_size);
+
+    recipient.distinguished(None).await?;
+    recipient.verify_credential(&prov)?;
+
+    let mut bad_prov = prov.clone();
+    bad_prov.value.as_mut().unwrap().value = b"forged".to_vec();
+    assert!(recipient.verify_credential(&bad_prov).is_err());
+
     Ok(())
 }

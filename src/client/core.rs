@@ -1102,7 +1102,7 @@ impl KtClient {
         use crate::proto::transparency::CredentialType;
 
         // common step 1
-        let (_, dist_root, _) = self.distinguished_entries.get(&cred.position)
+        let (_, dist_root, anchor_peaks) = self.distinguished_entries.get(&cred.position)
             .ok_or_else(|| anyhow!("Credential anchors to an unknown distinguished log entry"))?;
 
         // common step 2 (§11.5)
@@ -1112,30 +1112,101 @@ impl KtClient {
         let target_commitment = crate::crypto::hash::commit(&cred.label, cred.version, &value.value, &cred.opening)
             .context("Commitment computation failed")?;
 
-        if cred.credential_type != CredentialType::Standard as i32 {
-            // TODO: provisional credentials need per-distinguished-entry retained log subtrees
-            return Err(anyhow!("Provisional credential verification is not yet supported"));
-        }
-
-        // §14.1
-        let pp = cred.distinguished.as_ref()
-            .ok_or_else(|| anyhow!("Standard credential missing distinguished PrefixProof"))?;
-
         let mut wire_index: HashMap<u32, usize> = HashMap::new();
         let mut vrf_cache: HashMap<u32, Vec<u8>> = HashMap::new();
         let mut material: HashMap<u32, Option<Vec<u8>>> = HashMap::new();
 
-        let (root, _) = self.verify_ladder_proof(
-            &cred.label, pp, cred.version, &mut wire_index, &mut vrf_cache,
-            &cred.binary_ladder, &target_commitment, true, true, &mut material,
-        ).context("Credential ladder verification failed")?;
+        if cred.credential_type == CredentialType::Standard as i32 {
+            // §14.1
+            let pp = cred.distinguished.as_ref()
+                .ok_or_else(|| anyhow!("Standard credential missing distinguished PrefixProof"))?;
 
+            let (root, _) = self.verify_ladder_proof(
+                &cred.label, pp, cred.version, &mut wire_index, &mut vrf_cache,
+                &cred.binary_ladder, &target_commitment, true, true, &mut material,
+            ).context("Credential ladder verification failed")?;
+
+            if cred.binary_ladder.len() != wire_index.len() {
+                return Err(anyhow!("Credential binary ladder has unused steps"));
+            }
+            if &root != dist_root {
+                return Err(anyhow!("Credential does not bind to the retained distinguished entry"));
+            }
+
+            return Ok(());
+        }
+
+        // §14.2: a greatest-version search over a view extending the anchor,
+        // verified without touching any of the client's own state
+        if cred.credential_type != CredentialType::Provisional as i32 {
+            return Err(anyhow!("Unknown credential type"));
+        }
+        let th = cred.tree_head.as_ref()
+            .ok_or_else(|| anyhow!("Provisional credential missing TreeHead"))?;
+        let proof = cred.search.as_ref()
+            .ok_or_else(|| anyhow!("Provisional credential missing search proof"))?;
+
+        // step 1
+        if th.tree_size <= cred.position {
+            return Err(anyhow!("Provisional view does not extend past the anchor"));
+        }
+        let tree_size = th.tree_size;
+
+        for (i, &v) in base_binary_ladder(cred.version).iter().enumerate() {
+            wire_index.insert(v, i);
+        }
         if cred.binary_ladder.len() != wire_index.len() {
-            return Err(anyhow!("Credential binary ladder has unused steps"));
+            return Err(anyhow!("Credential binary ladder length mismatch"));
         }
-        if &root != dist_root {
-            return Err(anyhow!("Credential does not bind to the retained distinguished entry"));
+
+        // step 2 (§6.3)
+        let mut reader = ProofReader::new(proof);
+        let frontier = log_math::get_frontier(tree_size);
+        for &f in &frontier {
+            reader.timestamp(f)?;
         }
+
+        let rightmost = *frontier.last().unwrap();
+        let mut entry_roots: BTreeMap<u64, Vec<u8>> = BTreeMap::new();
+        let mut first_equal: Option<u64> = None;
+        for &entry in &frontier {
+            let pp = reader.prefix_proof(entry)?;
+            let (root, relation) = self.verify_ladder_proof(
+                &cred.label, pp, cred.version, &mut wire_index, &mut vrf_cache,
+                &cred.binary_ladder, &target_commitment, true, entry == rightmost, &mut material,
+            ).with_context(|| format!("Credential ladder verification failed at entry {}", entry))?;
+            record_entry_root(&mut entry_roots, entry, root)?;
+            if relation == std::cmp::Ordering::Equal && first_equal.is_none() {
+                first_equal = Some(entry);
+            }
+        }
+        let terminal = first_equal.unwrap_or(rightmost);
+        // a standard credential could have been produced otherwise
+        if terminal <= cred.position {
+            return Err(anyhow!("Provisional credential for a version already covered by the anchor"));
+        }
+
+        // step 3
+        let leaf_data = reader.finish(&entry_roots)?;
+        let positions: Vec<u64> = leaf_data.iter().map(|(p, _, _)| *p).collect();
+        let leaf_hashes: Vec<Vec<u8>> = leaf_data.iter()
+            .map(|(_, ts, root)| crate::crypto::hash::log_leaf_value(*ts, root))
+            .collect();
+        let inclusion = proof.inclusion.as_ref()
+            .ok_or_else(|| anyhow!("Missing inclusion proof"))?;
+
+        let anchor_retained: BTreeMap<u64, Vec<u8>> = log_math::get_roots(cred.position + 1)
+            .into_iter()
+            .zip(anchor_peaks.iter().cloned())
+            .collect();
+        let (candidate_root, _) = LogVerifier::calculate_root_capturing(
+            &positions, &leaf_hashes, tree_size, &inclusion.elements,
+            &anchor_retained, &std::collections::HashSet::new(),
+        ).context("Provisional view reconstruction failed")?;
+
+        // step 4
+        self.verify_tree_head_signature(th, tree_size, &candidate_root)
+            .context("Provisional TreeHead signature verification failed")?;
 
         Ok(())
     }

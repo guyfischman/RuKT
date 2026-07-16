@@ -78,60 +78,26 @@ impl Tree {
             })
 
         } else {
-            // PROVISIONAL CREDENTIAL
-            let mut builder = crate::tree::walker::StandaloneProofBuilder::new();
-            let mut binary_ladder_steps = Vec::new();
+            // §14.2: a greatest-version search whose view updates from position+1,
+            // anchored to the most recent distinguished entry
+            let position = *distinguished_nodes.last()
+                .ok_or_else(|| anyhow!("No distinguished log entry to anchor a credential"))?;
 
-            let frontier = log_math::get_frontier(tree_size);
-            let start_idx = if let Some(d) = distinguished_nodes.last() {
-                frontier.iter().position(|&x| x == *d).unwrap_or(0)
-            } else { 0 };
-            
-            for &node in &frontier[start_idx..] {
-                let ts = self.log.get_timestamp(node)?;
-                builder.add_node(node, ts);
-
-                let snapshot_idx = node;
-                let versions = match self.get_max_version_at(&label_history, snapshot_idx) {
-                    Some(n) => search_binary_ladder(target_ver, n, &[], &[]),
-                    None => vec![0],
-                };
-                let prefix_ptr = self.log.get_prefix_ptr(node)?;
-                let (proof_struct, results) = self.generate_ladder_proof(prefix_ptr, tree_size, &req.label, &versions).await?;
-
-                builder.add_proof(node, proof_struct);
-
-                if node == *frontier.last().unwrap() {
-                    for (ver, comm) in results {
-                         let (_, vrf_proof) = self.config.vrf_prove(&req.label, ver)?;
-                         binary_ladder_steps.push(BinaryLadderStep {
-                             proof: vrf_proof,
-                             commitment: if ver == target_ver { None } else { comm },
-                         });
-                    }
-                }
-            }
-
-            let sorted_nodes = builder.get_sorted_nodes();
-            let inc_proof = self.log.get_batch_proof_for_nodes(sorted_nodes, tree_size, 0, &[])?;
-            let combined = builder.finalize(InclusionProof { elements: inc_proof });
-
-            // §14.2: anchored to the most recent distinguished entry, if any exists yet
-            let position = distinguished_nodes.last().copied().unwrap_or(0);
+            let result = self.traverse_greatest_search(tree_size, &req.label, position + 1).await?;
 
             Ok(Credential {
                 label: req.label.clone(),
-                version: target_ver,
-                opening: open_vec,
-                value: val_struct,
-                binary_ladder: binary_ladder_steps,
+                version: result.greatest_version,
+                opening: result.opening,
+                value: result.value,
+                binary_ladder: result.binary_ladder,
                 position,
                 credential_type: CredentialType::Provisional.into(),
 
                 distinguished: None,
 
                 tree_head: self.latest.clone(),
-                search: Some(combined),
+                search: Some(result.combined_proof),
             })
         }
     }
