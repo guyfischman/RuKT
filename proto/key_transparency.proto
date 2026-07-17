@@ -42,7 +42,7 @@ service KeyTransparencyService {
   rpc OwnerMonitor(transparency.OwnerMonitorRequest) returns (transparency.OwnerMonitorResponse) {}
   rpc Distinguished(transparency.DistinguishedRequest) returns (transparency.DistinguishedResponse) {}
   
-  // Draft-03 Section 12.4
+  // §14 Credentials
   rpc GetCredential(transparency.GetCredentialRequest) returns (transparency.Credential) {}
   rpc GetCredentialUpdate(transparency.GetCredentialUpdateRequest) returns (transparency.CredentialUpdate) {}
 }

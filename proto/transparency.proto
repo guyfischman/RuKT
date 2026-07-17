@@ -2,7 +2,7 @@
 syntax = "proto3";
 package transparency;
 
-// --- Draft-03 Section 11.2 Prefix Tree Proofs ---
+// --- §12.2 Prefix Tree Proofs ---
 
 message PrefixLeaf {
     bytes vrf_output = 1;
@@ -21,13 +21,13 @@ message PrefixProof {
     repeated bytes elements = 2;
 }
 
-// --- Draft-03 Section 11.1 Log Tree Proofs ---
+// --- §12.1 Log Tree Proofs ---
 
 message InclusionProof {
     repeated bytes elements = 1;
 }
 
-// --- Draft-03 Section 11.3 Combined Tree Proof ---
+// --- §12.3 Combined Tree Proof ---
 
 message CombinedTreeProof {
     repeated uint64 timestamps = 1;
@@ -36,7 +36,7 @@ message CombinedTreeProof {
     InclusionProof inclusion = 4;
 }
 
-// --- Draft-03 Section 12.1 User Operations ---
+// --- §13 User Operations ---
 
 message BinaryLadderStep {
     bytes proof = 1; // VRF proof
@@ -232,7 +232,7 @@ message GetCredentialUpdateRequest {
     uint32 terminal_version = 3;
 }
 
-// --- Draft-03 Section 13.2 Auditing ---
+// --- §15.2 Auditing ---
 
 message AuditorUpdate {
     uint64 timestamp = 1;

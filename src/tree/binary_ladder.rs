@@ -1,6 +1,6 @@
 /// Returns the set of versions that would be looked up to establish that n was
 /// the greatest version of a label that existed.
-/// Corresponds to Draft-03 Appendix B `base_binary_ladder`.
+/// Corresponds to Appendix B `base_binary_ladder`.
 pub fn base_binary_ladder(n: u32) -> Vec<u32> {
     let mut out = Vec::new();
 

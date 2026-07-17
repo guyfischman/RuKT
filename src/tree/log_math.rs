@@ -1,4 +1,4 @@
-// Draft-03 Appendix A: Implicit Binary Search Tree Logic
+// Appendix A: Implicit Binary Search Tree Logic
 
 pub fn is_leaf(node_id: u64) -> bool {
     (node_id & 1) == 0
