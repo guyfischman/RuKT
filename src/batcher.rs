@@ -151,6 +151,12 @@ impl BatchWorker {
                 )));
                 continue;
             }
+            if req.label.len() > 255 {
+                let _ = job
+                    .resp_tx
+                    .send(Err(anyhow!("Label exceeds 255 bytes (opaque<0..2^8-1>)")));
+                continue;
+            }
 
             let start_ver = current_greatest.map(|v| v + 1).unwrap_or(0);
             let versions: Vec<u32> = (0..req.values.len() as u32)
@@ -178,7 +184,7 @@ impl BatchWorker {
         // ==========================================
         let t2 = Instant::now();
         let config = tree_guard.config.clone();
-        let mut crypto_tasks = Vec::new();
+        let mut crypto_jobs: Vec<(Vec<u8>, Vec<u8>, u64, u32)> = Vec::new();
         let mut job_ranges: Vec<std::ops::Range<usize>> = Vec::with_capacity(pre_jobs.len());
         let mut offset = 0usize;
 
@@ -187,17 +193,27 @@ impl BatchWorker {
             offset += versions.len();
 
             for (k, version) in versions.into_iter().enumerate() {
-                let cfg = config.clone();
-                let label = req.label.clone();
-                let value = req.values[k].value.clone();
-                let last = req.last.unwrap_or(0);
-                crypto_tasks.push(tokio::task::spawn_blocking(move || {
-                    let (index, vrf_proof) = cfg.vrf_prove(&label, version).unwrap();
+                crypto_jobs.push((
+                    req.label.clone(),
+                    req.values[k].value.clone(),
+                    req.last.unwrap_or(0),
+                    version,
+                ));
+            }
+        }
+
+        // One blocking slot; rayon fans the CPU-bound work out to the core count
+        let (crypto_tx, crypto_rx) = oneshot::channel();
+        tokio::task::spawn_blocking(move || {
+            use rayon::prelude::*;
+            let out: Result<Vec<PreUpdateData>> = crypto_jobs
+                .into_par_iter()
+                .map(|(label, value, last, version)| {
+                    let (index, vrf_proof) = config.vrf_prove(&label, version)?;
                     let opening = crate::crypto::generate_random_opening();
                     let commitment =
-                        crate::crypto::commit(&label, version, &value, None, &opening).unwrap();
-
-                    PreUpdateData {
+                        crate::crypto::commit(&label, version, &value, None, &opening)?;
+                    Ok(PreUpdateData {
                         label,
                         value,
                         last,
@@ -206,15 +222,27 @@ impl BatchWorker {
                         vrf_proof,
                         commitment,
                         opening,
-                    }
-                }));
-            }
-        }
+                    })
+                })
+                .collect();
+            let _ = crypto_tx.send(out);
+        });
 
-        let mut pre_data_list = Vec::new();
-        for res in futures::future::join_all(crypto_tasks).await {
-            pre_data_list.push(res.unwrap());
-        }
+        let pre_data_list = match crypto_rx.await {
+            Ok(Ok(list)) => list,
+            res => {
+                let e = match res {
+                    Ok(Err(e)) => e,
+                    _ => anyhow!("crypto task dropped"),
+                };
+                drop(tree_guard);
+                self.process_catchups(catchup_jobs).await;
+                for job in jobs_to_process {
+                    let _ = job.resp_tx.send(Err(anyhow!("Batch crypto failed: {}", e)));
+                }
+                return;
+            }
+        };
         let dur_p2 = t2.elapsed();
 
         // ==========================================

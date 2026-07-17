@@ -25,6 +25,19 @@ async fn test_strict_errors() -> Result<()> {
 
     let user = b"error_user".to_vec();
 
+    // an oversized label is rejected without killing the batch worker
+    let oversized = service
+        .update(tonic::Request::new(UpdateRequest {
+            last: None,
+            label: vec![0x61; 300],
+            greatest_version: None,
+            values: vec![LabelValue {
+                value: b"v".to_vec(),
+            }],
+        }))
+        .await;
+    assert!(oversized.is_err());
+
     service
         .update(tonic::Request::new(UpdateRequest {
             last: None,
