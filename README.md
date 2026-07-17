@@ -90,6 +90,11 @@ VRF_KEY: <hex>
 Key Transparency Server listening on 0.0.0.0:8081
 ```
 
+The protocol's security considerations (§16) call for transport-layer
+encryption: set `KT_TLS_CERT` and `KT_TLS_KEY` to PEM paths to serve gRPC over
+TLS in-process, or leave them unset (plaintext) and terminate TLS in a fronting
+proxy. Clients can dial `https://` endpoints directly.
+
 Because the keys are ephemeral, a verifying client must be told the server's
 public keys out of band — that is the trust root the whole protocol rests on. In
 a real deployment the log's configuration (cipher suite, keys, mode parameters)
