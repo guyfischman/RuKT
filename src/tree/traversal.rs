@@ -355,9 +355,14 @@ impl Tree {
                 return Err(anyhow!("Owner-init greatest versions are not monotonic"));
             }
             versions.push(ver);
-            // step 5: full search ladder targeting this entry's greatest version
-            let target = ver.unwrap_or(0);
-            let ladder = search_binary_ladder(target, target, &[], &[]);
+            // step 5: full search ladder targeting this entry's greatest version.
+            // An absent label is a single non-inclusion probe of v0, matching the
+            // greatest-version search path and the client's ladder decode; a full
+            // base ladder here would over-probe and desync the result count.
+            let ladder = match ver {
+                Some(t) => search_binary_ladder(t, t, &[], &[]),
+                None => vec![0],
+            };
             session.visit(node, &ladder, None, tree_size).await?;
         }
 
@@ -506,8 +511,15 @@ impl Tree {
         for (node, target) in actions {
             match target {
                 None => session.visit_timestamp_only(node)?,
-                Some(t) => {
-                    let ladder = search_binary_ladder(t, t, &[], &[]);
+                // `owner_walk_actions` collapses an absent label to Some(0), which
+                // is indistinguishable from a label that genuinely exists at v0;
+                // re-derive presence so an absent node probes v0 once rather than
+                // emitting the two-step base ladder the client can't decode.
+                Some(_) => {
+                    let ladder = match self.get_max_version_at(&history, node) {
+                        Some(t) => search_binary_ladder(t, t, &[], &[]),
+                        None => vec![0],
+                    };
                     session.visit(node, &ladder, None, tree_size).await?;
                 }
             }
