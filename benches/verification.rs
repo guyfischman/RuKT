@@ -1,4 +1,6 @@
-// 8_verification: client-side proof verification cost (draft-05).
+// Proof verification cost (draft-05), for both verifying parties:
+//   8_client_verification — what an end user pays per verified response
+//   8_auditor_verification — what a third-party auditor pays per log entry
 //
 // Measures only the verify routine. Excluded from the timed region:
 // network/gRPC, the tokio runtime, server-side proof generation, and state
@@ -15,9 +17,10 @@
 // scales with tree size so the distinguished structure is size-invariant
 // (~2×DIST_HEADS heads per tree).
 
-use criterion::{BatchSize, BenchmarkId, Criterion, criterion_group, criterion_main};
+use criterion::{BatchSize, BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use rukt::bulk;
 use rukt::client::KtClient;
+use rukt::client::verifier::{LogAccumulator, PrefixTransitioner};
 use rukt::crypto::{
     self, CIPHER_SUITE_KT_128_SHA256_ED25519, DEPLOYMENT_MODE_CONTACT_MONITORING,
     DEPLOYMENT_MODE_THIRD_PARTY_AUDITING, PrivateConfig, PublicConfig, ServiceSigningKey,
@@ -25,12 +28,12 @@ use rukt::crypto::{
 };
 use rukt::db::RocksDbStore;
 use rukt::proto::transparency::{
-    AuditorTreeHead, ContactMonitorRequest, ContactMonitorResponse, Credential, CredentialType,
-    CredentialUpdate, DistinguishedRequest, DistinguishedResponse, GetCredentialRequest,
-    GetCredentialUpdateRequest, MonitorMapEntry, OwnerInitRequest, OwnerInitResponse,
-    OwnerMonitorRequest, OwnerMonitorResponse, SearchRequest, SearchResponse,
+    AuditorTreeHead, AuditorUpdate, ContactMonitorRequest, ContactMonitorResponse, Credential,
+    CredentialType, CredentialUpdate, DistinguishedRequest, DistinguishedResponse,
+    GetCredentialRequest, GetCredentialUpdateRequest, MonitorMapEntry, OwnerInitRequest,
+    OwnerInitResponse, OwnerMonitorRequest, OwnerMonitorResponse, SearchRequest, SearchResponse,
 };
-use rukt::tree::Tree;
+use rukt::tree::{PreUpdateData, Tree};
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 use std::sync::Arc;
@@ -556,9 +559,9 @@ fn build_auditing_fixture(n: u64, rt: &Runtime) -> AuditingFixture {
 // 8. CLIENT-SIDE VERIFICATION
 // ============================================================================
 
-fn bench_verification(c: &mut Criterion) {
+fn bench_client_verification(c: &mut Criterion) {
     let rt = make_runtime();
-    let mut group = c.benchmark_group("8_verification");
+    let mut group = c.benchmark_group("8_client_verification");
     group.sample_size(30);
     // pure CPU verification is very low-variance; the default 3s+5s per row
     // would dominate the run's wall time
@@ -709,10 +712,286 @@ fn bench_verification(c: &mut Criterion) {
     group.finish();
 }
 
+// ============================================================================
+// Auditor fixtures: AuditorUpdates captured from the real write path
+// ============================================================================
+
+fn pre_update(config: &PrivateConfig, label: Vec<u8>) -> PreUpdateData {
+    let value = make_value();
+    let (index, vrf_proof) = config.vrf_prove(&label, 0).unwrap();
+    let opening = crypto::generate_random_opening();
+    let commitment = crypto::commit(&label, 0, &value, &opening).unwrap();
+    PreUpdateData {
+        label,
+        value,
+        last: 0,
+        version: 0,
+        index,
+        vrf_proof,
+        commitment,
+        opening,
+    }
+}
+
+/// The auditor state an operator hands to a late-starting auditor
+/// (`audit_bootstrap`): accumulator peaks, prefix root, and last timestamp.
+fn bootstrap_auditor(tree: &Tree, tree_size: u64) -> (LogAccumulator, Vec<u8>, u64) {
+    let peaks = rukt::tree::log_math::get_roots(tree_size)
+        .into_iter()
+        .map(|node| tree.log.resolve_node_simple(node, tree_size).unwrap())
+        .collect();
+    let acc = LogAccumulator::from_peaks(tree_size, peaks).unwrap();
+    let prefix_root = tree.log.get_prefix_root(tree_size - 1).unwrap();
+    let last_ts = tree.log.get_timestamp(tree_size - 1).unwrap();
+    (acc, prefix_root, last_ts)
+}
+
+/// §15.2 per-update verification, exactly the `KtAuditor::process_and_sign`
+/// loop body: structural checks, prefix transition, log accumulator append.
+fn ingest_update(
+    update: &AuditorUpdate,
+    prefix_root: &mut Vec<u8>,
+    last_ts: &mut u64,
+    acc: &mut LogAccumulator,
+) {
+    assert!(update.timestamp >= *last_ts, "time regression");
+    for list in [&update.added, &update.removed] {
+        for pair in list.windows(2) {
+            assert!(pair[0].vrf_output < pair[1].vrf_output, "unsorted leaves");
+        }
+    }
+    let proof = update.proof.as_ref().unwrap();
+    assert_eq!(
+        proof.results.len(),
+        update.added.len() + update.removed.len()
+    );
+
+    let new_root = PrefixTransitioner::verify_and_transition(
+        prefix_root,
+        &update.added,
+        &update.removed,
+        proof,
+    )
+    .unwrap();
+    acc.append_leaf(rukt::crypto::hash::log_leaf_value(
+        update.timestamp,
+        &new_root,
+    ));
+    *prefix_root = new_root;
+    *last_ts = update.timestamp;
+}
+
+/// Applies `batch_size` fresh-label updates as one log entry through the real
+/// write path and returns the auditor's view of it: the previous prefix root
+/// and the entry's `AuditorUpdate`.
+fn capture_transition(
+    tree: &mut Tree,
+    config: &PrivateConfig,
+    batch_size: usize,
+    label_seq: &mut u64,
+    rt: &Runtime,
+) -> (Vec<u8>, AuditorUpdate) {
+    let entry = tree.latest.as_ref().unwrap().tree_size;
+    let old_root = tree.log.get_prefix_root(entry - 1).unwrap();
+
+    let updates: Vec<PreUpdateData> = (0..batch_size)
+        .map(|_| {
+            *label_seq += 1;
+            pre_update(config, make_label(*label_seq))
+        })
+        .collect();
+    rt.block_on(tree.apply_batch(updates)).unwrap();
+
+    let (mut captured, _) = rt.block_on(tree.audit(entry, 1)).unwrap();
+    let update = captured.pop().unwrap();
+
+    let new_root = PrefixTransitioner::verify_and_transition(
+        &old_root,
+        &update.added,
+        &update.removed,
+        update.proof.as_ref().unwrap(),
+    )
+    .expect("captured transition must verify");
+    assert_eq!(
+        new_root,
+        tree.log.get_prefix_root(entry).unwrap(),
+        "transition must reproduce the entry's prefix root"
+    );
+
+    (old_root, update)
+}
+
+const TRANSITION_BATCH_SIZES: &[usize] = &[1, 8, 64, 512];
+const DEPTH_SIZES: &[u64] = &[1_000, 100_000];
+const INGEST_STREAM_LEN: usize = 64;
+
+struct AuditorFixture {
+    transitions: Vec<(usize, Vec<u8>, AuditorUpdate)>,
+    depth_transitions: Vec<(u64, Vec<u8>, AuditorUpdate)>,
+    stream_state: (LogAccumulator, Vec<u8>, u64),
+    stream: Vec<AuditorUpdate>,
+    acc_large: LogAccumulator,
+    _dirs: Vec<TempDir>,
+}
+
+fn build_auditor_fixture(rt: &Runtime) -> AuditorFixture {
+    let mut dirs = Vec::new();
+
+    // batch-size sweep and the ingest stream, on top of the smallest tree
+    let base = DEPTH_SIZES[0];
+    let golden = build_or_load_golden(base, false, rt);
+    let (signer, vrf_key, _) = load_keys(&golden);
+    let config = bench_private_config(signer, vrf_key, HashMap::new(), base);
+    let (_db, mut tree, dir) = open_checkpoint(&golden, &config, rt);
+    dirs.push(dir);
+
+    let mut label_seq = base * 2;
+    let transitions: Vec<(usize, Vec<u8>, AuditorUpdate)> = TRANSITION_BATCH_SIZES
+        .iter()
+        .map(|&b| {
+            let (old_root, update) = capture_transition(&mut tree, &config, b, &mut label_seq, rt);
+            (b, old_root, update)
+        })
+        .collect();
+
+    let stream_start = tree.latest.as_ref().unwrap().tree_size;
+    let stream_state = bootstrap_auditor(&tree, stream_start);
+    for _ in 0..INGEST_STREAM_LEN {
+        capture_transition(&mut tree, &config, 1, &mut label_seq, rt);
+    }
+    let (stream, _) = rt
+        .block_on(tree.audit(stream_start, INGEST_STREAM_LEN as u64))
+        .unwrap();
+    {
+        let (mut acc, mut root, mut ts) = stream_state.clone();
+        for update in &stream {
+            ingest_update(update, &mut root, &mut ts, &mut acc);
+        }
+        let final_size = stream_start + INGEST_STREAM_LEN as u64;
+        assert_eq!(
+            acc.calculate_root().unwrap(),
+            tree.log.get_root(final_size).unwrap(),
+            "ingested stream must reproduce the log root"
+        );
+    }
+
+    // copath-depth sweep: single-leaf transitions at each tree size; the
+    // largest tree also provides the accumulator-append baseline state
+    let mut acc_large = None;
+    let depth_transitions: Vec<(u64, Vec<u8>, AuditorUpdate)> = DEPTH_SIZES
+        .iter()
+        .map(|&n| {
+            let golden = build_or_load_golden(n, false, rt);
+            let (signer, vrf_key, _) = load_keys(&golden);
+            let config = bench_private_config(signer, vrf_key, HashMap::new(), n);
+            let (_db, mut tree, dir) = open_checkpoint(&golden, &config, rt);
+            let mut label_seq = n * 2;
+            let (old_root, update) = capture_transition(&mut tree, &config, 1, &mut label_seq, rt);
+            if n == *DEPTH_SIZES.last().unwrap() {
+                acc_large = Some(bootstrap_auditor(&tree, n).0);
+            }
+            dirs.push(dir);
+            (n, old_root, update)
+        })
+        .collect();
+    let acc_large = acc_large.unwrap();
+
+    AuditorFixture {
+        transitions,
+        depth_transitions,
+        stream_state,
+        stream,
+        acc_large,
+        _dirs: dirs,
+    }
+}
+
+// ============================================================================
+// 8b. AUDITOR VERIFICATION (§15.2)
+// ============================================================================
+
+fn bench_auditor_verification(c: &mut Criterion) {
+    let rt = make_runtime();
+    let mut group = c.benchmark_group("8_auditor_verification");
+    group.sample_size(30);
+    group.warm_up_time(std::time::Duration::from_secs(1));
+    group.measurement_time(std::time::Duration::from_secs(3));
+
+    let fx = build_auditor_fixture(&rt);
+
+    for (b, old_root, update) in &fx.transitions {
+        group.bench_with_input(BenchmarkId::new("verify_transition", b), b, |bench, _| {
+            bench.iter(|| {
+                PrefixTransitioner::verify_and_transition(
+                    old_root,
+                    &update.added,
+                    &update.removed,
+                    update.proof.as_ref().unwrap(),
+                )
+                .unwrap()
+            })
+        });
+    }
+
+    for (n, old_root, update) in &fx.depth_transitions {
+        group.bench_with_input(
+            BenchmarkId::new("verify_transition_at_depth", n),
+            n,
+            |bench, _| {
+                bench.iter(|| {
+                    PrefixTransitioner::verify_and_transition(
+                        old_root,
+                        &update.added,
+                        &update.removed,
+                        update.proof.as_ref().unwrap(),
+                    )
+                    .unwrap()
+                })
+            },
+        );
+    }
+
+    let leaf = rukt::crypto::hash::log_leaf_value(1_700_000_000_000, &[0u8; 32]);
+    group.bench_with_input(
+        BenchmarkId::new("accumulator_append", DEPTH_SIZES.last().unwrap()),
+        &(),
+        |bench, _| {
+            bench.iter_batched(
+                || fx.acc_large.clone(),
+                |mut acc| {
+                    acc.append_leaf(leaf.clone());
+                    acc
+                },
+                BatchSize::SmallInput,
+            )
+        },
+    );
+
+    group.throughput(Throughput::Elements(INGEST_STREAM_LEN as u64));
+    group.bench_with_input(
+        BenchmarkId::new("ingest_throughput", INGEST_STREAM_LEN),
+        &(),
+        |bench, _| {
+            bench.iter_batched(
+                || fx.stream_state.clone(),
+                |(mut acc, mut root, mut ts)| {
+                    for update in &fx.stream {
+                        ingest_update(update, &mut root, &mut ts, &mut acc);
+                    }
+                    (acc, root, ts)
+                },
+                BatchSize::SmallInput,
+            )
+        },
+    );
+
+    group.finish();
+}
+
 criterion_group! {
     name = verification;
     config = Criterion::default();
-    targets = bench_verification
+    targets = bench_auditor_verification, bench_client_verification
 }
 
 criterion_main!(verification);
