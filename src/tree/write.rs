@@ -59,7 +59,9 @@ impl Tree {
                 .ok_or_else(|| anyhow!("No tree head available"))?;
             let final_results = results_map
                 .into_iter()
-                .map(|r| r.unwrap_or_else(|| Err(anyhow!("Error"))))
+                .map(|r| {
+                    r.unwrap_or_else(|| Err(anyhow!("update slot left unresolved by apply_batch")))
+                })
                 .collect();
             return Ok((final_results, th));
         }
@@ -263,7 +265,9 @@ impl Tree {
         Ok((
             results_map
                 .into_iter()
-                .map(|r| r.unwrap_or_else(|| Err(anyhow!("Internal error"))))
+                .map(|r| {
+                    r.unwrap_or_else(|| Err(anyhow!("update slot left unresolved by apply_batch")))
+                })
                 .collect(),
             th,
         ))
