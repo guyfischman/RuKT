@@ -74,8 +74,8 @@ fn serialize_configuration(config: &PrivateConfig, auditor_pk: Option<&[u8]>) ->
 
     config.cipher_suite.tls_encode(&mut buf);
     config.mode.tls_encode(&mut buf);
-    Opaqueu16(&server_sig_pk).tls_encode(&mut buf);
-    Opaqueu16(&config.vrf_public_key).tls_encode(&mut buf);
+    Opaqueu16::new(&server_sig_pk)?.tls_encode(&mut buf);
+    Opaqueu16::new(&config.vrf_public_key)?.tls_encode(&mut buf);
 
     if config.mode == 3 {
         config.auditor_start_pos.tls_encode(&mut buf);
@@ -83,11 +83,11 @@ fn serialize_configuration(config: &PrivateConfig, auditor_pk: Option<&[u8]>) ->
         let apk = auditor_pk
             .or(config.auditor_public_key.as_deref())
             .ok_or_else(|| anyhow!("Auditor public key required for ThirdPartyAuditing mode"))?;
-        Opaqueu16(apk).tls_encode(&mut buf);
+        Opaqueu16::new(apk)?.tls_encode(&mut buf);
     } else if let Some(lpk) = &config.leaf_public_key {
-        Opaqueu16(lpk).tls_encode(&mut buf);
+        Opaqueu16::new(lpk)?.tls_encode(&mut buf);
     } else {
-        Opaqueu16(&[]).tls_encode(&mut buf);
+        Opaqueu16::new(&[])?.tls_encode(&mut buf);
     }
 
     config.max_ahead.tls_encode(&mut buf);
@@ -103,8 +103,8 @@ fn serialize_configuration_public(config: &PublicConfig) -> Result<Vec<u8>> {
     let mut buf = Vec::new();
     config.cipher_suite.tls_encode(&mut buf);
     config.mode.tls_encode(&mut buf);
-    Opaqueu16(&config.server_sig_pk).tls_encode(&mut buf);
-    Opaqueu16(&config.vrf_public_key).tls_encode(&mut buf);
+    Opaqueu16::new(&config.server_sig_pk)?.tls_encode(&mut buf);
+    Opaqueu16::new(&config.vrf_public_key)?.tls_encode(&mut buf);
 
     if config.mode == 3 {
         config.auditor_start_pos.tls_encode(&mut buf);
@@ -113,11 +113,11 @@ fn serialize_configuration_public(config: &PublicConfig) -> Result<Vec<u8>> {
             .auditor_public_key
             .as_deref()
             .ok_or_else(|| anyhow!("Auditor public key required for ThirdPartyAuditing mode"))?;
-        Opaqueu16(apk).tls_encode(&mut buf);
+        Opaqueu16::new(apk)?.tls_encode(&mut buf);
     } else if let Some(lpk) = &config.leaf_public_key {
-        Opaqueu16(lpk).tls_encode(&mut buf);
+        Opaqueu16::new(lpk)?.tls_encode(&mut buf);
     } else {
-        Opaqueu16(&[]).tls_encode(&mut buf);
+        Opaqueu16::new(&[])?.tls_encode(&mut buf);
     }
 
     config.max_ahead.tls_encode(&mut buf);
@@ -203,12 +203,12 @@ pub fn construct_update_tbs(
     if label.len() >= 1 << 8 {
         return Err(anyhow!("Label too long"));
     }
-    Opaqueu8(label).tls_encode(&mut buf);
+    Opaqueu8::new(label)?.tls_encode(&mut buf);
     version.tls_encode(&mut buf);
     if value.len() >= 1 << 32 {
         return Err(anyhow!("Value too long"));
     }
-    Opaqueu32(value).tls_encode(&mut buf);
+    Opaqueu32::new(value)?.tls_encode(&mut buf);
     Ok(buf)
 }
 

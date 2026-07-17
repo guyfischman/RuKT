@@ -30,33 +30,52 @@ impl TlsEncode for u64 {
 }
 
 // Helper for opaque<0..2^8-1> (1-byte length prefix)
-pub struct Opaqueu8<'a>(pub &'a [u8]);
+pub struct Opaqueu8<'a>(&'a [u8]);
+impl<'a> Opaqueu8<'a> {
+    pub fn new(bytes: &'a [u8]) -> Result<Self> {
+        if bytes.len() > u8::MAX as usize {
+            return Err(anyhow!("opaque<0..2^8-1> overflow: {} bytes", bytes.len()));
+        }
+        Ok(Self(bytes))
+    }
+}
 impl<'a> TlsEncode for Opaqueu8<'a> {
     fn tls_encode(&self, buf: &mut Vec<u8>) {
-        // Panic or error handling should ideally happen before, but for trait simplicity:
-        // We cap at u8::MAX. In a real scenario, check lengths upstream.
-        let len = self.0.len().min(255) as u8;
-        buf.push(len);
-        buf.extend_from_slice(&self.0[..len as usize]);
+        buf.push(self.0.len() as u8);
+        buf.extend_from_slice(self.0);
     }
 }
 
 // Helper for opaque<0..2^16-1> (2-byte length prefix)
-pub struct Opaqueu16<'a>(pub &'a [u8]);
+pub struct Opaqueu16<'a>(&'a [u8]);
+impl<'a> Opaqueu16<'a> {
+    pub fn new(bytes: &'a [u8]) -> Result<Self> {
+        if bytes.len() > u16::MAX as usize {
+            return Err(anyhow!("opaque<0..2^16-1> overflow: {} bytes", bytes.len()));
+        }
+        Ok(Self(bytes))
+    }
+}
 impl<'a> TlsEncode for Opaqueu16<'a> {
     fn tls_encode(&self, buf: &mut Vec<u8>) {
-        let len = self.0.len().min(65535) as u16;
-        buf.extend_from_slice(&len.to_be_bytes());
-        buf.extend_from_slice(&self.0[..len as usize]);
+        buf.extend_from_slice(&(self.0.len() as u16).to_be_bytes());
+        buf.extend_from_slice(self.0);
     }
 }
 
 // Helper for opaque<0..2^32-1> (4-byte length prefix)
-pub struct Opaqueu32<'a>(pub &'a [u8]);
+pub struct Opaqueu32<'a>(&'a [u8]);
+impl<'a> Opaqueu32<'a> {
+    pub fn new(bytes: &'a [u8]) -> Result<Self> {
+        if bytes.len() > u32::MAX as usize {
+            return Err(anyhow!("opaque<0..2^32-1> overflow: {} bytes", bytes.len()));
+        }
+        Ok(Self(bytes))
+    }
+}
 impl<'a> TlsEncode for Opaqueu32<'a> {
     fn tls_encode(&self, buf: &mut Vec<u8>) {
-        let len = self.0.len() as u32; // Assuming usize fits in u32 for this context
-        buf.extend_from_slice(&len.to_be_bytes());
+        buf.extend_from_slice(&(self.0.len() as u32).to_be_bytes());
         buf.extend_from_slice(self.0);
     }
 }
@@ -179,11 +198,19 @@ mod tests {
     }
 
     #[test]
+    fn opaque_rejects_oversize_input() {
+        assert!(Opaqueu8::new(&[0u8; 256]).is_err());
+        assert!(Opaqueu8::new(&[0u8; 255]).is_ok());
+        assert!(Opaqueu16::new(&[0u8; 65536]).is_err());
+        assert!(Opaqueu16::new(&[0u8; 65535]).is_ok());
+    }
+
+    #[test]
     fn opaque_decode_roundtrip() {
         let mut buf = Vec::new();
-        Opaqueu8(b"abc").tls_encode(&mut buf);
-        Opaqueu16(b"de").tls_encode(&mut buf);
-        Opaqueu32(b"f").tls_encode(&mut buf);
+        Opaqueu8::new(b"abc").unwrap().tls_encode(&mut buf);
+        Opaqueu16::new(b"de").unwrap().tls_encode(&mut buf);
+        Opaqueu32::new(b"f").unwrap().tls_encode(&mut buf);
 
         let mut slice = &buf[..];
         assert_eq!(decode_opaque_u8(&mut slice).unwrap(), b"abc");

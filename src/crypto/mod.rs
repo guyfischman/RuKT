@@ -219,7 +219,7 @@ pub fn construct_vrf_input(label: &[u8], version: u32) -> Result<Vec<u8>> {
         return Err(anyhow!("Label too long for VRF Input"));
     }
     let mut buf = Vec::new();
-    Opaqueu8(label).tls_encode(&mut buf);
+    Opaqueu8::new(label)?.tls_encode(&mut buf);
     version.tls_encode(&mut buf);
     Ok(buf)
 }
