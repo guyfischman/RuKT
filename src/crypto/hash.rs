@@ -1,3 +1,4 @@
+use super::tls::{FixedOpaque, Opaqueu8, Opaqueu16, Opaqueu32, TlsEncode};
 use anyhow::Result;
 use hmac::{Hmac, Mac};
 use rand::{RngCore, rngs::OsRng};
@@ -23,35 +24,24 @@ pub fn commit(
     suffix_signature: Option<&[u8]>,
     opening: &[u8],
 ) -> Result<Vec<u8>> {
-    type HmacSha256 = Hmac<Sha256>;
-    let mut mac = HmacSha256::new_from_slice(&KC)?;
-
     if opening.len() != 16 {
         return Err(anyhow::anyhow!("Invalid opening length"));
     }
-    mac.update(opening);
 
-    if label.len() > 255 {
-        return Err(anyhow::anyhow!("Label too long"));
-    }
-    mac.update(&(label.len() as u8).to_be_bytes());
-    mac.update(label);
-
-    mac.update(&version.to_be_bytes());
-
-    mac.update(&(update_value.len() as u32).to_be_bytes());
-    mac.update(update_value);
-
+    let mut commitment_value = Vec::new();
+    FixedOpaque(opening).tls_encode(&mut commitment_value);
+    Opaqueu8::new(label)?.tls_encode(&mut commitment_value);
+    version.tls_encode(&mut commitment_value);
+    Opaqueu32::new(update_value)?.tls_encode(&mut commitment_value);
     // §11.5: UpdateSuffix carries the operator signature in third-party-management
     // mode and serializes to zero bytes in every other mode
     if let Some(sig) = suffix_signature {
-        if sig.len() > 65535 {
-            return Err(anyhow::anyhow!("Update suffix signature too long"));
-        }
-        mac.update(&(sig.len() as u16).to_be_bytes());
-        mac.update(sig);
+        Opaqueu16::new(sig)?.tls_encode(&mut commitment_value);
     }
 
+    type HmacSha256 = Hmac<Sha256>;
+    let mut mac = HmacSha256::new_from_slice(&KC)?;
+    mac.update(&commitment_value);
     Ok(mac.finalize().into_bytes().to_vec())
 }
 
