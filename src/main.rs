@@ -62,9 +62,32 @@ async fn main() -> Result<()> {
     // Pass the keys we just printed to the service
     let service = KeyTransparencyImpl::new(db, signer, vrf_secret, auditor_keys, None).await?;
 
+    // §16: users SHOULD reach the log over transport-layer encryption
+    let mut builder = match (
+        std::env::var_os("KT_TLS_CERT"),
+        std::env::var_os("KT_TLS_KEY"),
+    ) {
+        (Some(cert_path), Some(key_path)) => {
+            let identity = tonic::transport::Identity::from_pem(
+                std::fs::read(&cert_path)?,
+                std::fs::read(&key_path)?,
+            );
+            tracing::info!("TLS enabled with certificate {:?}", cert_path);
+            Server::builder()
+                .tls_config(tonic::transport::ServerTlsConfig::new().identity(identity))?
+        }
+        (None, None) => {
+            tracing::warn!(
+                "Serving plaintext gRPC; set KT_TLS_CERT/KT_TLS_KEY or terminate TLS in a fronting proxy"
+            );
+            Server::builder()
+        }
+        _ => anyhow::bail!("KT_TLS_CERT and KT_TLS_KEY must be set together"),
+    };
+
     tracing::info!("Key Transparency Server listening on {}", addr);
 
-    Server::builder()
+    builder
         .add_service(
             proto::kt::key_transparency_service_server::KeyTransparencyServiceServer::new(
                 service.clone(),
