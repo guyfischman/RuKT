@@ -1,0 +1,9 @@
+target/
+kt_data/
+.git/
+.github/
+.devcontainer/
+docs/
+deploy/
+*.txt
+.DS_Store

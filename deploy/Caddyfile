@@ -1,0 +1,7 @@
+{
+	email {$ACME_EMAIL}
+}
+
+{$KT_GOOD_HOST} {
+	reverse_proxy h2c://good:8081
+}

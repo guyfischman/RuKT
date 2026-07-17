@@ -1,0 +1,41 @@
+services:
+  good:
+    image: rukt:${RUKT_TAG:-dev}
+    build:
+      context: ..
+    restart: unless-stopped
+    command: ["--seed"]
+    environment:
+      KT_LISTEN: "0.0.0.0:8081"
+      KT_DATA_DIR: "/data"
+      # Signed into every tree head; changing them on an existing log breaks all clients.
+      KT_MAX_AHEAD: "10000"
+      KT_MAX_BEHIND: "60000"
+      KT_MONITORING_WINDOW: "86400000"
+      KT_EPOCH_INTERVAL_SECS: "10"
+      RUST_LOG: "info"
+    volumes:
+      - good-data:/data
+    expose:
+      - "8081"
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      KT_GOOD_HOST: ${KT_GOOD_HOST:?set KT_GOOD_HOST to the public hostname}
+      ACME_EMAIL: ${ACME_EMAIL:?set ACME_EMAIL for Let's Encrypt}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - good
+
+volumes:
+  good-data:
+  caddy-data:
+  caddy-config:
