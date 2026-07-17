@@ -6,6 +6,8 @@ option go_package = "github.com/signalapp/keytransparency/cmd/kt/pb";
 import "google/protobuf/empty.proto";
 import "transparency.proto";
 
+// --- §15.2 Auditing ---
+
 message AuditRequest {
   uint64 start = 1;
   uint64 limit = 2;
@@ -27,26 +29,28 @@ message AuditBootstrapResponse {
   uint64 timestamp = 4;
 }
 
+// The log's gRPC API. Operation semantics are defined by
+// draft-ietf-keytrans-protocol-05 (vendored under docs/spec/); each RPC is
+// anchored to its section.
 service KeyTransparencyService {
-  // Auditor endpoints
+  // §13 User operations
+  rpc Search(transparency.SearchRequest) returns (transparency.SearchResponse) {}                             // §13.1; greatest, or a fixed version when `version` is set (§6, §7)
+  rpc Update(transparency.UpdateRequest) returns (transparency.UpdateResponse) {}                             // §13.5 (§9)
+  rpc ContactMonitor(transparency.ContactMonitorRequest) returns (transparency.ContactMonitorResponse) {}     // §13.2 (§8.2)
+  rpc OwnerInit(transparency.OwnerInitRequest) returns (transparency.OwnerInitResponse) {}                    // §13.3 (§8.3)
+  rpc OwnerMonitor(transparency.OwnerMonitorRequest) returns (transparency.OwnerMonitorResponse) {}           // §13.4 (§8.3)
+  rpc Distinguished(transparency.DistinguishedRequest) returns (transparency.DistinguishedResponse) {}        // §13.6; distinguished heads for fork detection (§10)
+  rpc GetCredential(transparency.GetCredentialRequest) returns (transparency.Credential) {}                   // §14; standard (§14.1) or provisional (§14.2)
+  rpc GetCredentialUpdate(transparency.GetCredentialUpdateRequest) returns (transparency.CredentialUpdate) {} // §14.2
+
+  // §15.2 Auditing — third-party auditor endpoints; inactive in contact-monitoring mode
   rpc TreeSize(google.protobuf.Empty) returns (TreeSizeResponse) {}
   rpc Audit(AuditRequest) returns (AuditResponse) {}
   rpc AuditBootstrap(google.protobuf.Empty) returns (AuditBootstrapResponse) {}
   rpc SetAuditorHead(transparency.AuditorTreeHead) returns (google.protobuf.Empty) {}
-
-  // User endpoints
-  rpc Search(transparency.SearchRequest) returns (transparency.SearchResponse) {}
-  rpc Update(transparency.UpdateRequest) returns (transparency.UpdateResponse) {}
-  rpc ContactMonitor(transparency.ContactMonitorRequest) returns (transparency.ContactMonitorResponse) {}
-  rpc OwnerInit(transparency.OwnerInitRequest) returns (transparency.OwnerInitResponse) {}
-  rpc OwnerMonitor(transparency.OwnerMonitorRequest) returns (transparency.OwnerMonitorResponse) {}
-  rpc Distinguished(transparency.DistinguishedRequest) returns (transparency.DistinguishedResponse) {}
-  
-  // §14 Credentials
-  rpc GetCredential(transparency.GetCredentialRequest) returns (transparency.Credential) {}
-  rpc GetCredentialUpdate(transparency.GetCredentialUpdateRequest) returns (transparency.CredentialUpdate) {}
 }
 
+// §15.2 Auditing — served to a third-party auditor rather than end users.
 service KeyTransparencyAuditorService {
   rpc TreeSize(google.protobuf.Empty) returns (TreeSizeResponse) {}
   rpc Audit(AuditRequest) returns (AuditResponse) {}

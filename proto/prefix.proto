@@ -1,5 +1,7 @@
+// Internal on-disk layout of prefix-tree nodes, not part of the gRPC API. The
+// wire form of prefix-tree proofs is transparency.PrefixProof (§12.2).
 syntax = "proto3";
-package prefix_tree; // Package name for internal storage types
+package prefix_tree;
 
 message ParentNode {
     bytes hash = 1;

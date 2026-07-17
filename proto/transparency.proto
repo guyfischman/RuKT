@@ -36,38 +36,42 @@ message CombinedTreeProof {
     InclusionProof inclusion = 4;
 }
 
-// --- §13 User Operations ---
+// --- §11 Tree heads, signatures, and the binary ladder ---
 
+// §5
 message BinaryLadderStep {
     bytes proof = 1; // VRF proof
     optional bytes commitment = 2;
 }
 
+// §11.3
 message AuditorTreeHead {
   uint64 tree_size = 1;
   int64 timestamp = 2;
   bytes signature = 3;
 }
 
+// §11.2
 message TreeHead {
     uint64 tree_size = 1;
     int64 timestamp = 2;
     repeated Signature signatures = 3;
 }
 
+// §11.2
 message Signature {
   bytes auditor_public_key = 1;
   bytes signature = 2;
 }
 
-// Section 11.4
+// §11.4
 enum FullTreeHeadType {
     FULL_TREE_HEAD_TYPE_RESERVED = 0;
     FULL_TREE_HEAD_TYPE_SAME = 1;
     FULL_TREE_HEAD_TYPE_UPDATED = 2;
 }
 
-// Section 11.4
+// §11.4
 message FullTreeHead {
     FullTreeHeadType head_type = 1;
     optional TreeHead tree_head = 2;
@@ -83,14 +87,16 @@ message Consistency {
     optional uint64 distinguished = 2;
 }
 
-// Section 13.1
+// --- §13 User operations ---
+
+// §13.1 (§6 greatest, §7 fixed)
 message SearchRequest {
     optional uint64 last = 1;
     bytes label = 2;
     optional uint32 version = 3;
 }
 
-// Section 13.1
+// §13.1
 message SearchResponse {
     FullTreeHead full_tree_head = 1;
     optional uint32 version = 2;
@@ -100,12 +106,12 @@ message SearchResponse {
     CombinedTreeProof search = 6;
 }
 
-// Section 13.5
+// §13.5
 message LabelValue {
     bytes value = 1;
 }
 
-// Section 13.5
+// §13.5
 message UpdateRequest {
     optional uint64 last = 1;
     bytes label = 2;
@@ -113,13 +119,13 @@ message UpdateRequest {
     repeated LabelValue values = 4;
 }
 
-// Section 13.5
+// §13.5
 message UpdateInfo {
     bytes opening = 1;
     optional bytes suffix_signature = 2;
 }
 
-// Section 13.5
+// §13.5
 message UpdateResponse {
     FullTreeHead full_tree_head = 1;
     uint64 position = 2;
@@ -129,33 +135,33 @@ message UpdateResponse {
     CombinedTreeProof update = 6;
 }
 
-// Section 13.2
+// §13.2
 message MonitorMapEntry {
     uint64 position = 1;
     uint32 version = 2;
 }
 
-// Section 13.2
+// §13.2
 message ContactMonitorRequest {
     optional uint64 last = 1;
     bytes label = 2;
     repeated MonitorMapEntry entries = 3;
 }
 
-// Section 13.2
+// §13.2
 message ContactMonitorResponse {
     FullTreeHead full_tree_head = 1;
     CombinedTreeProof monitor = 2;
 }
 
-// Section 13.3
+// §13.3
 message OwnerInitRequest {
     optional uint64 last = 1;
     bytes label = 2;
     uint64 start = 3;
 }
 
-// Section 13.3
+// §13.3
 message OwnerInitResponse {
     FullTreeHead full_tree_head = 1;
     repeated uint32 greatest_versions = 2;
@@ -163,7 +169,7 @@ message OwnerInitResponse {
     CombinedTreeProof init = 4;
 }
 
-// Section 13.4
+// §13.4
 message OwnerMonitorRequest {
     optional uint64 last = 1;
     bytes label = 2;
@@ -172,7 +178,7 @@ message OwnerMonitorRequest {
     optional uint32 greatest_version = 5;
 }
 
-// Section 13.4
+// §13.4
 message OwnerMonitorResponse {
     FullTreeHead full_tree_head = 1;
     CombinedTreeProof monitor = 2;
@@ -181,25 +187,26 @@ message OwnerMonitorResponse {
     repeated BinaryLadderStep binary_ladder = 3;
 }
 
-// Section 13.6
+// §13.6
 message DistinguishedRequest {
     optional uint64 last = 1;
     optional uint64 stop = 2;
 }
 
-// Section 13.6
+// §13.6
 message DistinguishedResponse {
     FullTreeHead full_tree_head = 1;
     CombinedTreeProof distinguished = 2;
 }
 
+// §14
 enum CredentialType {
     CREDENTIAL_TYPE_RESERVED = 0;
     CREDENTIAL_TYPE_STANDARD = 1;
     CREDENTIAL_TYPE_PROVISIONAL = 2;
 }
 
-// Section 14
+// §14
 message Credential {
     bytes label = 1;
     uint32 version = 2;
@@ -215,17 +222,18 @@ message Credential {
     optional CombinedTreeProof search = 10;
 }
 
-// Section 14.2
+// §14.2
 message CredentialUpdate {
     uint64 position = 1;
     CombinedTreeProof monitor = 2;
 }
 
+// §14
 message GetCredentialRequest {
     bytes label = 1;
 }
 
-// Section 14.2
+// §14.2
 message GetCredentialUpdateRequest {
     bytes label = 1;
     uint64 terminal_position = 2;
