@@ -3,5 +3,11 @@
 }
 
 {$KT_GOOD_HOST} {
-	reverse_proxy h2c://good:8081
+	handle /config.json {
+		root * /public
+		file_server
+	}
+	handle {
+		reverse_proxy h2c://good:8081
+	}
 }

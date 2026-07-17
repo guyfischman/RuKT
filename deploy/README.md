@@ -22,16 +22,26 @@ challenge, 443 for gRPC.
 
 ## Publish the trust root
 
-The log writes its public config to `/data/config.json` on every start. Clients
-must be handed it **out of band** — never fetched from the log they are
-verifying:
+The log writes its public config on every start to `/public/config.json`
+(`KT_CONFIG_OUT`), a volume Caddy serves read-only at:
 
-```bash
-docker compose exec good cat /data/config.json
+```
+https://good.kt.example.com/config.json
 ```
 
-Serve that file from somewhere independent of the log (R2, Pages, a gist) and
-give working-group members the URL. Clients then:
+That URL is a convenience copy: it comes from the same operator the config is
+supposed to let clients verify, so on its own it proves nothing. Also publish
+the file (or at least the two public keys in it) through a channel the log
+operator doesn't control — the working-group mailing list post announcing the
+deployment, a checked-in copy in a repo, a gist — and tell members to
+cross-check the two. The keys never change for the life of the log, so this is
+a one-time post:
+
+```bash
+docker compose exec good cat /public/config.json
+```
+
+Clients then:
 
 ```rust
 let config = PublicConfig::from_json(&std::fs::read_to_string("config.json")?)?;
