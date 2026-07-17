@@ -1,5 +1,5 @@
 {
-  "description": "Deterministic known-answer vectors for draft-ietf-keytrans-protocol-05. All byte strings are hex. Primitive vectors (sections 11.x): a conforming implementation reproduces `output` from `input` and the formula. Transcript vectors (search_transcript_fresh_client): `output` is a complete server response to CONSUME — decode it and run your client-side verification against `config`; reproducing its exact bytes additionally requires RuKT's protobuf schema (proto/), since the draft defines structures but not a wire encoding. Mirrored by src/integration/interop_vectors.rs.",
+  "description": "Deterministic known-answer vectors for draft-ietf-keytrans-protocol-05. All byte strings are hex. Primitive vectors (sections 11.x): a conforming implementation reproduces `output` from `input` and the formula. Transcript vectors (search_transcript_fresh_client): `output` is a complete server response to CONSUME \u2014 decode it and run your client-side verification against `config`; reproducing its exact bytes additionally requires RuKT's protobuf schema (proto/), since the draft defines structures but not a wire encoding. Mirrored by src/integration/interop_vectors.rs.",
   "cipher_suite": "KT_128_SHA256_ED25519 (0x0002)",
   "shared_inputs": {
     "vrf_seed": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
@@ -11,56 +11,87 @@
     {
       "name": "commitment",
       "section": "11.6",
-      "input": { "label": "alice@example.com", "version": 7, "value": "pk_v7", "opening": "a0a1a2a3a4a5a6a7a8a9aaabacadaeaf" },
+      "input": {
+        "label": "alice@example.com",
+        "version": 7,
+        "value": "pk_v7",
+        "opening": "a0a1a2a3a4a5a6a7a8a9aaabacadaeaf"
+      },
       "formula": "HMAC-SHA256(Kc, opening || opaque_u8(label) || u32(version) || opaque_u32(value))",
       "output": "ea1df1367cab95d5fe5009826bb7c60d0eb972aeea68b032b4efe08d5e0a37f1"
     },
     {
       "name": "commitment_third_party_management",
       "section": "11.5, 11.6",
-      "input": { "label": "alice@example.com", "version": 7, "value": "pk_v7", "suffix_signature": "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a", "opening": "a0a1a2a3a4a5a6a7a8a9aaabacadaeaf" },
+      "input": {
+        "label": "alice@example.com",
+        "version": 7,
+        "value": "pk_v7",
+        "suffix_signature": "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+        "opening": "a0a1a2a3a4a5a6a7a8a9aaabacadaeaf"
+      },
       "formula": "HMAC-SHA256(Kc, opening || opaque_u8(label) || u32(version) || opaque_u32(value) || opaque_u16(suffix_signature))",
       "output": "5d66b97ff882bae9ff164e9693d1517d9f10174c78ddfa4c7676e7cdb947386f"
     },
     {
       "name": "vrf_input",
       "section": "11.7",
-      "input": { "label": "alice@example.com", "version": 7 },
+      "input": {
+        "label": "alice@example.com",
+        "version": 7
+      },
       "formula": "opaque_u8(label) || u32(version)",
       "output": "11616c696365406578616d706c652e636f6d00000007"
     },
     {
       "name": "prefix_tree_leaf",
       "section": "11.9",
-      "input": { "vrf_output": "1111...(32 bytes of 0x11)", "commitment": "2222...(32 bytes of 0x22)" },
+      "input": {
+        "vrf_output": "1111...(32 bytes of 0x11)",
+        "commitment": "2222...(32 bytes of 0x22)"
+      },
       "formula": "SHA256(0x02 || vrf_output || commitment)",
       "output": "c484058e7e2b8fe5bbaefcb523aa443ba4d8b5093038dc1f8147e74823eda8f1"
     },
     {
       "name": "prefix_tree_parent",
       "section": "11.9",
-      "input": { "left": "3333...(32 bytes of 0x33)", "right": "4444...(32 bytes of 0x44)" },
+      "input": {
+        "left": "3333...(32 bytes of 0x33)",
+        "right": "4444...(32 bytes of 0x44)"
+      },
       "formula": "SHA256(0x03 || left || right)",
       "output": "a48926ac669d632e914a9abf64e6a79f33dcc0533aac83bc797c17a53b3385be"
     },
     {
       "name": "log_tree_leaf",
       "section": "11.8",
-      "input": { "timestamp": 72623859790382856, "prefix_root": "5555...(32 bytes of 0x55)" },
+      "input": {
+        "timestamp": 72623859790382856,
+        "prefix_root": "5555...(32 bytes of 0x55)"
+      },
       "formula": "SHA256(u64(timestamp) || prefix_root)",
       "output": "be713bd94e9d86e157ec6f0b758b0b70fece954fa5e510b63ea250287eb6af6e"
     },
     {
       "name": "log_tree_parent",
       "section": "11.8",
-      "input": { "left": "6666...(32 bytes of 0x66)", "left_is_leaf": true, "right": "7777...(32 bytes of 0x77)", "right_is_leaf": false },
+      "input": {
+        "left": "6666...(32 bytes of 0x66)",
+        "left_is_leaf": true,
+        "right": "7777...(32 bytes of 0x77)",
+        "right_is_leaf": false
+      },
       "formula": "SHA256(0x00_if_left_leaf_else_0x01 || left || 0x00_if_right_leaf_else_0x01 || right)",
       "output": "2de4c8af25d34b82567bdd7720a4a18fedbe18b44e5d3ca7a7a577638ffe643e"
     },
     {
       "name": "vrf_prove",
       "section": "11.7",
-      "input": { "vrf_seed": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f", "alpha": "alpha" },
+      "input": {
+        "vrf_seed": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+        "alpha": "alpha"
+      },
       "note": "ECVRF-EDWARDS25519-SHA512-TAI with the deterministic nonce of RFC 9381 s5.4.2.2, so the proof bytes pin exactly. The RFC 9381 Appendix B proofs are reproduced by src/integration/interop_vectors.rs::rfc9381_appendix_b_vectors.",
       "output": "dff00db2d25b269d561655860a367a792f80db505089f56b05264828c725138a5749f77b4fa5da106bbdc7cbd723ba6915b029cde59458ae6a8c989edcd4c187c8cf445103d7ee2a3afba16482acf307"
     },
@@ -117,18 +148,40 @@
         "signing_key_seed": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
         "vrf_seed": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
         "tree": [
-          { "label": "alice@example.com", "value": "alice_pk_v0", "version": 0, "opening": "a0a1a2a3a4a5a6a7a8a9aaabacadaeaf", "timestamp": 1700000000000 },
-          { "label": "bob@example.com", "value": "bob_pk_v0", "version": 0, "opening": "b0b1b2b3b4b5b6b7b8b9babbbcbdbebf", "timestamp": 1700000001000 },
-          { "label": "carol@example.com", "value": "carol_pk_v0", "version": 0, "opening": "c0c1c2c3c4c5c6c7c8c9cacbcccdcecf", "timestamp": 1700000002000 }
+          {
+            "label": "alice@example.com",
+            "value": "alice_pk_v0",
+            "version": 0,
+            "opening": "a0a1a2a3a4a5a6a7a8a9aaabacadaeaf",
+            "timestamp": 1700000000000
+          },
+          {
+            "label": "bob@example.com",
+            "value": "bob_pk_v0",
+            "version": 0,
+            "opening": "b0b1b2b3b4b5b6b7b8b9babbbcbdbebf",
+            "timestamp": 1700000001000
+          },
+          {
+            "label": "carol@example.com",
+            "value": "carol_pk_v0",
+            "version": 0,
+            "opening": "c0c1c2c3c4c5c6c7c8c9cacbcccdcecf",
+            "timestamp": 1700000002000
+          }
         ],
-        "query": { "label": "alice@example.com", "version": null, "last": null }
+        "query": {
+          "label": "alice@example.com",
+          "version": null,
+          "last": null
+        }
       },
       "note": "Full server transcript: one log entry per label in order (prefix version i maps to log entry i; tree_size 3), tree head signed over the config above. The large max_behind keeps the fixed timestamps verifiable at any date.",
       "usage": [
-        "This vector is consumed, not reconstructed: `output` is the exact protobuf SearchResponse (message SearchResponse in proto/transparency.proto, standard protobuf encoding) that a server returns for `query` from a client with no prior state.",
-        "Step 1 (no protobuf needed): rebuild the tree from `input.tree` with your own spec code and check your prefix roots, log root, tree head TBS, and signature against `intermediates` — these are pure draft-05 section 11 computations.",
-        "Step 2: decode `output` with the .proto schema, configure your client with `config` (and the vrf/signing public keys in it), run greatest-version search verification with no prior state, and expect the verified value alice_pk_v0.",
-        "Reproducing `output` byte-for-byte is only meaningful if you also implement RuKT's gRPC wire protocol; cross-implementation conformance is Step 1 plus Step 2."
+        "This vector exercises two independent roles; test whichever side you implement.",
+        "SERVER role (skip if you only implement a client): rebuild the log's state from `input.tree` \u2014 three updates applied in order, one log entry each \u2014 using your own draft-05 section 11 code, and compare your prefix roots, log root, tree head TBS, and signature against `intermediates`. This checks that your server would produce the same tree we did.",
+        "CLIENT role (no tree building \u2014 a client never has the tree, only proofs): decode `output` as message SearchResponse from proto/transparency.proto (standard protobuf encoding), configure your client with `config` as its trust root, and verify it as the response to `query` from a fresh client (`last` unset, i.e. first contact with this log). Verification must succeed and yield the value alice_pk_v0.",
+        "The `output` bytes themselves are RuKT's gRPC encoding of the draft structures; the draft defines no wire format, so byte-for-byte reproduction of `output` is not a conformance goal \u2014 matching `intermediates` (server role) and accepting the transcript (client role) are."
       ],
       "intermediates": {
         "prefix_roots_after_each_entry": [
