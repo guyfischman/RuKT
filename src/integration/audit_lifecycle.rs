@@ -6,8 +6,6 @@ use anyhow::Result;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tempfile::tempdir;
-use tokio::net::TcpListener;
-use tonic::transport::Server;
 
 #[tokio::test]
 async fn test_full_auditor_lifecycle() -> Result<()> {
@@ -28,28 +26,7 @@ async fn test_full_auditor_lifecycle() -> Result<()> {
     let service = KeyTransparencyImpl::new(db, server_sk, vrf_priv, auditor_keys, None).await?;
 
     // Fix: Explicit type annotation
-    let addr: std::net::SocketAddr = "127.0.0.1:0".parse().unwrap();
-    let listener = TcpListener::bind(addr).await?;
-    let local_addr = listener.local_addr()?;
-
-    tokio::spawn(async move {
-        // Create a stream manually using futures::stream::unfold
-        let incoming = futures::stream::unfold(listener, |listener| async move {
-            let res = listener.accept().await.map(|(s, _)| s);
-            Some((res, listener))
-        });
-
-        let result: Result<(), tonic::transport::Error> = Server::builder()
-            .add_service(crate::proto::kt::key_transparency_service_server::KeyTransparencyServiceServer::new(service))
-            .serve_with_incoming(incoming)
-            .await;
-
-        if let Err(e) = result {
-            eprintln!("Server error: {}", e);
-        }
-    });
-
-    let uri = format!("http://{}", local_addr);
+    let channel = crate::integration::harness::serve_in_memory(service).await?;
 
     let public_config = crypto::PublicConfig {
         cipher_suite: CIPHER_SUITE_KT_128_SHA256_ED25519,
@@ -67,7 +44,7 @@ async fn test_full_auditor_lifecycle() -> Result<()> {
     };
 
     // 3. User Updates
-    let mut user_client: KtClient = KtClient::connect(uri.clone(), public_config.clone()).await?;
+    let mut user_client: KtClient = KtClient::with_channel(channel.clone(), public_config.clone())?;
 
     println!("--- User Update 1 ---");
     let _ = user_client
@@ -76,7 +53,7 @@ async fn test_full_auditor_lifecycle() -> Result<()> {
 
     println!("--- Auditor Processing ---");
     let mut auditor: KtAuditor =
-        KtAuditor::connect(uri.clone(), auditor_sk.clone(), public_config.clone()).await?;
+        KtAuditor::with_channel(channel.clone(), auditor_sk.clone(), public_config.clone())?;
 
     // Process update 1
     auditor.process_and_sign().await?;
@@ -104,7 +81,7 @@ async fn test_full_auditor_lifecycle() -> Result<()> {
         .await?;
 
     let mut restarted: KtAuditor =
-        KtAuditor::connect(uri.clone(), auditor_sk, public_config).await?;
+        KtAuditor::with_channel(channel.clone(), auditor_sk, public_config)?;
     let started_at = restarted.bootstrap().await?;
     assert_eq!(started_at, 3);
 

@@ -100,18 +100,22 @@ pub struct KtClient {
 
 impl KtClient {
     pub async fn connect(dst: String, config: PublicConfig) -> Result<Self> {
+        let channel = Channel::from_shared(dst)?.connect().await?;
+        Self::with_channel(channel, config)
+    }
+
+    pub fn with_channel(channel: Channel, config: PublicConfig) -> Result<Self> {
         if config.mode == crate::crypto::DEPLOYMENT_MODE_THIRD_PARTY_MANAGEMENT {
             return Err(anyhow!(
                 "Third-party management mode is not supported: leaf signatures would not be verified or committed"
             ));
         }
-        let client = KeyTransparencyServiceClient::connect(dst).await?;
         let sig_pk = ServiceVerifyingKey::from_bytes(&config.server_sig_pk)
             .context("Invalid server signing public key in PublicConfig")?;
         let vrf_pk = config.vrf_public_key.clone();
 
         Ok(Self {
-            client,
+            client: KeyTransparencyServiceClient::new(channel),
             sig_pk,
             vrf_pk,
             state: None,

@@ -6,8 +6,6 @@ use anyhow::Result;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tempfile::tempdir;
-use tokio::net::TcpListener;
-use tonic::transport::Server;
 
 // §8.3 owner initialization, verified end-to-end by the client against a
 // distinguished start entry.
@@ -25,21 +23,7 @@ async fn test_owner_init_client_verified() -> Result<()> {
         tree.config.reasonable_monitoring_window = 0;
     }
 
-    let addr: std::net::SocketAddr = "127.0.0.1:0".parse().unwrap();
-    let listener = TcpListener::bind(addr).await?;
-    let local_addr = listener.local_addr()?;
-    tokio::spawn(async move {
-        let incoming = futures::stream::unfold(listener, |listener| async move {
-            let res = listener.accept().await.map(|(s, _)| s);
-            Some((res, listener))
-        });
-        let _ = Server::builder()
-            .add_service(crate::proto::kt::key_transparency_service_server::KeyTransparencyServiceServer::new(service))
-            .serve_with_incoming(incoming)
-            .await;
-    });
-
-    let uri = format!("http://{}", local_addr);
+    let channel = crate::integration::harness::serve_in_memory(service).await?;
     let public_config = crypto::PublicConfig {
         cipher_suite: CIPHER_SUITE_KT_128_SHA256_ED25519,
         mode: crypto::DEPLOYMENT_MODE_CONTACT_MONITORING,
@@ -56,7 +40,7 @@ async fn test_owner_init_client_verified() -> Result<()> {
     };
 
     let owner = b"owner_label".to_vec();
-    let mut client: KtClient = KtClient::connect(uri, public_config).await?;
+    let mut client: KtClient = KtClient::with_channel(channel.clone(), public_config)?;
 
     // the label gains several versions, interleaved with unrelated activity
     client.update(owner.clone(), b"v0".to_vec()).await?;

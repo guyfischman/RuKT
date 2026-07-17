@@ -21,9 +21,17 @@ impl KtAuditor {
         signer: ServiceSigningKey,
         config: PublicConfig,
     ) -> Result<Self> {
-        let client = KeyTransparencyServiceClient::connect(dst).await?;
+        let channel = Channel::from_shared(dst)?.connect().await?;
+        Self::with_channel(channel, signer, config)
+    }
+
+    pub fn with_channel(
+        channel: Channel,
+        signer: ServiceSigningKey,
+        config: PublicConfig,
+    ) -> Result<Self> {
         Ok(Self {
-            client,
+            client: KeyTransparencyServiceClient::new(channel),
             signer,
             log_accumulator: LogAccumulator::new(),
             prefix_root: vec![0u8; 32],

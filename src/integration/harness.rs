@@ -6,12 +6,44 @@ use anyhow::Result;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tempfile::TempDir;
-use tokio::net::TcpListener;
-use tonic::transport::Server;
+use tonic::transport::{Channel, Server};
+
+/// Serves the gRPC service over an in-memory duplex transport (no network
+/// ports) and returns a `Channel` that opens a fresh duplex per connection.
+pub async fn serve_in_memory(service: KeyTransparencyImpl) -> Result<Channel> {
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<tokio::io::DuplexStream>();
+    let incoming = futures::stream::unfold(rx, |mut rx| async move {
+        rx.recv().await.map(|io| (Ok::<_, std::io::Error>(io), rx))
+    });
+    tokio::spawn(async move {
+        let _ = Server::builder()
+            .add_service(
+                crate::proto::kt::key_transparency_service_server::KeyTransparencyServiceServer::new(
+                    service,
+                ),
+            )
+            .serve_with_incoming(incoming)
+            .await;
+    });
+
+    let channel = tonic::transport::Endpoint::try_from("http://in-memory")?
+        .connect_with_connector(tower::service_fn(move |_: tonic::transport::Uri| {
+            let tx = tx.clone();
+            async move {
+                let (client_io, server_io) = tokio::io::duplex(1 << 20);
+                tx.send(server_io).map_err(|_| {
+                    std::io::Error::new(std::io::ErrorKind::ConnectionRefused, "server task gone")
+                })?;
+                Ok::<_, std::io::Error>(client_io)
+            }
+        }))
+        .await?;
+    Ok(channel)
+}
 
 /// A running in-process server plus the public config clients need to verify it.
 pub struct TestServer {
-    pub uri: String,
+    pub channel: Channel,
     pub config: crypto::PublicConfig,
     pub auditor_signer: Option<crypto::ServiceSigningKey>,
     _dir: TempDir,
@@ -53,19 +85,7 @@ impl TestServer {
             tree.config.reasonable_monitoring_window = rmw;
         }
 
-        let addr: std::net::SocketAddr = "127.0.0.1:0".parse().unwrap();
-        let listener = TcpListener::bind(addr).await?;
-        let local_addr = listener.local_addr()?;
-        tokio::spawn(async move {
-            let incoming = futures::stream::unfold(listener, |listener| async move {
-                let res = listener.accept().await.map(|(s, _)| s);
-                Some((res, listener))
-            });
-            let _ = Server::builder()
-                .add_service(crate::proto::kt::key_transparency_service_server::KeyTransparencyServiceServer::new(service))
-                .serve_with_incoming(incoming)
-                .await;
-        });
+        let channel = serve_in_memory(service).await?;
 
         let mode = if auditing {
             crypto::DEPLOYMENT_MODE_THIRD_PARTY_AUDITING
@@ -88,7 +108,7 @@ impl TestServer {
         };
 
         Ok(Self {
-            uri: format!("http://{}", local_addr),
+            channel,
             config,
             auditor_signer,
             _dir: dir,
@@ -96,7 +116,7 @@ impl TestServer {
     }
 
     pub async fn client(&self) -> Result<KtClient> {
-        KtClient::connect(self.uri.clone(), self.config.clone()).await
+        KtClient::with_channel(self.channel.clone(), self.config.clone())
     }
 
     /// Ingests all pending log entries and publishes a fresh auditor head.
@@ -105,7 +125,8 @@ impl TestServer {
             .auditor_signer
             .clone()
             .ok_or_else(|| anyhow::anyhow!("Not an auditing deployment"))?;
-        let mut auditor = KtAuditor::connect(self.uri.clone(), signer, self.config.clone()).await?;
+        let mut auditor =
+            KtAuditor::with_channel(self.channel.clone(), signer, self.config.clone())?;
         auditor.process_and_sign().await?;
         Ok(())
     }

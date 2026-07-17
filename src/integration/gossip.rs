@@ -7,8 +7,6 @@ use anyhow::Result;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tempfile::tempdir;
-use tokio::net::TcpListener;
-use tonic::transport::Server;
 
 #[tokio::test]
 async fn test_gossip_detects_split_view() -> Result<()> {
@@ -20,21 +18,7 @@ async fn test_gossip_detects_split_view() -> Result<()> {
 
     let service = KeyTransparencyImpl::new(db, sig_sk, vrf_priv, HashMap::new(), None).await?;
 
-    let addr: std::net::SocketAddr = "127.0.0.1:0".parse().unwrap();
-    let listener = TcpListener::bind(addr).await?;
-    let local_addr = listener.local_addr()?;
-    tokio::spawn(async move {
-        let incoming = futures::stream::unfold(listener, |listener| async move {
-            let res = listener.accept().await.map(|(s, _)| s);
-            Some((res, listener))
-        });
-        let _ = Server::builder()
-            .add_service(crate::proto::kt::key_transparency_service_server::KeyTransparencyServiceServer::new(service))
-            .serve_with_incoming(incoming)
-            .await;
-    });
-
-    let uri = format!("http://{}", local_addr);
+    let channel = crate::integration::harness::serve_in_memory(service).await?;
     let public_config = crypto::PublicConfig {
         cipher_suite: CIPHER_SUITE_KT_128_SHA256_ED25519,
         mode: crypto::DEPLOYMENT_MODE_CONTACT_MONITORING,
@@ -59,8 +43,8 @@ async fn test_gossip_detects_split_view() -> Result<()> {
         public_config.reasonable_monitoring_window
     );
 
-    let mut alice: KtClient = KtClient::connect(uri.clone(), public_config.clone()).await?;
-    let mut bob: KtClient = KtClient::connect(uri, public_config.clone()).await?;
+    let mut alice: KtClient = KtClient::with_channel(channel.clone(), public_config.clone())?;
+    let mut bob: KtClient = KtClient::with_channel(channel.clone(), public_config.clone())?;
 
     alice.update(b"alice".to_vec(), b"pk_a".to_vec()).await?;
     alice.search(b"alice".to_vec(), None).await?;

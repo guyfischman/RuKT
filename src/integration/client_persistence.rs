@@ -6,8 +6,6 @@ use anyhow::Result;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tempfile::tempdir;
-use tokio::net::TcpListener;
-use tonic::transport::Server;
 
 #[tokio::test]
 async fn test_client_state_survives_restart() -> Result<()> {
@@ -18,22 +16,7 @@ async fn test_client_state_survives_restart() -> Result<()> {
 
     let service = KeyTransparencyImpl::new(db, sig_sk, vrf_priv, HashMap::new(), None).await?;
 
-    let addr: std::net::SocketAddr = "127.0.0.1:0".parse().unwrap();
-    let listener = TcpListener::bind(addr).await?;
-    let local_addr = listener.local_addr()?;
-
-    tokio::spawn(async move {
-        let incoming = futures::stream::unfold(listener, |listener| async move {
-            let res = listener.accept().await.map(|(s, _)| s);
-            Some((res, listener))
-        });
-        let _ = Server::builder()
-            .add_service(crate::proto::kt::key_transparency_service_server::KeyTransparencyServiceServer::new(service))
-            .serve_with_incoming(incoming)
-            .await;
-    });
-
-    let uri = format!("http://{}", local_addr);
+    let channel = crate::integration::harness::serve_in_memory(service).await?;
     let public_config = crypto::PublicConfig {
         cipher_suite: CIPHER_SUITE_KT_128_SHA256_ED25519,
         mode: crypto::DEPLOYMENT_MODE_CONTACT_MONITORING,
@@ -52,7 +35,7 @@ async fn test_client_state_survives_restart() -> Result<()> {
     let label = b"persisted_label".to_vec();
 
     {
-        let mut client: KtClient = KtClient::connect(uri.clone(), public_config.clone()).await?;
+        let mut client: KtClient = KtClient::with_channel(channel.clone(), public_config.clone())?;
         client.persist_to(&state_file)?;
 
         client.update(label.clone(), b"v0".to_vec()).await?;
@@ -66,7 +49,7 @@ async fn test_client_state_survives_restart() -> Result<()> {
     // restart with persisted state; a repeat search must ride the SAME head and
     // reconstruct exactly the retained root
     {
-        let mut client: KtClient = KtClient::connect(uri.clone(), public_config.clone()).await?;
+        let mut client: KtClient = KtClient::with_channel(channel.clone(), public_config.clone())?;
         client.persist_to(&state_file)?;
         assert_eq!(client.state.as_ref().map(|s| s.tree_size), Some(1));
         assert_eq!(client.label_versions.get(&label), Some(&0));
@@ -78,13 +61,13 @@ async fn test_client_state_survives_restart() -> Result<()> {
     // grow the tree while the client is offline, then verify the updated head
     // against retained subtrees on reconnect
     {
-        let mut writer: KtClient = KtClient::connect(uri.clone(), public_config.clone()).await?;
+        let mut writer: KtClient = KtClient::with_channel(channel.clone(), public_config.clone())?;
         writer
             .update(b"other_label".to_vec(), b"x".to_vec())
             .await?;
         writer.update(label.clone(), b"v1".to_vec()).await?;
 
-        let mut client: KtClient = KtClient::connect(uri.clone(), public_config.clone()).await?;
+        let mut client: KtClient = KtClient::with_channel(channel.clone(), public_config.clone())?;
         client.persist_to(&state_file)?;
 
         let resp = client.search(label.clone(), None).await?;
@@ -100,12 +83,12 @@ async fn test_client_state_survives_restart() -> Result<()> {
     // §8.2: monitoring walks the obligation up to a distinguished ancestor,
     // verifies the ladder there, and discharges it
     {
-        let mut writer: KtClient = KtClient::connect(uri.clone(), public_config.clone()).await?;
+        let mut writer: KtClient = KtClient::with_channel(channel.clone(), public_config.clone())?;
         writer
             .update(b"other_label".to_vec(), b"y".to_vec())
             .await?;
 
-        let mut client: KtClient = KtClient::connect(uri, public_config).await?;
+        let mut client: KtClient = KtClient::with_channel(channel.clone(), public_config)?;
         client.persist_to(&state_file)?;
 
         let resp = client.contact_monitor(label.clone()).await?;

@@ -7,8 +7,6 @@ use anyhow::Result;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tempfile::tempdir;
-use tokio::net::TcpListener;
-use tonic::transport::Server;
 
 #[tokio::test]
 async fn test_credential_offline_verification() -> Result<()> {
@@ -19,21 +17,7 @@ async fn test_credential_offline_verification() -> Result<()> {
 
     let service = KeyTransparencyImpl::new(db, sig_sk, vrf_priv, HashMap::new(), None).await?;
 
-    let addr: std::net::SocketAddr = "127.0.0.1:0".parse().unwrap();
-    let listener = TcpListener::bind(addr).await?;
-    let local_addr = listener.local_addr()?;
-    tokio::spawn(async move {
-        let incoming = futures::stream::unfold(listener, |listener| async move {
-            let res = listener.accept().await.map(|(s, _)| s);
-            Some((res, listener))
-        });
-        let _ = Server::builder()
-            .add_service(crate::proto::kt::key_transparency_service_server::KeyTransparencyServiceServer::new(service))
-            .serve_with_incoming(incoming)
-            .await;
-    });
-
-    let uri = format!("http://{}", local_addr);
+    let channel = crate::integration::harness::serve_in_memory(service).await?;
     let public_config = crypto::PublicConfig {
         cipher_suite: CIPHER_SUITE_KT_128_SHA256_ED25519,
         mode: crypto::DEPLOYMENT_MODE_CONTACT_MONITORING,
@@ -51,7 +35,7 @@ async fn test_credential_offline_verification() -> Result<()> {
     let user = b"cred_user".to_vec();
 
     // the sender creates versions and obtains its credential
-    let mut sender: KtClient = KtClient::connect(uri.clone(), public_config.clone()).await?;
+    let mut sender: KtClient = KtClient::with_channel(channel.clone(), public_config.clone())?;
     sender.update(user.clone(), b"val".to_vec()).await?;
     sender.update(b"noise_1".to_vec(), b"x".to_vec()).await?;
     sender.update(b"noise_2".to_vec(), b"y".to_vec()).await?;
@@ -63,7 +47,7 @@ async fn test_credential_offline_verification() -> Result<()> {
 
     // the recipient learns the recent distinguished heads, then verifies the
     // credential without contacting the log again
-    let mut recipient: KtClient = KtClient::connect(uri, public_config).await?;
+    let mut recipient: KtClient = KtClient::with_channel(channel.clone(), public_config)?;
     recipient.distinguished(None).await?;
     assert!(recipient.distinguished_entries.contains_key(&cred.position));
 
