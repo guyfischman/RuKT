@@ -79,8 +79,9 @@ impl RocksDbStore {
         opts.create_missing_column_families(true);
 
         // === HIGH PERFORMANCE TUNING FOR BENCHMARKS ===
-        opts.increase_parallelism(8);
-        opts.set_max_background_jobs(6);
+        let cores = std::thread::available_parallelism().map_or(4, usize::from) as i32;
+        opts.increase_parallelism(cores);
+        opts.set_max_background_jobs(cores.clamp(2, 6));
         opts.set_write_buffer_size(128 * 1024 * 1024); // 128MB MemTable
         opts.set_max_write_buffer_number(4);
         opts.set_bytes_per_sync(1048576 * 2); // 2MB
