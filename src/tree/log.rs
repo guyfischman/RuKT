@@ -180,13 +180,9 @@ impl LogTree {
             mutable_chunk.set_value(node_id, leaf_hash)?;
             chunk_cache.insert(cid, mutable_chunk);
 
-            // 1. Timestamp: Key = log_index | (1 << 63)
-            let ts_key = log_index | (1u64 << 63);
-            self.store.put_value(ts_key, ts.to_be_bytes().to_vec())?;
-
-            // 2. Prefix Root Hash: Key = log_index | (1 << 62)
-            let root_key = log_index | (1u64 << 62);
-            self.store.put_value(root_key, root.clone())?;
+            self.store
+                .put_timestamp(log_index, ts.to_be_bytes().to_vec())?;
+            self.store.put_prefix_root(log_index, root.clone())?;
         }
 
         let mut batch = Vec::new();
@@ -200,10 +196,9 @@ impl LogTree {
     }
 
     pub fn get_timestamp(&self, log_index: u64) -> Result<u64> {
-        let ts_key = log_index | (1u64 << 63);
         let bytes = self
             .store
-            .get_value(ts_key)?
+            .get_timestamp(log_index)?
             .ok_or_else(|| anyhow!("Timestamp not found for log index {}", log_index))?;
         let mut arr = [0u8; 8];
         arr.copy_from_slice(&bytes);
@@ -211,26 +206,24 @@ impl LogTree {
     }
 
     pub fn get_prefix_root(&self, log_index: u64) -> Result<Vec<u8>> {
-        let root_key = log_index | (1u64 << 62);
         let bytes = self
             .store
-            .get_value(root_key)?
+            .get_prefix_root(log_index)?
             .ok_or_else(|| anyhow!("Prefix Root not found for log index {}", log_index))?;
         Ok(bytes)
     }
 
     // Mapping: LogIndex -> PrefixVersion (u64)
     pub fn put_prefix_ptr(&self, log_index: u64, version: u64) -> Result<()> {
-        let key = log_index | (1u64 << 61);
-        self.store.put_value(key, version.to_be_bytes().to_vec())?;
+        self.store
+            .put_prefix_ptr(log_index, version.to_be_bytes().to_vec())?;
         Ok(())
     }
 
     pub fn get_prefix_ptr(&self, log_index: u64) -> Result<u64> {
-        let key = log_index | (1u64 << 61);
         let bytes = self
             .store
-            .get_value(key)?
+            .get_prefix_ptr(log_index)?
             .ok_or_else(|| anyhow!("Prefix Ptr not found for log index {}", log_index))?;
         let mut arr = [0u8; 8];
         arr.copy_from_slice(&bytes);

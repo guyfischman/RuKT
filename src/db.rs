@@ -39,6 +39,15 @@ pub trait TransparencyStore: Send + Sync {
     fn get_meta(&self, key: &[u8]) -> Result<Option<Vec<u8>>>;
     fn put_meta(&self, key: &[u8], val: Vec<u8>) -> Result<()>;
 
+    fn get_timestamp(&self, log_index: u64) -> Result<Option<Vec<u8>>>;
+    fn put_timestamp(&self, log_index: u64, val: Vec<u8>) -> Result<()>;
+
+    fn get_prefix_root(&self, log_index: u64) -> Result<Option<Vec<u8>>>;
+    fn put_prefix_root(&self, log_index: u64, val: Vec<u8>) -> Result<()>;
+
+    fn get_prefix_ptr(&self, log_index: u64) -> Result<Option<Vec<u8>>>;
+    fn put_prefix_ptr(&self, log_index: u64, val: Vec<u8>) -> Result<()>;
+
     fn get_label_history(&self, label: &[u8]) -> Result<Vec<(u32, u64)>>;
     fn append_label_history(&self, label: &[u8], version: u32, pos: u64) -> Result<()>;
     fn put_history_batch(&self, entries: Vec<(Vec<u8>, u32, u64)>) -> Result<()>;
@@ -60,6 +69,9 @@ impl RocksDbStore {
     const CF_HISTORY: &'static str = "history";
     const CF_AUDIT: &'static str = "audit";
     const CF_OPENINGS: &'static str = "openings";
+    const CF_TIMESTAMP: &'static str = "timestamp";
+    const CF_PREFIX_ROOT: &'static str = "prefix_root";
+    const CF_PREFIX_PTR: &'static str = "prefix_ptr";
 
     pub fn new(path: &str) -> Result<Self> {
         let mut opts = Options::default();
@@ -81,6 +93,9 @@ impl RocksDbStore {
             ColumnFamilyDescriptor::new(Self::CF_HISTORY, Options::default()),
             ColumnFamilyDescriptor::new(Self::CF_AUDIT, Options::default()),
             ColumnFamilyDescriptor::new(Self::CF_OPENINGS, Options::default()),
+            ColumnFamilyDescriptor::new(Self::CF_TIMESTAMP, Options::default()),
+            ColumnFamilyDescriptor::new(Self::CF_PREFIX_ROOT, Options::default()),
+            ColumnFamilyDescriptor::new(Self::CF_PREFIX_PTR, Options::default()),
         ];
 
         let db = DB::open_cf_descriptors(&opts, path, cfs).context("Failed to open RocksDB")?;
@@ -285,6 +300,39 @@ impl TransparencyStore for RocksDbStore {
     fn put_meta(&self, key: &[u8], val: Vec<u8>) -> Result<()> {
         let cf = self.db.cf_handle(Self::CF_META).unwrap();
         self.db.put_cf(cf, key, val)?;
+        Ok(())
+    }
+
+    fn get_timestamp(&self, log_index: u64) -> Result<Option<Vec<u8>>> {
+        let cf = self.db.cf_handle(Self::CF_TIMESTAMP).unwrap();
+        Ok(self.db.get_cf(cf, log_index.to_be_bytes())?)
+    }
+
+    fn put_timestamp(&self, log_index: u64, val: Vec<u8>) -> Result<()> {
+        let cf = self.db.cf_handle(Self::CF_TIMESTAMP).unwrap();
+        self.db.put_cf(cf, log_index.to_be_bytes(), val)?;
+        Ok(())
+    }
+
+    fn get_prefix_root(&self, log_index: u64) -> Result<Option<Vec<u8>>> {
+        let cf = self.db.cf_handle(Self::CF_PREFIX_ROOT).unwrap();
+        Ok(self.db.get_cf(cf, log_index.to_be_bytes())?)
+    }
+
+    fn put_prefix_root(&self, log_index: u64, val: Vec<u8>) -> Result<()> {
+        let cf = self.db.cf_handle(Self::CF_PREFIX_ROOT).unwrap();
+        self.db.put_cf(cf, log_index.to_be_bytes(), val)?;
+        Ok(())
+    }
+
+    fn get_prefix_ptr(&self, log_index: u64) -> Result<Option<Vec<u8>>> {
+        let cf = self.db.cf_handle(Self::CF_PREFIX_PTR).unwrap();
+        Ok(self.db.get_cf(cf, log_index.to_be_bytes())?)
+    }
+
+    fn put_prefix_ptr(&self, log_index: u64, val: Vec<u8>) -> Result<()> {
+        let cf = self.db.cf_handle(Self::CF_PREFIX_PTR).unwrap();
+        self.db.put_cf(cf, log_index.to_be_bytes(), val)?;
         Ok(())
     }
 

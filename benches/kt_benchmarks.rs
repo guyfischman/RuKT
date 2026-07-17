@@ -1503,14 +1503,10 @@ fn bench_gdpr(c: &mut Criterion) {
     rt.block_on(async {
         let tree = service.tree.read().await;
         let tree_size = tree.latest.as_ref().unwrap().tree_size;
-        let current_ts_bytes = db
-            .get_value((tree_size - 1) | (1u64 << 63))
-            .unwrap()
-            .unwrap();
+        let current_ts_bytes = db.get_timestamp(tree_size - 1).unwrap().unwrap();
         let current_ts = u64::from_be_bytes(current_ts_bytes.try_into().unwrap());
         let old_ts = current_ts - 20_000;
-        db.put_value(1u64 << 63, old_ts.to_be_bytes().to_vec())
-            .unwrap();
+        db.put_timestamp(0, old_ts.to_be_bytes().to_vec()).unwrap();
     });
     group.bench_function("search_expired_entry", |b| {
         b.iter(|| {

@@ -48,13 +48,11 @@ async fn test_pruning_expiration() -> Result<()> {
         }))
         .await?;
 
-    let ts_key_0 = 1u64 << 63;
-    let ts_key_1 = 1 | (1u64 << 63);
-    let current_ts_bytes = db.get_value(ts_key_1)?.unwrap();
+    let current_ts_bytes = db.get_timestamp(1)?.unwrap();
     let current_ts = u64::from_be_bytes(current_ts_bytes.try_into().unwrap());
 
     let old_ts = current_ts - 20_000;
-    db.put_value(ts_key_0, old_ts.to_be_bytes().to_vec())?;
+    db.put_timestamp(0, old_ts.to_be_bytes().to_vec())?;
 
     let req_v0 = tonic::Request::new(SearchRequest {
         label: user_id.clone(),
