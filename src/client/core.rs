@@ -212,7 +212,27 @@ impl KtClient {
                 .collect(),
             retained_head: self.retained_head.as_ref().map(hex::encode),
         };
-        std::fs::write(path, serde_json::to_string(&p)?)?;
+        // Write-fsync-rename so a crash mid-save can never truncate the
+        // previous verified state (losing it would forfeit fork detection).
+        let json = serde_json::to_string(&p)?;
+        let mut tmp = path.clone().into_os_string();
+        tmp.push(".tmp");
+        let tmp = std::path::PathBuf::from(tmp);
+        {
+            use std::io::Write;
+            let mut f = std::fs::File::create(&tmp)?;
+            f.write_all(json.as_bytes())?;
+            f.sync_all()?;
+        }
+        std::fs::rename(&tmp, path)?;
+        #[cfg(unix)]
+        {
+            let dir = match path.parent() {
+                Some(d) if !d.as_os_str().is_empty() => d,
+                _ => std::path::Path::new("."),
+            };
+            std::fs::File::open(dir)?.sync_all()?;
+        }
         Ok(())
     }
 
