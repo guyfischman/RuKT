@@ -16,7 +16,6 @@ impl PrefixTree {
         entries: &[(Vec<u8>, Vec<u8>)],
     ) -> Result<(Vec<Vec<u8>>, Vec<SearchResult>, u64)> {
         let mut current_ptr = current_root_ptr;
-        let mut alloc_version = start_version;
         let mut db_batch = Vec::new();
         let mut roots = Vec::new();
         let mut search_results = Vec::new();
@@ -27,7 +26,8 @@ impl PrefixTree {
         self.debug_hash_ops.store(0, Ordering::Relaxed);
         self.debug_steps.store(0, Ordering::Relaxed);
 
-        for (index, commitment) in entries {
+        for (i, (index, commitment)) in entries.iter().enumerate() {
+            let alloc_version = start_version + i as u64;
             let (root, search_res, (pos, data), cached_obj) = self
                 .insert_internal(alloc_version, current_ptr, index, commitment, &overlay)
                 .await?;
@@ -42,7 +42,6 @@ impl PrefixTree {
             search_results.push(search_res);
 
             current_ptr = Some(pos);
-            alloc_version += 1;
         }
 
         self.store.put_prefix_batch(db_batch)?;
