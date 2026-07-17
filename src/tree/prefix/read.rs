@@ -39,10 +39,10 @@ impl PrefixTree {
             return Ok(cached.clone());
         }
 
-        // 2. DashMap (Fast Path)
+        // 2. Shared cache (Fast Path)
         if let Some(entry) = self.node_cache.get(&ptr) {
             self.hits.fetch_add(1, Ordering::Relaxed);
-            return Ok(entry.clone());
+            return Ok(entry);
         }
 
         self.misses.fetch_add(1, Ordering::Relaxed);

@@ -519,7 +519,7 @@ pub async fn parallel_bulk_populate(
     }
 
     tree.store.put_prefix_batch(merge_batch)?;
-    tree.prefix.node_cache.clear();
+    tree.prefix.node_cache.invalidate_all();
     println!(
         "   [parallel] Phase 5 (merge {} entries): {:.2?}",
         total_positions,

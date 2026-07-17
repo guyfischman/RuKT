@@ -26,6 +26,17 @@ impl CachedLogEntry {
         &self.seed
     }
 
+    // Weighed as if fully rolled up, since `parents` fills lazily after insertion.
+    pub fn max_resident_bytes(&self) -> usize {
+        const HASH: usize = 32 + size_of::<Vec<u8>>();
+        let levels = 8 * INDEX_LENGTH + 1;
+        levels * (HASH + size_of::<Option<Vec<u8>>>())
+            + self.inner.copath.len() * (size_of::<ParentNode>() + HASH)
+            + self.inner.index.len()
+            + self.seed.len()
+            + size_of::<Self>()
+    }
+
     pub fn stand_in(&self, _level: usize) -> Vec<u8> {
         ZERO_VALUE.to_vec()
     }
