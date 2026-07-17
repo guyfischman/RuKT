@@ -11,6 +11,24 @@ use std::collections::HashMap;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 impl Tree {
+    // The signed TBS covers config, size, and root but not the timestamp, so
+    // re-stamping an idle head keeps its signature valid.
+    pub fn refresh_head_timestamp(&mut self) -> Result<Option<TreeHead>> {
+        let Some(mut th) = self.latest.clone() else {
+            return Ok(None);
+        };
+        let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis() as u64;
+        if (th.timestamp as u64) >= now {
+            return Ok(Some(th));
+        }
+        th.timestamp = now as i64;
+        let mut head_buf = Vec::new();
+        th.encode(&mut head_buf)?;
+        self.store.set_head(head_buf)?;
+        self.latest = Some(th.clone());
+        Ok(Some(th))
+    }
+
     pub async fn apply_batch(
         &mut self,
         updates: Vec<PreUpdateData>,

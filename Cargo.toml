@@ -6,7 +6,7 @@ edition = "2024"
 [dependencies]
 tonic = { version = "0.10", features = ["tls", "tls-roots"] }
 prost = "0.12"
-tokio = { version = "1.0", features = ["macros", "rt-multi-thread", "time", "sync"] }
+tokio = { version = "1.0", features = ["macros", "rt-multi-thread", "time", "sync", "signal"] }
 rocksdb = "0.21"
 sha2 = "0.10"
 hmac = "0.12"
@@ -28,6 +28,7 @@ aes = "0.8"
 moka = { version = "0.12", features = ["sync"] }
 rayon = "1.8"
 rfc6979 = "0.4"
+clap = { version = "4", features = ["derive", "env"] }
 
 [features]
 # Exposes private client verifiers to benches; never enabled in normal builds.

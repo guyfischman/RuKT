@@ -1,5 +1,8 @@
 use super::tls::{FixedOpaque, Opaqueu8, Opaqueu16, Opaqueu32, Optional, TlsEncode};
-use super::{PrivateConfig, PublicConfig};
+use super::{
+    CIPHER_SUITE_KT_128_SHA256_ED25519, CIPHER_SUITE_KT_128_SHA256_P256, PrivateConfig,
+    PublicConfig,
+};
 use anyhow::{Result, anyhow};
 use ed25519_dalek::{Signature as EdSignature, Signer, Verifier};
 use p256::ecdsa::{
@@ -24,6 +27,36 @@ impl ServiceSigningKey {
         match self {
             ServiceSigningKey::Ed25519(k) => ServiceVerifyingKey::Ed25519(k.verifying_key()),
             ServiceSigningKey::P256(k) => ServiceVerifyingKey::P256(*k.verifying_key()),
+        }
+    }
+
+    pub fn to_seed_bytes(&self) -> Vec<u8> {
+        match self {
+            ServiceSigningKey::Ed25519(k) => k.to_bytes().to_vec(),
+            ServiceSigningKey::P256(k) => k.to_bytes().as_slice().to_vec(),
+        }
+    }
+
+    pub fn from_seed_bytes(cipher_suite: u16, bytes: &[u8]) -> Result<Self> {
+        match cipher_suite {
+            CIPHER_SUITE_KT_128_SHA256_ED25519 => {
+                let seed: [u8; 32] = bytes
+                    .try_into()
+                    .map_err(|_| anyhow!("Ed25519 signing key must be 32 bytes"))?;
+                Ok(ServiceSigningKey::Ed25519(
+                    ed25519_dalek::SigningKey::from_bytes(&seed),
+                ))
+            }
+            CIPHER_SUITE_KT_128_SHA256_P256 => {
+                if bytes.len() != 32 {
+                    return Err(anyhow!("P-256 signing key must be 32 bytes"));
+                }
+                let field = p256::FieldBytes::from_slice(bytes);
+                let k = P256SigningKey::from_bytes(field)
+                    .map_err(|_| anyhow!("Invalid P-256 signing key bytes"))?;
+                Ok(ServiceSigningKey::P256(k))
+            }
+            _ => Err(anyhow!("Unsupported cipher suite")),
         }
     }
 }

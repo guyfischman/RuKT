@@ -37,6 +37,28 @@ pub trait AccessPolicy: Send + Sync {
 pub struct AllowAll;
 impl AccessPolicy for AllowAll {}
 
+// `Default` reproduces the values the service previously hardcoded.
+#[derive(Clone, Debug)]
+pub struct ServerParams {
+    pub max_ahead: u64,
+    pub max_behind: u64,
+    pub reasonable_monitoring_window: u64,
+    pub maximum_lifetime: Option<u64>,
+    pub max_response_entries: usize,
+}
+
+impl Default for ServerParams {
+    fn default() -> Self {
+        Self {
+            max_ahead: 5000,
+            max_behind: 5000,
+            reasonable_monitoring_window: 86_400_000,
+            maximum_lifetime: None,
+            max_response_entries: 100,
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct KeyTransparencyImpl {
     pub db: Arc<dyn TransparencyStore>,
@@ -55,17 +77,30 @@ impl KeyTransparencyImpl {
         auditor_keys: HashMap<Vec<u8>, ServiceVerifyingKey>,
         leaf_public_key: Option<Vec<u8>>,
     ) -> Result<Self> {
+        Self::with_params(
+            db,
+            sig_key,
+            vrf_key,
+            auditor_keys,
+            leaf_public_key,
+            ServerParams::default(),
+        )
+        .await
+    }
+
+    pub async fn with_params(
+        db: Arc<dyn TransparencyStore>,
+        sig_key: ServiceSigningKey,
+        vrf_key: Vec<u8>,
+        auditor_keys: HashMap<Vec<u8>, ServiceVerifyingKey>,
+        leaf_public_key: Option<Vec<u8>>,
+        params: ServerParams,
+    ) -> Result<Self> {
         let mode = if !auditor_keys.is_empty() {
             DEPLOYMENT_MODE_THIRD_PARTY_AUDITING
         } else {
             DEPLOYMENT_MODE_CONTACT_MONITORING
         };
-
-        let max_ahead = 5000;
-        let max_behind = 5000;
-        let rmw = 86400000;
-        let maximum_lifetime = None;
-        let max_response_entries = 100; // Default limit for pagination
 
         // Determine cipher suite from key type
         let suite = match &sig_key {
@@ -79,12 +114,12 @@ impl KeyTransparencyImpl {
             sig_key,
             vrf_key,
             auditor_keys.clone(),
-            max_ahead,
-            max_behind,
-            rmw,
-            maximum_lifetime,
+            params.max_ahead,
+            params.max_behind,
+            params.reasonable_monitoring_window,
+            params.maximum_lifetime,
             leaf_public_key,
-            max_response_entries,
+            params.max_response_entries,
         )
         .context("Failed to initialize cryptographic configuration")?;
 
