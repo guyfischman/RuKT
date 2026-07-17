@@ -20,6 +20,8 @@ pub mod proto {
 #[cfg(test)]
 mod integration;
 
+const FILE_DESCRIPTOR_SET: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/kt_descriptor.bin"));
+
 use crate::crypto::{
     CIPHER_SUITE_KT_128_SHA256_ED25519, CIPHER_SUITE_KT_128_SHA256_P256,
     DEPLOYMENT_MODE_CONTACT_MONITORING, DEPLOYMENT_MODE_THIRD_PARTY_AUDITING, PrivateConfig,
@@ -260,6 +262,10 @@ async fn main() -> Result<()> {
         _ => anyhow::bail!("--tls-cert and --tls-key must be set together"),
     };
 
+    let reflection = tonic_reflection::server::Builder::configure()
+        .register_encoded_file_descriptor_set(FILE_DESCRIPTOR_SET)
+        .build()?;
+
     tracing::info!(
         "Key Transparency Server ({}) listening on {}",
         mode_name(mode),
@@ -268,6 +274,7 @@ async fn main() -> Result<()> {
 
     builder
         .add_service(KeyTransparencyServiceServer::new(service))
+        .add_service(reflection)
         .serve_with_shutdown(args.listen, shutdown_signal())
         .await?;
 

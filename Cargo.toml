@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 tonic = { version = "0.10", features = ["tls", "tls-roots"] }
+tonic-reflection = "0.10"
 prost = "0.12"
 tokio = { version = "1.0", features = ["macros", "rt-multi-thread", "time", "sync", "signal"] }
 rocksdb = "0.21"
