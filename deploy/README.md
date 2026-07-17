@@ -14,8 +14,14 @@ used because of [cloudflare/cloudflared#1641](https://github.com/cloudflare/clou
 ```bash
 export KT_GOOD_HOST=good.kt.example.com
 export ACME_EMAIL=you@example.com
-docker compose up -d --build
+export RUKT_IMAGE=ghcr.io/guyfischman/rukt:latest
+docker compose pull && docker compose up -d
 ```
+
+The image is published by `.github/workflows/docker.yml` (amd64 + arm64) on
+every push to main. Pin a `sha-<commit>` tag instead of `latest` if you want
+the host to stay on a known build. Leaving `RUKT_IMAGE` unset builds from
+source instead (`docker compose up -d --build`).
 
 Ports 80 and 443 must be reachable from the internet: 80 for the ACME HTTP-01
 challenge, 443 for gRPC.
