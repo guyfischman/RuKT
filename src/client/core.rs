@@ -1966,35 +1966,47 @@ impl KtClient {
             .ok_or_else(|| anyhow!("Missing monitor proof"))?;
         let tree_size = update.position + 1;
 
-        // material for the monitored version, recovered from the credential itself
+        // Material for every version the monitoring ladder re-checks (all
+        // versions up to cred.version), recovered from the credential itself: the
+        // target's commitment from its value+opening, each lower version's from
+        // the credential's own binary ladder.
         let value = cred
             .value
             .as_ref()
             .ok_or_else(|| anyhow!("Missing credential value"))?;
-        let commitment = crate::crypto::hash::commit(
+        let target_commitment = crate::crypto::hash::commit(
             &cred.label,
             cred.version,
             &value.value,
             None,
             &cred.opening,
         )?;
-        let ladder_step = cred
+        let mut material: HashMap<u32, (Vec<u8>, Option<Vec<u8>>)> = HashMap::new();
+        for (step, v) in cred
             .binary_ladder
             .iter()
             .zip(base_binary_ladder(cred.version))
-            .find(|(_, v)| *v == cred.version)
-            .map(|(step, _)| step)
-            .ok_or_else(|| anyhow!("Credential ladder missing the target version"))?;
-        let vrf_input = construct_vrf_input(&cred.label, cred.version)?;
-        let vrf_output = crypto::ecvrf_verify(
-            self.config.cipher_suite,
-            &self.vrf_pk,
-            &vrf_input,
-            &ladder_step.proof,
-        )?
-        .to_vec();
-        let mut material: HashMap<u32, (Vec<u8>, Option<Vec<u8>>)> = HashMap::new();
-        material.insert(cred.version, (vrf_output, Some(commitment)));
+        {
+            if v > cred.version {
+                continue;
+            }
+            let vrf_input = construct_vrf_input(&cred.label, v)?;
+            let vrf_output = crypto::ecvrf_verify(
+                self.config.cipher_suite,
+                &self.vrf_pk,
+                &vrf_input,
+                &step.proof,
+            )?
+            .to_vec();
+            let comm = if v == cred.version {
+                target_commitment.clone()
+            } else {
+                step.commitment
+                    .clone()
+                    .ok_or_else(|| anyhow!("Credential ladder missing commitment for v={}", v))?
+            };
+            material.insert(v, (vrf_output, Some(comm)));
+        }
 
         // step 3 (§8.2 replay at position+1 for the single map entry)
         let rmw = self.config.reasonable_monitoring_window;
