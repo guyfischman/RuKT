@@ -5,6 +5,8 @@ use anyhow::{Result, anyhow};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
+const NEXT_PREFIX_VERSION_KEY: &[u8] = b"next_prefix_version";
+
 struct NodeChunk {
     chunk_root_id: u64,
     nodes: [Option<Vec<u8>>; 15],
@@ -236,18 +238,17 @@ impl LogTree {
     }
 
     pub fn get_next_prefix_version(&self) -> Result<u64> {
-        // Implementation note: Ideally use `CF_META`, but `store` only exposes specific gets.
-        // We will assume `get_head` returns `TreeHead`, we need another method?
-        // Let's use `u64::MAX` in `CF_VALUE` as a hack for now since we are modifying files.
-        // Key: u64::MAX
-        match self.store.get_value(u64::MAX)? {
-            Some(v) => Ok(u64::from_be_bytes(v.try_into().unwrap())),
+        match self.store.get_meta(NEXT_PREFIX_VERSION_KEY)? {
+            Some(v) => Ok(u64::from_be_bytes(v.try_into().map_err(|v: Vec<u8>| {
+                anyhow!("next prefix version has invalid length {}", v.len())
+            })?)),
             None => Ok(0),
         }
     }
 
     pub fn set_next_prefix_version(&self, ver: u64) -> Result<()> {
-        self.store.put_value(u64::MAX, ver.to_be_bytes().to_vec())?;
+        self.store
+            .put_meta(NEXT_PREFIX_VERSION_KEY, ver.to_be_bytes().to_vec())?;
         Ok(())
     }
 

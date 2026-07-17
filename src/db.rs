@@ -36,6 +36,9 @@ pub trait TransparencyStore: Send + Sync {
     fn get_head(&self) -> Result<Option<Vec<u8>>>;
     fn set_head(&self, data: Vec<u8>) -> Result<()>;
 
+    fn get_meta(&self, key: &[u8]) -> Result<Option<Vec<u8>>>;
+    fn put_meta(&self, key: &[u8], val: Vec<u8>) -> Result<()>;
+
     fn get_label_history(&self, label: &[u8]) -> Result<Vec<(u32, u64)>>;
     fn append_label_history(&self, label: &[u8], version: u32, pos: u64) -> Result<()>;
     fn put_history_batch(&self, entries: Vec<(Vec<u8>, u32, u64)>) -> Result<()>;
@@ -271,6 +274,17 @@ impl TransparencyStore for RocksDbStore {
     fn set_head(&self, data: Vec<u8>) -> Result<()> {
         let cf = self.db.cf_handle(Self::CF_META).unwrap();
         self.db.put_cf(cf, b"head", data)?;
+        Ok(())
+    }
+
+    fn get_meta(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
+        let cf = self.db.cf_handle(Self::CF_META).unwrap();
+        Ok(self.db.get_cf(cf, key)?)
+    }
+
+    fn put_meta(&self, key: &[u8], val: Vec<u8>) -> Result<()> {
+        let cf = self.db.cf_handle(Self::CF_META).unwrap();
+        self.db.put_cf(cf, key, val)?;
         Ok(())
     }
 
