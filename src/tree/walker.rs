@@ -31,8 +31,9 @@ pub struct TraversalSession<'a> {
     pub found_value: Option<UpdateValue>,
     pub found_opening: Vec<u8>,
 
-    // Dedup state
-    ladder_versions_added: HashSet<u32>,
+    // One binary-ladder step per version; maps a version to its step index so a
+    // later frontier node can fill in a commitment an earlier one left absent.
+    ladder_version_index: HashMap<u32, usize>,
 }
 
 impl<'a> TraversalSession<'a> {
@@ -48,7 +49,7 @@ impl<'a> TraversalSession<'a> {
             binary_ladder: Vec::new(),
             found_value: None,
             found_opening: Vec::new(),
-            ladder_versions_added: HashSet::new(),
+            ladder_version_index: HashMap::new(),
         }
     }
 
@@ -95,18 +96,29 @@ impl<'a> TraversalSession<'a> {
         self.add_proof(node_idx, proof_struct);
 
         for (ver, comm) in ladder_results {
-            if self.ladder_versions_added.insert(ver) {
-                let (_, vrf_proof) = self.tree.config.vrf_prove(self.label, ver)?;
-                // §13.1: the target version's commitment is recomputed from opening + value
-                let commitment = if extract_target == Some(ver) {
-                    None
-                } else {
-                    comm
-                };
-                self.binary_ladder.push(BinaryLadderStep {
-                    proof: vrf_proof,
-                    commitment,
-                });
+            // §13.1: the target version's commitment is recomputed from opening + value
+            let commitment = if extract_target == Some(ver) {
+                None
+            } else {
+                comm
+            };
+            match self.ladder_version_index.get(&ver) {
+                Some(&idx) => {
+                    // This node includes a version an earlier node proved absent;
+                    // the commitment is the same wherever the version is present.
+                    if self.binary_ladder[idx].commitment.is_none() {
+                        self.binary_ladder[idx].commitment = commitment;
+                    }
+                }
+                None => {
+                    let (_, vrf_proof) = self.tree.config.vrf_prove(self.label, ver)?;
+                    self.ladder_version_index
+                        .insert(ver, self.binary_ladder.len());
+                    self.binary_ladder.push(BinaryLadderStep {
+                        proof: vrf_proof,
+                        commitment,
+                    });
+                }
             }
         }
 

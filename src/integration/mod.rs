@@ -16,6 +16,7 @@ pub mod distinguished_walk;
 mod full_tree_head_optimization;
 mod full_update_search;
 pub mod gossip;
+mod greatest_search_history;
 pub mod harness;
 mod interop_vectors;
 mod malicious_auditor;
