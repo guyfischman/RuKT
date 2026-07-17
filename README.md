@@ -129,6 +129,56 @@ Searching for user 'bob'...
 Verified Value: "bob_pk_v1"
 ```
 
+## Testing against the live log
+
+A public deployment runs at **`https://kt.guyfischman.com`** (contact-monitoring
+mode, Ed25519), seeded with `alice`, `bob`, and `carol`. To exercise every
+client endpoint against it and verify each response:
+
+```bash
+git clone https://github.com/guyfischman/RuKT.git
+cd RuKT
+
+# fetch the log's published config — the trust root the client verifies against
+curl -s https://kt.guyfischman.com/config.json > live-config.json
+
+KT_CONFIG=live-config.json KT_URI=https://kt.guyfischman.com \
+  cargo run --release --example endpoint_tour
+```
+
+```text
+connected to https://kt.guyfischman.com
+
+update             registered tour-<nonce> at v0 and v1
+search greatest    vSome(1) = "pk_v1"
+search version 0   "pk_v0"
+search alice       vSome(0) = "alice_pk_v1"
+contact_monitor    OK
+distinguished      N head(s)
+owner_init/monitor OK
+get_credential     v1 verified offline (provisional)
+credential_update  verified offline
+
+Every endpoint verified against https://kt.guyfischman.com.
+```
+
+Each line is a distinct protocol operation — search (greatest and specific
+version), update, contact monitoring, the distinguished walk, owner
+initialization and monitoring, and offline credentials with a credential update.
+The client independently reconstructs and checks every proof and signature, so a
+line prints only if verification passed. The tour registers a unique
+`tour-<nonce>` label and writes a few throwaway entries, so it is safe to run
+repeatedly and by many people at once.
+
+The last line depends on the log's state: a credential update (§14.2) only
+applies to a *provisional* credential and needs a distinguished entry past its
+terminal, so the tour prints `credential_update  n/a (...)` when the credential
+is already anchored or no such entry has formed yet.
+
+The config served at `/config.json` comes from the log itself, so on its own it
+proves nothing: cross-check its two public keys against the copy published out
+of band before trusting a run.
+
 ## Using the client library
 
 `KtClient` performs the RPC and the verification together; a call returns only
