@@ -55,7 +55,7 @@ impl PrefixTree {
         let entry = Arc::new(LogEntry::decode(&bytes[..])?);
 
         // 4. Populate Cache
-        let cached = Arc::new(CachedLogEntry::new(entry, &self.aes_key));
+        let cached = Arc::new(CachedLogEntry::new(entry));
         self.node_cache.insert(ptr, cached.clone());
 
         Ok(cached)
@@ -78,10 +78,7 @@ impl PrefixTree {
             let mut result_entry_struct = (**entry).clone();
             result_entry_struct.copath = merged_copath;
             // Create a new Cached wrapper for the result (this is rare, only on match)
-            return StepResult::Found(Arc::new(CachedLogEntry::new(
-                Arc::new(result_entry_struct),
-                &self.aes_key,
-            )));
+            return StepResult::Found(Arc::new(CachedLogEntry::new(Arc::new(result_entry_struct))));
         }
 
         loop {
@@ -103,14 +100,11 @@ impl PrefixTree {
                     if let Some(next_ptr) = parent.ptr {
                         return StepResult::Continue(next_ptr);
                     } else {
-                        return StepResult::Failed(
-                            current_copath.clone(),
-                            parent.first_update_position.unwrap_or(0),
-                        );
+                        return StepResult::Failed(current_copath.clone());
                     }
                 }
             } else if entry.leaf.is_none() {
-                return StepResult::Failed(current_copath.clone(), entry.first_update_position);
+                return StepResult::Failed(current_copath.clone());
             } else {
                 let depth = current_copath.len();
                 if hasher::get_bit(&entry.index, depth) == hasher::get_bit(target_index, depth) {
@@ -127,7 +121,7 @@ impl PrefixTree {
                         ptr: Some(current_ptr),
                         first_update_position: Some(entry.first_update_position),
                     });
-                    return StepResult::Failed(current_copath.clone(), entry.first_update_position);
+                    return StepResult::Failed(current_copath.clone());
                 }
             }
         }
@@ -163,7 +157,7 @@ impl PrefixTree {
                 StepResult::Continue(next_ptr) => {
                     curr = next_ptr;
                 }
-                StepResult::Failed(_, _) => {
+                StepResult::Failed(_) => {
                     return Ok(None);
                 }
             }
@@ -200,7 +194,7 @@ impl PrefixTree {
                 StepResult::Continue(next_ptr) => {
                     curr = next_ptr;
                 }
-                StepResult::Failed(failed_copath, _) => {
+                StepResult::Failed(failed_copath) => {
                     let result_type;
                     let mut l_vrf = None;
                     let mut l_comm = None;

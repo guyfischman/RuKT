@@ -94,7 +94,7 @@ impl PrefixTree {
                     StepResult::Continue(next_ptr) => {
                         curr = next_ptr;
                     }
-                    StepResult::Failed(failed_copath, _) => {
+                    StepResult::Failed(failed_copath) => {
                         copath = failed_copath;
                         break;
                     }
@@ -117,7 +117,7 @@ impl PrefixTree {
         new_entry.encode(&mut buf)?;
 
         // Create cache entry immediately
-        let cached_new = Arc::new(CachedLogEntry::new(Arc::new(new_entry), &self.aes_key));
+        let cached_new = Arc::new(CachedLogEntry::new(Arc::new(new_entry)));
 
         // This rollup will populate the parents cache for the first time
         let root = cached_new.rollup(0, Some(&self.debug_hash_ops));

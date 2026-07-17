@@ -1,5 +1,4 @@
 // src/tree/prefix/mod.rs
-pub mod audit;
 pub mod entry;
 pub mod hasher;
 pub mod read;
@@ -21,13 +20,12 @@ const NODE_CACHE_MAX_BYTES: u64 = 256 * 1024 * 1024;
 pub(crate) enum StepResult {
     Continue(u64),
     Found(Arc<CachedLogEntry>), // Now returns the Cached wrapper
-    Failed(Vec<ParentNode>, u64),
+    Failed(Vec<ParentNode>),
 }
 
 #[derive(Clone)]
 pub struct PrefixTree {
     pub(crate) store: Arc<dyn TransparencyStore>,
-    pub(crate) aes_key: Vec<u8>,
     pub(crate) node_cache: Cache<u64, Arc<CachedLogEntry>>,
     pub(crate) hits: Arc<AtomicU64>,
     pub(crate) misses: Arc<AtomicU64>,
@@ -36,13 +34,9 @@ pub struct PrefixTree {
 }
 
 impl PrefixTree {
-    pub fn new(store: Arc<dyn TransparencyStore>, aes_key: Vec<u8>) -> Self {
-        if aes_key.len() != 32 {
-            panic!("Prefix Tree AES key must be 32 bytes");
-        }
+    pub fn new(store: Arc<dyn TransparencyStore>) -> Self {
         Self {
             store,
-            aes_key,
             node_cache: Cache::builder()
                 .max_capacity(NODE_CACHE_MAX_BYTES)
                 .weigher(|_, v: &Arc<CachedLogEntry>| v.max_resident_bytes() as u32)

@@ -476,7 +476,7 @@ pub async fn parallel_bulk_populate(
         if let Some(root_pos) = partition_root {
             let root_bytes = tree.store.get_prefix(root_pos)?.unwrap();
             let root_entry = Arc::new(LogEntry::decode(&root_bytes[..])?);
-            let cached = CachedLogEntry::new(root_entry, &config.prefix_aes_key);
+            let cached = CachedLogEntry::new(root_entry);
             partition_hashes.push(cached.rollup(k, None));
         } else {
             partition_hashes.push(ZERO_VALUE.to_vec());

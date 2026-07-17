@@ -60,7 +60,7 @@ impl Tree {
 
         Ok(Self {
             log: log::LogTree::new(store.clone()),
-            prefix: prefix::PrefixTree::new(store.clone(), config.prefix_aes_key.clone()),
+            prefix: prefix::PrefixTree::new(store.clone()),
             store,
             config: config.clone(),
             latest,

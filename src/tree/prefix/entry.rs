@@ -7,12 +7,11 @@ use std::sync::{Arc, OnceLock};
 #[derive(Debug)]
 pub struct CachedLogEntry {
     pub inner: Arc<LogEntry>,
-    pub seed: Vec<u8>,
     parents: Vec<OnceLock<Vec<u8>>>,
 }
 
 impl CachedLogEntry {
-    pub fn new(inner: Arc<LogEntry>, aes_key: &[u8]) -> Self {
+    pub fn new(inner: Arc<LogEntry>) -> Self {
         // Leaf rollups start at the full index depth, so size for it up front:
         // OnceLock slots can't grow later.
         let levels = if inner.leaf.is_some() {
@@ -20,16 +19,10 @@ impl CachedLogEntry {
         } else {
             inner.copath.len()
         } + 1;
-        let seed = compute_seed(aes_key, inner.first_update_position);
         Self {
             inner,
-            seed,
             parents: (0..levels).map(|_| OnceLock::new()).collect(),
         }
-    }
-
-    pub fn get_seed(&self) -> &[u8] {
-        &self.seed
     }
 
     // Weighed as if fully rolled up, since `parents` fills lazily after insertion.
@@ -38,7 +31,6 @@ impl CachedLogEntry {
         self.parents.len() * (HASH + size_of::<OnceLock<Vec<u8>>>())
             + self.inner.copath.len() * (size_of::<ParentNode>() + HASH)
             + self.inner.index.len()
-            + self.seed.len()
             + size_of::<Self>()
     }
 
