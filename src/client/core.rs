@@ -24,9 +24,41 @@ pub struct TrustedState {
     pub timestamp: u64,
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
+struct PersistedMonitoredLabel {
+    label: String,
+    entries: Vec<PersistedMonitorEntry>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct PersistedMonitorEntry {
+    position: u64,
+    version: u32,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct PersistedLabelMaterial {
+    label: String,
+    versions: Vec<PersistedVersionMaterial>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct PersistedVersionMaterial {
+    version: u32,
+    vrf_output: String,
+    commitment: Option<String>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct PersistedDistinguishedEntry {
+    position: u64,
+    timestamp: u64,
+    root: String,
+    peaks: Vec<String>,
+}
+
 // §13: users retain the most recent verified TreeHead and AuditorTreeHead
 #[derive(serde::Serialize, serde::Deserialize, Default)]
-#[allow(clippy::type_complexity)]
 struct PersistedState {
     tree_size: u64,
     root_hash: String,
@@ -35,11 +67,11 @@ struct PersistedState {
     label_versions: Vec<(String, u32)>,
     retained_subtrees: Vec<(u64, String)>,
     #[serde(default)]
-    monitoring_map: Vec<(String, Vec<(u64, u32)>)>,
+    monitoring_map: Vec<PersistedMonitoredLabel>,
     #[serde(default)]
-    version_material: Vec<(String, Vec<(u32, String, Option<String>)>)>,
+    version_material: Vec<PersistedLabelMaterial>,
     #[serde(default)]
-    distinguished_entries: Vec<(u64, u64, String, Vec<String>)>,
+    distinguished_entries: Vec<PersistedDistinguishedEntry>,
     #[serde(default)]
     retained_head: Option<String>,
 }
@@ -123,36 +155,41 @@ impl KtClient {
             self.monitoring_map = p
                 .monitoring_map
                 .into_iter()
-                .map(|(l, m)| Ok((hex::decode(&l)?, m.into_iter().collect())))
+                .map(|m| {
+                    let entries = m.entries.into_iter().map(|e| (e.position, e.version));
+                    Ok((hex::decode(&m.label)?, entries.collect()))
+                })
                 .collect::<Result<_>>()?;
             self.version_material = p
                 .version_material
                 .into_iter()
-                .map(|(l, vs)| {
-                    let inner = vs
+                .map(|l| {
+                    let inner = l
+                        .versions
                         .into_iter()
-                        .map(|(v, vrf, comm)| {
+                        .map(|v| {
                             Ok((
-                                v,
+                                v.version,
                                 (
-                                    hex::decode(&vrf)?,
-                                    comm.map(|c| hex::decode(&c)).transpose()?,
+                                    hex::decode(&v.vrf_output)?,
+                                    v.commitment.map(|c| hex::decode(&c)).transpose()?,
                                 ),
                             ))
                         })
                         .collect::<Result<_>>()?;
-                    Ok((hex::decode(&l)?, inner))
+                    Ok((hex::decode(&l.label)?, inner))
                 })
                 .collect::<Result<_>>()?;
             self.distinguished_entries = p
                 .distinguished_entries
                 .into_iter()
-                .map(|(pos, ts, root, peaks)| {
-                    let peaks = peaks
+                .map(|d| {
+                    let peaks = d
+                        .peaks
                         .into_iter()
                         .map(|h| Ok(hex::decode(&h)?))
                         .collect::<Result<_>>()?;
-                    Ok((pos, (ts, hex::decode(&root)?, peaks)))
+                    Ok((d.position, (d.timestamp, hex::decode(&d.root)?, peaks)))
                 })
                 .collect::<Result<_>>()?;
             self.retained_head = p.retained_head.map(|h| hex::decode(&h)).transpose()?;
@@ -187,32 +224,40 @@ impl KtClient {
             monitoring_map: self
                 .monitoring_map
                 .iter()
-                .map(|(l, m)| (hex::encode(l), m.iter().map(|(&p, &v)| (p, v)).collect()))
+                .map(|(l, m)| PersistedMonitoredLabel {
+                    label: hex::encode(l),
+                    entries: m
+                        .iter()
+                        .map(|(&p, &v)| PersistedMonitorEntry {
+                            position: p,
+                            version: v,
+                        })
+                        .collect(),
+                })
                 .collect(),
             version_material: self
                 .version_material
                 .iter()
-                .map(|(l, vs)| {
-                    (
-                        hex::encode(l),
-                        vs.iter()
-                            .map(|(&v, (vrf, comm))| {
-                                (v, hex::encode(vrf), comm.as_ref().map(hex::encode))
-                            })
-                            .collect(),
-                    )
+                .map(|(l, vs)| PersistedLabelMaterial {
+                    label: hex::encode(l),
+                    versions: vs
+                        .iter()
+                        .map(|(&v, (vrf, comm))| PersistedVersionMaterial {
+                            version: v,
+                            vrf_output: hex::encode(vrf),
+                            commitment: comm.as_ref().map(hex::encode),
+                        })
+                        .collect(),
                 })
                 .collect(),
             distinguished_entries: self
                 .distinguished_entries
                 .iter()
-                .map(|(&pos, (ts, root, peaks))| {
-                    (
-                        pos,
-                        *ts,
-                        hex::encode(root),
-                        peaks.iter().map(hex::encode).collect(),
-                    )
+                .map(|(&pos, (ts, root, peaks))| PersistedDistinguishedEntry {
+                    position: pos,
+                    timestamp: *ts,
+                    root: hex::encode(root),
+                    peaks: peaks.iter().map(hex::encode).collect(),
                 })
                 .collect(),
             retained_head: self.retained_head.as_ref().map(hex::encode),
