@@ -1,5 +1,5 @@
 {
-  "description": "Deterministic known-answer vectors for the hashed and signed byte formats of draft-ietf-keytrans-protocol-05. All byte strings are hex. A conforming implementation reproduces every `output` from the documented `input` and section. Mirrored by src/integration/interop_vectors.rs.",
+  "description": "Deterministic known-answer vectors for draft-ietf-keytrans-protocol-05. All byte strings are hex. Primitive vectors (sections 11.x): a conforming implementation reproduces `output` from `input` and the formula. Transcript vectors (search_transcript_fresh_client): `output` is a complete server response to CONSUME — decode it and run your client-side verification against `config`; reproducing its exact bytes additionally requires RuKT's protobuf schema (proto/), since the draft defines structures but not a wire encoding. Mirrored by src/integration/interop_vectors.rs.",
   "cipher_suite": "KT_128_SHA256_ED25519 (0x0002)",
   "shared_inputs": {
     "vrf_seed": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
@@ -123,7 +123,22 @@
         ],
         "query": { "label": "alice@example.com", "version": null, "last": null }
       },
-      "note": "Full server transcript: one log entry per label in order (prefix version i maps to log entry i; tree_size 3), tree head signed over the config above. The output is the protobuf SearchResponse (proto/transparency.proto) returned for a greatest-version Search from a client with no prior state. A client configured with `config` verifies it offline and recovers value alice_pk_v0. The large max_behind keeps the fixed timestamps verifiable at any date.",
+      "note": "Full server transcript: one log entry per label in order (prefix version i maps to log entry i; tree_size 3), tree head signed over the config above. The large max_behind keeps the fixed timestamps verifiable at any date.",
+      "usage": [
+        "This vector is consumed, not reconstructed: `output` is the exact protobuf SearchResponse (message SearchResponse in proto/transparency.proto, standard protobuf encoding) that a server returns for `query` from a client with no prior state.",
+        "Step 1 (no protobuf needed): rebuild the tree from `input.tree` with your own spec code and check your prefix roots, log root, tree head TBS, and signature against `intermediates` — these are pure draft-05 section 11 computations.",
+        "Step 2: decode `output` with the .proto schema, configure your client with `config` (and the vrf/signing public keys in it), run greatest-version search verification with no prior state, and expect the verified value alice_pk_v0.",
+        "Reproducing `output` byte-for-byte is only meaningful if you also implement RuKT's gRPC wire protocol; cross-implementation conformance is Step 1 plus Step 2."
+      ],
+      "intermediates": {
+        "prefix_roots_after_each_entry": [
+          "b5e0cd4ab97e0749aef5c7ba4e32136e973c36d5f4771c4f68147b019a2cd051",
+          "88b5b051ee054cd165e926e9be109b8b504a6ff59b68c53891cba06dd706d0a6",
+          "f21f781139ce0c36ef1d370f8a91d53f230bf54ec936b612a4ecb94d338657cc"
+        ],
+        "tree_head_tbs": "000201002003a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8002003a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b800000000000000002710000009184e72a0000000000005265c00000000000000000003ac10080d6471074171d5e386b5510a2d0f192c13da9409cbabddee8d6e220a3a",
+        "tree_head_signature": "4a5c3f8e733a3243c26850f6e972f51cb280ed466544854e1cad915cfabdccb460c8ccc16741282665ae1b8ab9ff8e1face9fef84cbcb6eecacb8504f3c6940e"
+      },
       "log_root": "ac10080d6471074171d5e386b5510a2d0f192c13da9409cbabddee8d6e220a3a",
       "output": "0a730802126f080310d0df95ffbc311a640a2003a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b812404a5c3f8e733a3243c26850f6e972f51cb280ed466544854e1cad915cfabdccb460c8ccc16741282665ae1b8ab9ff8e1face9fef84cbcb6eecacb8504f3c6940e10001a10a0a1a2a3a4a5a6a7a8a9aaabacadaeaf220d0a0b616c6963655f706b5f76302a740a500cf99154200888939ddcc94e716372db27156d57975f1b1c12f84454e42a08df879711eaed31ad5ca1ad7f3d2f53ab04eacc45a70443af4d7d6be45fcd0890dbbf56a0d45455920f92c430847ecc17011220cc06d9124329c05c795fa4f686031627b421d008f5e965c43b913bd2117da9012a520a504b8e58e658a31589e3b79e91ab138434dabbf5d6393929b7bd79a9c4f3fab2e06fddd6330743f343dcc61dc267ae08db45a7fbf91531b347ce8c9b1a8a0bffe2ee68d4a4922701d137450b355259ce0632b0040a0ce8d795ffbc31d0df95ffbc3112fc010a04080118010a4a080212440a202b64b56399a58d4188f667e4bb74c59698b916080a1b2e9606fde7e0ec8afee7122034aea22e71013e6577e6b0553f363222a5ef2848c2260fb41fed9cadfa92a34a180412206f39b8287aa549b46ceb823e71a74b865e3243004d94d22ab758a79fa11b94291220db15ec3964853196118bb0afd333743fb84491525c830ec786e537c974ead9421220000000000000000000000000000000000000000000000000000000000000000012200000000000000000000000000000000000000000000000000000000000000000122020ad03df0fecea520e2f44265dec510aa126d7379d9386c90c40ac5115b2a3f112fc010a04080118010a4a080212440a202b64b56399a58d4188f667e4bb74c59698b916080a1b2e9606fde7e0ec8afee7122034aea22e71013e6577e6b0553f363222a5ef2848c2260fb41fed9cadfa92a34a180412202fb3c73bdaf7035373d848dd83c454152da05227157caa313467eda0fa1e19051220db15ec3964853196118bb0afd333743fb84491525c830ec786e537c974ead942122000000000000000000000000000000000000000000000000000000000000000001220b850ad2ff46aae94c3373b5bb94fd36c82e0c9a0004b5255499b1eb4c1829f16122020ad03df0fecea520e2f44265dec510aa126d7379d9386c90c40ac5115b2a3f122220a2023703949a6be66bf57124054d195ebd9de4113410a68cc893660b80655a64070"
     }
