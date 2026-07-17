@@ -79,36 +79,47 @@ cargo build --release
 cargo run
 ```
 
-The server listens on `0.0.0.0:8081` in Contact Monitoring mode. On each start it
-**generates fresh keys** and prints them, then serves from a clean `./kt_data`:
+The server listens on `0.0.0.0:8081` in Contact Monitoring mode. On first start
+it generates a signing key and a VRF key into `./kt_data` and reuses them on
+every later start, serving the log from the same directory:
 
 ```text
-=== SERVER KEYS (COPY THESE TO CLIENT) ===
+=== SERVER PUBLIC CONFIG (distribute to clients out of band) ===
 SIG_KEY: <hex>
 VRF_KEY: <hex>
-==========================================
+cipher_suite: 0x0002  mode: contact-monitoring
+config: ./kt_data/config.json
+================================================================
 Key Transparency Server listening on 0.0.0.0:8081
 ```
+
+`--help` lists the full set of flags (each also settable by environment
+variable): listen address, data directory, cipher suite, auditor keys, and the
+log's mode parameters. `--dump-config` writes the public config and exits.
 
 The protocol's security considerations (§16) call for transport-layer
 encryption: set `KT_TLS_CERT` and `KT_TLS_KEY` to PEM paths to serve gRPC over
 TLS in-process, or leave them unset (plaintext) and terminate TLS in a fronting
 proxy. Clients can dial `https://` endpoints directly.
 
-Because the keys are ephemeral, a verifying client must be told the server's
-public keys out of band — that is the trust root the whole protocol rests on. In
-a real deployment the log's configuration (cipher suite, keys, mode parameters)
-is pre-distributed over a trustworthy channel;
-`PublicConfig::to_json`/`from_json` provides that distribution format.
+A verifying client must be told the log's configuration — cipher suite, keys,
+and mode parameters — out of band; that is the trust root the whole protocol
+rests on, and fetching it from the log being verified proves nothing. The server
+writes it to `<data-dir>/config.json` on every start, which is the artifact to
+pre-distribute over a trustworthy channel. The mode parameters are signed into
+every tree head, so a client that guesses them instead of reading the published
+config will reject the log's signature.
 
 ## Client demo
 
-With the server running, paste its printed `SIG_KEY` and `VRF_KEY` into
-[`examples/client_demo.rs`](examples/client_demo.rs), then:
+With the server running, its published config is all the client needs:
 
 ```bash
 cargo run --example client_demo
 ```
+
+It reads `kt_data/config.json` and dials `http://127.0.0.1:8081`; override with
+`KT_CONFIG` and `KT_URI`.
 
 ```text
 Connected to Key Transparency Server
