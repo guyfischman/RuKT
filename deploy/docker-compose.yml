@@ -1,10 +1,23 @@
 services:
+  # The server runs as uid 10001, but Docker creates the config-pub volume
+  # root-owned; hand /public to the server before it starts.
+  config-perms:
+    image: busybox
+    command: ["chown", "10001:10001", "/public"]
+    user: root
+    restart: "no"
+    volumes:
+      - config-pub:/public
+
   good:
     image: ${RUKT_IMAGE:-rukt:dev}
     build:
       context: ..
     restart: unless-stopped
     command: ["--seed"]
+    depends_on:
+      config-perms:
+        condition: service_completed_successfully
     environment:
       KT_LISTEN: "0.0.0.0:8081"
       KT_DATA_DIR: "/data"
