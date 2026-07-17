@@ -404,7 +404,7 @@ fn bench_crypto_primitives(c: &mut Criterion) {
     group.bench_function("hmac_commitment", |b| {
         b.iter(|| {
             let opening = generate_random_opening();
-            commit(b"alice@example.com", 0, &value, &opening).unwrap()
+            commit(b"alice@example.com", 0, &value, None, &opening).unwrap()
         })
     });
 

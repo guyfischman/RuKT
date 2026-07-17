@@ -720,7 +720,7 @@ fn pre_update(config: &PrivateConfig, label: Vec<u8>) -> PreUpdateData {
     let value = make_value();
     let (index, vrf_proof) = config.vrf_prove(&label, 0).unwrap();
     let opening = crypto::generate_random_opening();
-    let commitment = crypto::commit(&label, 0, &value, &opening).unwrap();
+    let commitment = crypto::commit(&label, 0, &value, None, &opening).unwrap();
     PreUpdateData {
         label,
         value,

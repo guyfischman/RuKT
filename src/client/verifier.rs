@@ -444,7 +444,7 @@ impl CommitmentVerifier {
         opening: &[u8],
         commitment: &[u8],
     ) -> Result<()> {
-        let calculated = crate::crypto::hash::commit(label, version, value, opening)?;
+        let calculated = crate::crypto::hash::commit(label, version, value, None, opening)?;
         if calculated != commitment {
             return Err(anyhow!("Commitment verification failed"));
         }

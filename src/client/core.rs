@@ -68,6 +68,11 @@ pub struct KtClient {
 
 impl KtClient {
     pub async fn connect(dst: String, config: PublicConfig) -> Result<Self> {
+        if config.mode == crate::crypto::DEPLOYMENT_MODE_THIRD_PARTY_MANAGEMENT {
+            return Err(anyhow!(
+                "Third-party management mode is not supported: leaf signatures would not be verified or committed"
+            ));
+        }
         let client = KeyTransparencyServiceClient::connect(dst).await?;
         let sig_pk = ServiceVerifyingKey::from_bytes(&config.server_sig_pk)
             .context("Invalid server signing public key in PublicConfig")?;
@@ -1283,7 +1288,7 @@ impl KtClient {
 
         for (k, info) in resp.info.iter().enumerate() {
             let ver = start_ver + k as u32;
-            crate::crypto::hash::commit(label, ver, effective_values[k], &info.opening)
+            crate::crypto::hash::commit(label, ver, effective_values[k], None, &info.opening)
                 .with_context(|| format!("Commitment recompute failed at v={}", ver))?;
         }
 
@@ -1347,7 +1352,7 @@ impl KtClient {
 
         // §12.1: the target-version commitment is omitted; a server-sent one must match
         let target_commitment =
-            crate::crypto::hash::commit(label, target_version, &value.value, &resp.opening)
+            crate::crypto::hash::commit(label, target_version, &value.value, None, &resp.opening)
                 .context("Commitment computation failed")?;
 
         // §11.4
@@ -1917,8 +1922,13 @@ impl KtClient {
             .value
             .as_ref()
             .ok_or_else(|| anyhow!("Missing credential value"))?;
-        let commitment =
-            crate::crypto::hash::commit(&cred.label, cred.version, &value.value, &cred.opening)?;
+        let commitment = crate::crypto::hash::commit(
+            &cred.label,
+            cred.version,
+            &value.value,
+            None,
+            &cred.opening,
+        )?;
         let ladder_step = cred
             .binary_ladder
             .iter()
@@ -2041,8 +2051,13 @@ impl KtClient {
             .value
             .as_ref()
             .ok_or_else(|| anyhow!("Missing credential value"))?;
-        let target_commitment =
-            crate::crypto::hash::commit(&cred.label, cred.version, &value.value, &cred.opening)?;
+        let target_commitment = crate::crypto::hash::commit(
+            &cred.label,
+            cred.version,
+            &value.value,
+            None,
+            &cred.opening,
+        )?;
 
         let mut wire_index: HashMap<u32, usize> = HashMap::new();
         for (i, &v) in base_binary_ladder(cred.version).iter().enumerate() {
@@ -2097,9 +2112,14 @@ impl KtClient {
             .ok_or_else(|| anyhow!("Missing credential value"))?;
 
         // common steps 3-4
-        let target_commitment =
-            crate::crypto::hash::commit(&cred.label, cred.version, &value.value, &cred.opening)
-                .context("Commitment computation failed")?;
+        let target_commitment = crate::crypto::hash::commit(
+            &cred.label,
+            cred.version,
+            &value.value,
+            None,
+            &cred.opening,
+        )
+        .context("Commitment computation failed")?;
 
         let mut wire_index: HashMap<u32, usize> = HashMap::new();
         let mut vrf_cache: HashMap<u32, Vec<u8>> = HashMap::new();

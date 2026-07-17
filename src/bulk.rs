@@ -69,7 +69,7 @@ pub async fn bulk_populate(
             .map(|(search_key, value)| {
                 let (index, _vrf_proof) = config.vrf_prove(search_key, 0)?;
                 let opening = generate_random_opening();
-                let commitment = commit(search_key, 0, value, &opening)?;
+                let commitment = commit(search_key, 0, value, None, &opening)?;
                 Ok(BulkEntry {
                     search_key: search_key.clone(),
                     value: value.clone(),
@@ -212,7 +212,7 @@ pub async fn bulk_populate_per_entry(
         .map(|(search_key, value)| {
             let (index, _vrf_proof) = config.vrf_prove(search_key, 0)?;
             let opening = generate_random_opening();
-            let commitment = commit(search_key, 0, value, &opening)?;
+            let commitment = commit(search_key, 0, value, None, &opening)?;
             Ok(BulkEntry {
                 search_key: search_key.clone(),
                 value: value.clone(),
@@ -403,7 +403,7 @@ pub async fn parallel_bulk_populate(
         .map(|(search_key, value)| {
             let (index, _) = config.vrf_prove(search_key, 0)?;
             let opening = generate_random_opening();
-            let commitment = commit(search_key, 0, value, &opening)?;
+            let commitment = commit(search_key, 0, value, None, &opening)?;
             Ok(BulkEntry {
                 search_key: search_key.clone(),
                 value: value.clone(),

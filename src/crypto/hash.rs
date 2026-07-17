@@ -16,7 +16,13 @@ pub fn generate_random_opening() -> Vec<u8> {
 }
 
 // §11.6
-pub fn commit(label: &[u8], version: u32, update_value: &[u8], opening: &[u8]) -> Result<Vec<u8>> {
+pub fn commit(
+    label: &[u8],
+    version: u32,
+    update_value: &[u8],
+    suffix_signature: Option<&[u8]>,
+    opening: &[u8],
+) -> Result<Vec<u8>> {
     type HmacSha256 = Hmac<Sha256>;
     let mut mac = HmacSha256::new_from_slice(&KC)?;
 
@@ -33,9 +39,18 @@ pub fn commit(label: &[u8], version: u32, update_value: &[u8], opening: &[u8]) -
 
     mac.update(&version.to_be_bytes());
 
-    // §11.5: UpdateSuffix is zero bytes outside third-party-management mode
     mac.update(&(update_value.len() as u32).to_be_bytes());
     mac.update(update_value);
+
+    // §11.5: UpdateSuffix carries the operator signature in third-party-management
+    // mode and serializes to zero bytes in every other mode
+    if let Some(sig) = suffix_signature {
+        if sig.len() > 65535 {
+            return Err(anyhow::anyhow!("Update suffix signature too long"));
+        }
+        mac.update(&(sig.len() as u16).to_be_bytes());
+        mac.update(sig);
+    }
 
     Ok(mac.finalize().into_bytes().to_vec())
 }

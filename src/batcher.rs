@@ -195,7 +195,7 @@ impl BatchWorker {
                     let (index, vrf_proof) = cfg.vrf_prove(&label, version).unwrap();
                     let opening = crate::crypto::generate_random_opening();
                     let commitment =
-                        crate::crypto::commit(&label, version, &value, &opening).unwrap();
+                        crate::crypto::commit(&label, version, &value, None, &opening).unwrap();
 
                     PreUpdateData {
                         label,

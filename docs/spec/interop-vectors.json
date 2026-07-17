@@ -16,6 +16,13 @@
       "output": "ea1df1367cab95d5fe5009826bb7c60d0eb972aeea68b032b4efe08d5e0a37f1"
     },
     {
+      "name": "commitment_third_party_management",
+      "section": "11.5, 11.6",
+      "input": { "label": "alice@example.com", "version": 7, "value": "pk_v7", "suffix_signature": "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a", "opening": "a0a1a2a3a4a5a6a7a8a9aaabacadaeaf" },
+      "formula": "HMAC-SHA256(Kc, opening || opaque_u8(label) || u32(version) || opaque_u32(value) || opaque_u16(suffix_signature))",
+      "output": "5d66b97ff882bae9ff164e9693d1517d9f10174c78ddfa4c7676e7cdb947386f"
+    },
+    {
       "name": "vrf_input",
       "section": "11.7",
       "input": { "label": "alice@example.com", "version": 7 },

@@ -45,10 +45,22 @@ fn sample_config() -> PublicConfig {
 #[test]
 fn commitment_vector_s11_6() {
     // §11.6: commitment = HMAC-SHA256(Kc, opening || label || version || UpdateValue)
-    let got = commit(LABEL, 7, b"pk_v7", &OPENING).unwrap();
+    let got = commit(LABEL, 7, b"pk_v7", None, &OPENING).unwrap();
     assert_eq!(
         hx(&got),
         "ea1df1367cab95d5fe5009826bb7c60d0eb972aeea68b032b4efe08d5e0a37f1"
+    );
+}
+
+#[test]
+fn commitment_tpm_suffix_vector_s11_5() {
+    // §11.5: in third-party-management mode UpdateValue.suffix carries
+    // opaque signature<0..2^16-1>, serialized as u16 length || bytes
+    let sig = [0x5au8; 64];
+    let got = commit(LABEL, 7, b"pk_v7", Some(&sig), &OPENING).unwrap();
+    assert_eq!(
+        hx(&got),
+        "5d66b97ff882bae9ff164e9693d1517d9f10174c78ddfa4c7676e7cdb947386f"
     );
 }
 
