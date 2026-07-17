@@ -1,6 +1,6 @@
 services:
   good:
-    image: rukt:${RUKT_TAG:-dev}
+    image: ${RUKT_IMAGE:-rukt:dev}
     build:
       context: ..
     restart: unless-stopped
