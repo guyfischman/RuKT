@@ -2,23 +2,29 @@
 use super::hasher::*;
 use crate::proto::prefix_tree::{LogEntry, ParentNode};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, OnceLock};
 
 #[derive(Debug)]
 pub struct CachedLogEntry {
     pub inner: Arc<LogEntry>,
     pub seed: Vec<u8>,
-    pub parents: RwLock<Vec<Option<Vec<u8>>>>,
+    parents: Vec<OnceLock<Vec<u8>>>,
 }
 
 impl CachedLogEntry {
     pub fn new(inner: Arc<LogEntry>, aes_key: &[u8]) -> Self {
-        let depth = inner.copath.len();
+        // Leaf rollups start at the full index depth, so size for it up front:
+        // OnceLock slots can't grow later.
+        let levels = if inner.leaf.is_some() {
+            8 * INDEX_LENGTH
+        } else {
+            inner.copath.len()
+        } + 1;
         let seed = compute_seed(aes_key, inner.first_update_position);
         Self {
             inner,
             seed,
-            parents: RwLock::new(vec![None; depth + 1]),
+            parents: (0..levels).map(|_| OnceLock::new()).collect(),
         }
     }
 
@@ -29,8 +35,7 @@ impl CachedLogEntry {
     // Weighed as if fully rolled up, since `parents` fills lazily after insertion.
     pub fn max_resident_bytes(&self) -> usize {
         const HASH: usize = 32 + size_of::<Vec<u8>>();
-        let levels = 8 * INDEX_LENGTH + 1;
-        levels * (HASH + size_of::<Option<Vec<u8>>>())
+        self.parents.len() * (HASH + size_of::<OnceLock<Vec<u8>>>())
             + self.inner.copath.len() * (size_of::<ParentNode>() + HASH)
             + self.inner.index.len()
             + self.seed.len()
@@ -45,9 +50,6 @@ impl CachedLogEntry {
         let mut curr;
         let mut acc;
 
-        // OPTIMIZATION: Acquire Write Lock ONCE for the whole loop
-        let mut parents_guard = self.parents.write().unwrap();
-
         if let Some(leaf) = &self.inner.leaf {
             curr = 8 * INDEX_LENGTH;
             if let Some(c) = hash_counter {
@@ -59,15 +61,10 @@ impl CachedLogEntry {
             acc = self.stand_in(curr);
         }
 
-        if parents_guard.len() <= curr {
-            parents_guard.resize(curr + 1, None);
-        }
-
         while curr > level {
             curr -= 1;
 
-            // Access cache via the held lock
-            if let Some(val) = &parents_guard[curr] {
+            if let Some(val) = self.parents[curr].get() {
                 acc = val.clone();
                 continue;
             }
@@ -88,8 +85,9 @@ impl CachedLogEntry {
                 acc = parent_hash(&acc, &sibling_hash);
             }
 
-            // Write to cache via the held lock
-            parents_guard[curr] = Some(acc.clone());
+            // Racing initializers compute the same deterministic hash; the loser's
+            // set is a no-op.
+            let _ = self.parents[curr].set(acc.clone());
         }
 
         acc
