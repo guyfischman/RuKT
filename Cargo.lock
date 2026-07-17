@@ -1624,6 +1624,7 @@ dependencies = [
  "prost",
  "rand",
  "rayon",
+ "rfc6979",
  "rocksdb",
  "serde",
  "serde_json",

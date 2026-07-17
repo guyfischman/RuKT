@@ -58,6 +58,13 @@
       "output": "2de4c8af25d34b82567bdd7720a4a18fedbe18b44e5d3ca7a7a577638ffe643e"
     },
     {
+      "name": "vrf_prove",
+      "section": "11.7",
+      "input": { "vrf_seed": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f", "alpha": "alpha" },
+      "note": "ECVRF-EDWARDS25519-SHA512-TAI with the deterministic nonce of RFC 9381 s5.4.2.2, so the proof bytes pin exactly. The RFC 9381 Appendix B proofs are reproduced by src/integration/interop_vectors.rs::rfc9381_appendix_b_vectors.",
+      "output": "dff00db2d25b269d561655860a367a792f80db505089f56b05264828c725138a5749f77b4fa5da106bbdc7cbd723ba6915b029cde59458ae6a8c989edcd4c187c8cf445103d7ee2a3afba16482acf307"
+    },
+    {
       "name": "vrf_verify",
       "section": "11.7",
       "input": {
@@ -65,7 +72,7 @@
         "alpha": "alpha",
         "proof": "dff00db2d25b269d561655860a367a792f80db505089f56b05264828c725138a975f9396e64973768db68ba4d81e58a6dffcb6ef7d114de30ba51b156c776dcc41f795652f9be62512ff89dcd14f8f03"
       },
-      "note": "ECVRF-EDWARDS25519-SHA512-TAI. Proofs randomize on the nonce; the output does not.",
+      "note": "ECVRF-EDWARDS25519-SHA512-TAI. This proof was made with a randomized nonce; verifiers accept any valid proof for the input.",
       "output": "5add3d6938a61bb190b777f3555206c224d705aeb8c1498299c0d4539e87aece"
     },
     {

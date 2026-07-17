@@ -6,20 +6,26 @@ use curve25519_dalek::traits::IsIdentity;
 use p256::{
     ProjectivePoint, Scalar as P256Scalar,
     elliptic_curve::{
-        Field, PrimeField,
+        PrimeField,
         group::Group,
         sec1::{FromEncodedPoint, ToEncodedPoint},
     },
 };
-use rand::{RngCore, rngs::OsRng};
 use sha2::{Digest, Sha256, Sha512};
 
 use super::{CIPHER_SUITE_KT_128_SHA256_ED25519, CIPHER_SUITE_KT_128_SHA256_P256};
 
 #[derive(Clone)]
 pub enum VrfContext {
-    Ed25519 { x: Scalar, y_bytes: [u8; 32] },
-    P256 { x: P256Scalar, y_bytes: Vec<u8> },
+    Ed25519 {
+        x: Scalar,
+        y_bytes: [u8; 32],
+        nonce_key: [u8; 32],
+    },
+    P256 {
+        x: P256Scalar,
+        y_bytes: Vec<u8>,
+    },
 }
 
 pub fn expand_vrf_secret(suite_id: u16, secret: &[u8]) -> Result<VrfContext> {
@@ -40,7 +46,11 @@ pub fn get_public_key(suite_id: u16, secret: &[u8]) -> Result<Vec<u8>> {
 
 pub fn ecvrf_prove(ctx: &VrfContext, alpha: &[u8]) -> Result<([u8; 32], Vec<u8>)> {
     match ctx {
-        VrfContext::Ed25519 { x, y_bytes } => ecvrf_prove_ed25519(x, y_bytes, alpha),
+        VrfContext::Ed25519 {
+            x,
+            y_bytes,
+            nonce_key,
+        } => ecvrf_prove_ed25519(x, y_bytes, nonce_key, alpha),
         VrfContext::P256 { x, y_bytes } => ecvrf_prove_p256(x, y_bytes, alpha),
     }
 }
@@ -77,12 +87,20 @@ fn expand_vrf_secret_ed25519(seed: &[u8]) -> Result<VrfContext> {
     let y_point: EdwardsPoint = &x * ED25519_BASEPOINT_TABLE;
     let y_bytes = y_point.compress().to_bytes();
 
-    Ok(VrfContext::Ed25519 { x, y_bytes })
+    let mut nonce_key = [0u8; 32];
+    nonce_key.copy_from_slice(&hashed_sk[32..64]);
+
+    Ok(VrfContext::Ed25519 {
+        x,
+        y_bytes,
+        nonce_key,
+    })
 }
 
 fn ecvrf_prove_ed25519(
     x: &Scalar,
     y_bytes: &[u8; 32],
+    nonce_key: &[u8; 32],
     alpha: &[u8],
 ) -> Result<([u8; 32], Vec<u8>)> {
     let h_point = encode_to_curve_ed25519(y_bytes, alpha);
@@ -91,8 +109,11 @@ fn ecvrf_prove_ed25519(
     let gamma = x * h_point;
     let gamma_bytes = gamma.compress().to_bytes();
 
-    let mut k_bytes = [0u8; 64];
-    OsRng.fill_bytes(&mut k_bytes);
+    // RFC 9381 §5.4.2.2: deterministic nonce per RFC 8032 §5.1.6
+    let mut h = Sha512::new();
+    h.update(nonce_key);
+    h.update(h_bytes);
+    let k_bytes: [u8; 64] = h.finalize().into();
     let nonce_scalar = Scalar::from_bytes_mod_order_wide(&k_bytes);
 
     let u_point: EdwardsPoint = &nonce_scalar * ED25519_BASEPOINT_TABLE;
@@ -235,7 +256,21 @@ fn ecvrf_prove_p256(x: &P256Scalar, y_bytes: &[u8], alpha: &[u8]) -> Result<([u8
     let gamma = h_point * x;
     let gamma_bytes = gamma.to_encoded_point(true).as_bytes().to_vec();
 
-    let k = P256Scalar::random(&mut OsRng);
+    // RFC 9381 §5.4.2.1: deterministic nonce per RFC 6979 with m = h_string
+    const P256_ORDER: [u8; 32] = [
+        0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+        0xff, 0xbc, 0xe6, 0xfa, 0xad, 0xa7, 0x17, 0x9e, 0x84, 0xf3, 0xb9, 0xca, 0xc2, 0xfc, 0x63,
+        0x25, 0x51,
+    ];
+    let h1: [u8; 32] = Sha256::digest(&h_bytes).into();
+    let k_bytes = rfc6979::generate_k::<Sha256, rfc6979::consts::U32>(
+        &x.to_bytes(),
+        &P256_ORDER.into(),
+        &h1.into(),
+        &[],
+    );
+    let k: P256Scalar = Option::from(P256Scalar::from_repr(k_bytes))
+        .ok_or_else(|| anyhow!("RFC 6979 nonce out of range"))?;
 
     let u_point = ProjectivePoint::GENERATOR * k;
     let u_bytes = u_point.to_encoded_point(true).as_bytes().to_vec();
@@ -245,7 +280,7 @@ fn ecvrf_prove_p256(x: &P256Scalar, y_bytes: &[u8], alpha: &[u8]) -> Result<([u8
 
     let c_scalar = challenge_p256(y_bytes, &h_bytes, &gamma_bytes, &u_bytes, &v_bytes);
     let c_bytes_full = c_scalar.to_bytes();
-    let c_bytes_16 = &c_bytes_full[0..16];
+    let c_bytes_16 = &c_bytes_full[16..32];
 
     let s_scalar: P256Scalar = k + (c_scalar * x);
     let s_bytes = s_scalar.to_bytes();
@@ -273,7 +308,7 @@ fn ecvrf_verify_p256(pub_key: &[u8], alpha: &[u8], proof: &[u8]) -> Result<[u8; 
     .ok_or_else(|| anyhow!("Gamma point invalid"))?;
 
     let mut c_full = [0u8; 32];
-    c_full[0..16].copy_from_slice(c_bytes);
+    c_full[16..32].copy_from_slice(c_bytes);
     let c: P256Scalar =
         Option::from(P256Scalar::from_repr(c_full.into())).ok_or_else(|| anyhow!("Invalid c"))?;
 
@@ -297,7 +332,7 @@ fn ecvrf_verify_p256(pub_key: &[u8], alpha: &[u8], proof: &[u8]) -> Result<[u8; 
     let v_bytes = v_point.to_encoded_point(true).as_bytes().to_vec();
 
     let c_prime = challenge_p256(pub_key, &h_bytes, gamma_bytes, &u_bytes, &v_bytes);
-    if c_bytes != &c_prime.to_bytes()[0..16] {
+    if c_bytes != &c_prime.to_bytes()[16..32] {
         return Err(anyhow!("Challenge mismatch"));
     }
 
@@ -343,8 +378,9 @@ fn challenge_p256(p1: &[u8], p2: &[u8], p3: &[u8], p4: &[u8], p5: &[u8]) -> P256
     h.update([0x00]);
     let d = h.finalize();
 
+    // c = string_to_int(16-byte c_string): low-order bytes of the BE repr
     let mut cb = [0u8; 32];
-    cb[0..16].copy_from_slice(&d[0..16]);
+    cb[16..32].copy_from_slice(&d[0..16]);
     P256Scalar::from_repr(cb.into()).unwrap()
 }
 

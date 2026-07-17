@@ -125,12 +125,75 @@ fn vrf_vectors_s11_7() {
         "5add3d6938a61bb190b777f3555206c224d705aeb8c1498299c0d4539e87aece"
     );
 
-    // freshly generated proofs randomize on the nonce but keep the same output
+    // proving is deterministic (RFC 9381 §5.4.2.2 nonce), so the proof pins too
     let ctx = expand_vrf_secret(CIPHER_SUITE_KT_128_SHA256_ED25519, &SEED).unwrap();
     let (out_a, proof_a) = ecvrf_prove(&ctx, b"alpha").unwrap();
     let (_, proof_b) = ecvrf_prove(&ctx, b"alpha").unwrap();
-    assert_ne!(proof_a, proof_b);
+    assert_eq!(proof_a, proof_b);
+    assert_eq!(
+        hx(&proof_a),
+        "dff00db2d25b269d561655860a367a792f80db505089f56b05264828c725138a\
+         5749f77b4fa5da106bbdc7cbd723ba6915b029cde59458ae6a8c989edcd4c187\
+         c8cf445103d7ee2a3afba16482acf307"
+    );
     assert_eq!(hx(&out_a), hx(&out));
+}
+
+#[test]
+fn rfc9381_appendix_b_vectors() {
+    // RFC 9381 Appendix B known-answer vectors for both TAI suites; beta for
+    // the Edwards suite is SHA-512 output, truncated here to the 32-byte index
+    let cases: [(u16, &str, &[u8], &str, &str); 4] = [
+        (
+            CIPHER_SUITE_KT_128_SHA256_ED25519,
+            "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60",
+            b"",
+            "8657106690b5526245a92b003bb079ccd1a92130477671f6fc01ad16f26f723f\
+             26f8a57ccaed74ee1b190bed1f479d9727d2d0f9b005a6e456a35d4fb0daab12\
+             68a1b0db10836d9826a528ca76567805",
+            "90cf1df3b703cce59e2a35b925d411164068269d7b2d29f3301c03dd757876ff",
+        ),
+        (
+            CIPHER_SUITE_KT_128_SHA256_ED25519,
+            "4ccd089b28ff96da9db6c346ec114e0f5b8a319f35aba624da8cf6ed4fb8a6fb",
+            b"\x72",
+            "f3141cd382dc42909d19ec5110469e4feae18300e94f304590abdced48aed593\
+             3bf0864a62558b3ed7f2fea45c92a465301b3bbf5e3e54ddf2d935be3b67926d\
+             a3ef39226bbc355bdc9850112c8f4b02",
+            "eb4440665d3891d668e7e0fcaf587f1b4bd7fbfe99d0eb2211ccec90496310eb",
+        ),
+        (
+            crypto::CIPHER_SUITE_KT_128_SHA256_P256,
+            "c9afa9d845ba75166b5c215767b1d6934e50c3db36e89b127b8a622b120f6721",
+            b"sample",
+            "035b5c726e8c0e2c488a107c600578ee75cb702343c153cb1eb8dec77f4b5071\
+             b4a53f0a46f018bc2c56e58d383f2305e0975972c26feea0eb122fe7893c15af\
+             376b33edf7de17c6ea056d4d82de6bc02f",
+            "a3ad7b0ef73d8fc6655053ea22f9bede8c743f08bbed3d38821f0e16474b505e",
+        ),
+        (
+            crypto::CIPHER_SUITE_KT_128_SHA256_P256,
+            "c9afa9d845ba75166b5c215767b1d6934e50c3db36e89b127b8a622b120f6721",
+            b"test",
+            "034dac60aba508ba0c01aa9be80377ebd7562c4a52d74722e0abae7dc3080ddb\
+             56c19e067b15a8a8174905b13617804534214f935b94c2287f797e393eb08169\
+             69d864f37625b443f30f1a5a33f2b3c854",
+            "a284f94ceec2ff4b3794629da7cbafa49121972671b466cab4ce170aa365f26d",
+        ),
+    ];
+
+    for (suite, sk_hex, alpha, pi_hex, beta32_hex) in cases {
+        let sk = hex::decode(sk_hex).unwrap();
+        let pi = pi_hex.replace([' ', '\n'], "");
+        let ctx = expand_vrf_secret(suite, &sk).unwrap();
+        let (out, proof) = ecvrf_prove(&ctx, alpha).unwrap();
+        assert_eq!(hx(&proof), pi, "pi mismatch: suite {suite:#x}");
+        assert_eq!(hx(&out), beta32_hex, "beta mismatch: suite {suite:#x}");
+
+        let pk = get_public_key(suite, &sk).unwrap();
+        let verified = ecvrf_verify(suite, &pk, alpha, &proof).unwrap();
+        assert_eq!(hx(&verified), beta32_hex);
+    }
 }
 
 #[test]
@@ -143,4 +206,128 @@ fn tree_head_tbs_vector_s11_2() {
          00000000000000002a9999999999999999999999999999999999999999999999999999999999999999"
         .replace(['\n', ' '], "");
     assert_eq!(hx(&got), expected);
+}
+
+// §13.1: full server transcript for a greatest-version search from a client
+// with no prior state (last = None), over a fixed three-entry tree
+#[tokio::test]
+async fn search_transcript_fresh_client_s13_1() -> anyhow::Result<()> {
+    use crate::db::{RocksDbStore, TransparencyStore};
+    use crate::proto::transparency::{SearchRequest, Signature as PbSignature, TreeHead};
+    use crate::tree::Tree;
+    use prost::Message;
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
+    const BASE_TS: u64 = 1_700_000_000_000;
+    const MAX_AHEAD: u64 = 10_000;
+    const MAX_BEHIND: u64 = 10_000_000_000_000;
+    const RMW: u64 = 86_400_000;
+
+    let sig_key = crypto::ServiceSigningKey::Ed25519(ed25519_dalek::SigningKey::from_bytes(&SEED));
+    let config = crypto::PrivateConfig::new(
+        CIPHER_SUITE_KT_128_SHA256_ED25519,
+        crypto::DEPLOYMENT_MODE_CONTACT_MONITORING,
+        sig_key,
+        SEED.to_vec(),
+        HashMap::new(),
+        MAX_AHEAD,
+        MAX_BEHIND,
+        RMW,
+        None,
+        None,
+        100,
+    )?;
+
+    let dir = tempfile::tempdir()?;
+    let store = Arc::new(RocksDbStore::new(dir.path().to_str().unwrap())?);
+    let mut tree = Tree::new(store.clone() as Arc<dyn TransparencyStore>, &config).await?;
+
+    let entries: [(&[u8], &[u8]); 3] = [
+        (b"alice@example.com", b"alice_pk_v0"),
+        (b"bob@example.com", b"bob_pk_v0"),
+        (b"carol@example.com", b"carol_pk_v0"),
+    ];
+
+    let mut current_ptr = None;
+    let mut roots = Vec::new();
+    for (i, (label, value)) in entries.iter().enumerate() {
+        let opening: [u8; 16] = core::array::from_fn(|j| (0xa0 + 0x10 * i + j) as u8);
+        let (index, _) = config.vrf_prove(label, 0)?;
+        let commitment = commit(label, 0, value, None, &opening)?;
+        let (r, _, ptr) = tree
+            .prefix
+            .batch_insert(i as u64, current_ptr, &[(index.to_vec(), commitment)])
+            .await?;
+        roots.push(r[0].clone());
+        current_ptr = Some(ptr);
+        tree.log.put_prefix_ptr(i as u64, i as u64)?;
+        store.put_value(i as u64, value.to_vec())?;
+        store.put_opening(i as u64, opening.to_vec())?;
+        store.append_label_history(label, 0, i as u64)?;
+    }
+    tree.log.set_next_prefix_version(3)?;
+
+    let log_entries: Vec<(u64, Vec<u8>)> = roots
+        .iter()
+        .enumerate()
+        .map(|(i, r)| (BASE_TS + i as u64 * 1000, r.clone()))
+        .collect();
+    let root = tree.log.batch_append(0, log_entries)?;
+
+    let tbs = crypto::construct_tree_head_tbs(&config, None, 3, &root)?;
+    let signature = crypto::sign_data(&config.sig_key, &tbs);
+    let th = TreeHead {
+        tree_size: 3,
+        timestamp: (BASE_TS + 2000) as i64,
+        signatures: vec![PbSignature {
+            auditor_public_key: config.sig_key.verifying_key().to_bytes(),
+            signature,
+        }],
+    };
+    let mut head_buf = Vec::new();
+    th.encode(&mut head_buf)?;
+    store.set_head(head_buf)?;
+    tree.latest = Some(th);
+
+    let resp = tree
+        .search(&SearchRequest {
+            label: b"alice@example.com".to_vec(),
+            last: None,
+            version: None,
+        })
+        .await?;
+    println!("TRANSCRIPT_ROOT: {}", hx(&root));
+    println!("TRANSCRIPT_HEX: {}", hx(&resp.encode_to_vec()));
+
+    // the pinned transcript must verify end-to-end in a conforming client
+    let public_config = crypto::PublicConfig {
+        cipher_suite: CIPHER_SUITE_KT_128_SHA256_ED25519,
+        mode: crypto::DEPLOYMENT_MODE_CONTACT_MONITORING,
+        server_sig_pk: config.sig_key.verifying_key().to_bytes(),
+        vrf_public_key: config.vrf_public_key.clone(),
+        leaf_public_key: None,
+        auditor_public_key: None,
+        auditor_start_pos: 0,
+        max_auditor_lag: 60_000,
+        max_ahead: MAX_AHEAD,
+        max_behind: MAX_BEHIND,
+        reasonable_monitoring_window: RMW,
+        maximum_lifetime: None,
+    };
+    drop(tree);
+    let sig_key2 = crypto::ServiceSigningKey::Ed25519(ed25519_dalek::SigningKey::from_bytes(&SEED));
+    let service = crate::service::KeyTransparencyImpl::new(
+        store as Arc<dyn TransparencyStore>,
+        sig_key2,
+        SEED.to_vec(),
+        HashMap::new(),
+        None,
+    )
+    .await?;
+    let channel = crate::integration::harness::serve_in_memory(service).await?;
+    let mut client = crate::client::KtClient::with_channel(channel, public_config)?;
+    let got = client.search(b"alice@example.com".to_vec(), None).await?;
+    assert_eq!(got.value.unwrap().value, b"alice_pk_v0");
+    Ok(())
 }

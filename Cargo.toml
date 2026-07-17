@@ -27,6 +27,7 @@ futures = "0.3"
 aes = "0.8"
 moka = { version = "0.12", features = ["sync"] }
 rayon = "1.8"
+rfc6979 = "0.4"
 
 [features]
 # Exposes private client verifiers to benches; never enabled in normal builds.

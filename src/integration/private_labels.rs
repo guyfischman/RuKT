@@ -7,7 +7,7 @@ use std::sync::Arc;
 use tempfile::tempdir;
 
 #[tokio::test]
-async fn test_randomized_vrf_proofs() -> Result<()> {
+async fn test_deterministic_vrf_proofs() -> Result<()> {
     let dir = tempdir()?;
     let db = Arc::new(RocksDbStore::new(dir.path().to_str().unwrap())?);
     let (signer, _) = crypto::generate_sig_keypair();
@@ -24,10 +24,9 @@ async fn test_randomized_vrf_proofs() -> Result<()> {
         output_1, output_2,
         "VRF Output (Index) must be deterministic"
     );
-    assert_ne!(
-        proof_1, proof_2,
-        "VRF Proof bytes must be randomized to prevent traffic correlation"
-    );
+    // RFC 9381 §5.4.2.2 nonces are deterministic; gamma is label-bound either
+    // way, so proof randomization never provided unlinkability
+    assert_eq!(proof_1, proof_2, "VRF proving must be deterministic");
 
     let input = crypto::construct_vrf_input(&label, 0)?;
 
