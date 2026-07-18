@@ -133,7 +133,7 @@ Verified Value: "bob_pk_v1"
 
 A public deployment runs at **`https://kt.guyfischman.com`** (contact-monitoring
 mode, Ed25519), seeded with `alice`, `bob`, and `carol`. To exercise every
-client endpoint against it and verify each response:
+client action against it and verify each response:
 
 ```bash
 git clone https://github.com/guyfischman/RuKT.git
@@ -158,17 +158,25 @@ distinguished      N head(s)
 owner_init/monitor OK
 get_credential     v1 verified offline (provisional)
 credential_update  verified offline
+persist/reload     new head proven consistent with the retained view
+gossip head        peers agree on the same signed head
+gossip roots       distinguished roots agree across peers
+fork detection     forged divergent head rejected
 
 Every endpoint verified against https://kt.guyfischman.com.
 ```
 
-Each line is a distinct protocol operation — search (greatest and specific
-version), update, contact monitoring, the distinguished walk, owner
-initialization and monitoring, and offline credentials with a credential update.
-The client independently reconstructs and checks every proof and signature, so a
-line prints only if verification passed. The tour registers a unique
-`tour-<nonce>` label and writes a few throwaway entries, so it is safe to run
-repeatedly and by many people at once.
+Each line is a distinct client action — registration and update (the `Update`
+RPC; the first creates version 0), search (greatest and specific version),
+contact monitoring, the distinguished walk, owner initialization and monitoring,
+and offline credentials with a credential update. The last four lines go beyond
+the RPC surface: durable fork-evident state proven consistent across a restart,
+two independent clients cross-checking the operator's signed heads and
+distinguished roots over the out-of-band gossip channel (§10), and a forged
+divergent head being rejected. The client independently reconstructs and checks
+every proof and signature, so a line prints only if verification passed. The
+tour registers a unique `tour-<nonce>` label and writes a few throwaway entries,
+so it is safe to run repeatedly and by many people at once.
 
 The last line depends on the log's state: a credential update (§14.2) only
 applies to a *provisional* credential and needs a distinguished entry past its

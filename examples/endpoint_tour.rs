@@ -19,7 +19,7 @@ async fn main() -> anyhow::Result<()> {
     let uri = std::env::var("KT_URI").unwrap_or_else(|_| "https://kt.guyfischman.com".into());
     let config = PublicConfig::from_json(&std::fs::read_to_string(&config_path)?)?;
 
-    let mut client = KtClient::connect(uri.clone(), config).await?;
+    let mut client = KtClient::connect(uri.clone(), config.clone()).await?;
     println!("connected to {uri}\n");
 
     // A unique label so simultaneous testers don't collide on the shared log.
@@ -119,6 +119,53 @@ async fn main() -> anyhow::Result<()> {
     } else {
         println!("credential_update  n/a (credential already anchored)");
     }
+
+    // persistence: a client's fork-evident state survives a restart, and the
+    // next response must prove the new head extends the retained view.
+    let state_file = std::env::temp_dir().join(format!("kt-tour-{nonce}.json"));
+    let _ = std::fs::remove_file(&state_file);
+    {
+        let mut persistent = KtClient::connect(uri.clone(), config.clone()).await?;
+        persistent.persist_to(&state_file)?;
+        persistent.update(label.clone(), b"pk_v2".to_vec()).await?;
+    }
+    let mut reloaded = KtClient::connect(uri.clone(), config.clone()).await?;
+    reloaded.persist_to(&state_file)?; // loads the retained head
+    reloaded.search(label.clone(), None).await?; // must prove consistency with it
+    let _ = std::fs::remove_file(&state_file);
+    println!("persist/reload     new head proven consistent with the retained view");
+
+    // gossip: two independent clients cross-check the operator's signed heads
+    // and distinguished roots (§10.2) — the out-of-band fork-detection channel.
+    use rukt::client::gossip::GossipOutcome;
+    let mut peer_a = KtClient::connect(uri.clone(), config.clone()).await?;
+    let mut peer_b = KtClient::connect(uri.clone(), config.clone()).await?;
+    peer_a.search(b"alice".to_vec(), None).await?;
+    peer_b.search(b"alice".to_vec(), None).await?;
+    peer_a.distinguished(None).await?;
+    peer_b.distinguished(None).await?;
+
+    let head_a = peer_a.export_head()?;
+    match peer_b.check_gossiped_head(&head_a)? {
+        GossipOutcome::Consistent => {
+            println!("gossip head        peers agree on the same signed head")
+        }
+        GossipOutcome::Inconclusive => {
+            println!("gossip head        peer heads at different sizes; no fork (valid signatures)")
+        }
+        GossipOutcome::Fork(_) => anyhow::bail!("fork detected against an honest log!"),
+    }
+    peer_b.check_gossiped_roots(&peer_a.export_distinguished_roots()?)?;
+    println!("gossip roots       distinguished roots agree across peers");
+
+    // fork detection: a head claiming a different root at the same size is
+    // rejected — its operator signature no longer covers the swapped root.
+    let mut forged = head_a.clone();
+    forged.root_hash = format!("ff{}", &forged.root_hash[2..]);
+    if peer_b.check_gossiped_head(&forged).is_ok() {
+        anyhow::bail!("forged divergent head was accepted");
+    }
+    println!("fork detection     forged divergent head rejected");
 
     println!("\nEvery endpoint verified against {uri}.");
     Ok(())
